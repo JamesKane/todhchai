@@ -15,6 +15,9 @@ is further along.
   - "study designs, never copy code";
   - FoundationEssentials counts as toolchain;
   - our own libc;
+  - Prism as the SDK's GPU API; the single-file ELF app format; our own
+    debug-info format converted from DWARF; a Wayland client as the first
+    hosted backend; hosted mode as a development tool only;
   - amd64 first, on the reference machine (i7-12700KF, RX 6750 XT); the
     Orange Pi 6 Plus and Radxa Dragon Q8B follow once that works.
 
@@ -25,8 +28,8 @@ is further along.
   driver with three tiers (§10), the board database and SCMI (§9), DMA
   exceptions (§17), new croi requirements (items 1–3, 5, 7, 13, 14; §3 items
   11–12; §4), and milestone M10.
-- **Still open:** six decisions in [roadmap.md](roadmap.md), "Open
-  decisions". None blocks M0 or M1.
+- **Still open:** one decision in [roadmap.md](roadmap.md), "Open
+  decisions": component names, before M3.
 - **croi at the time of writing:** it boots on amd64, arm64 and rv64,
   builds its own page tables, installs exception vectors and halts. It has
   no PMM, threads, user mode, syscalls or kernel objects yet
@@ -87,11 +90,7 @@ is further along.
 
 | Before | Decide |
 |---|---|
-| M1 | hosted backend: Wayland first or DRM/KMS first (open decision 6); SDK GPU API: Prism or `webgpu.h` (1) |
 | M3 | component names (7), before names reach code and protocol ids |
-| M4 | app format (4) |
-| M7 | debug-info format (5) |
-| after M6 | hosted mode as a product (9) |
 
 ## Facts to re-verify, since they may have moved
 

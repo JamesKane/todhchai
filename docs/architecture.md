@@ -635,12 +635,11 @@ and Metal compatibility are explicitly out of scope.
   loads a shared object, hands it a state block at a fixed address, and swaps
   it on rebuild (Handmade Hero day 21). Record and replay comes from
   snapshotting the reserved range.
-- **Debug info:** one fast, indexable format is native, with our own
-  reader and writer. The candidates are our own format designed from what
-  RAD Debugger's RDI shows works (a format converted from DWARF at link
-  time for fast loading), or DWARF, written from the DWARF 5 specification,
-  plus a compact index. The toolchain emits DWARF either way. See open
-  questions in the roadmap.
+- **Debug info:** our own fast, indexable format, with our own reader and
+  writer, designed from what RAD Debugger's RDI shows works. It is
+  converted from DWARF at link time for fast loading. The toolchain still
+  emits DWARF, so the converter reads DWARF, written from the DWARF 5
+  specification. Decided 2026-10-09 (roadmap, "Decided").
 
 ## 17. Security model
 
@@ -709,8 +708,8 @@ and Metal compatibility are explicitly out of scope.
 
 The SDK, compositor, UI Kit and file system all get a **Linux host backend**
 from the start, as the NeoDarwin study did with its macOS shim. Each one runs
-as an ordinary program on Linux: the compositor as a fullscreen
-DRM/KMS-or-Wayland client, and the file system as a FUSE server or a disk-image
+as an ordinary program on Linux: the compositor as a Wayland client
+first, and later a fullscreen DRM/KMS client for latency work, and the file system as a FUSE server or a disk-image
 tool. This lets user-space design and measurement go ahead in parallel with
 croi's path to user space. The native backend replaces the host one piece by
 piece.
@@ -721,15 +720,16 @@ Those are the platform it runs on, not code in our tree. Wherever a
 protocol is involved, we speak it directly (the FUSE kernel protocol, the
 Wayland wire protocol) rather than vendoring libfuse or libwayland.
 
-**Open decision: dev tool or product?** Inferno ran the same applications
+**A development tool, not a product** (decided 2026-10-09). Inferno ran the same applications
 hosted on Windows, Linux and Plan 9 as on bare metal, and that reach is
 something a new OS rarely gets. Shipping hosted Todhchai (SDK plus desktop
 in a window) on Linux, macOS and Windows would let developers target
 Todhchai years before they own a machine running it. The cost is that the
 host backend becomes a product with users, and it gets pulled toward each
 host's rules. NeoDarwin's macOS shim needed about 1,100 lines just to hide
-AppKit's main-thread and modal-loop rules. Until this is decided, the host
-backend is a development tool only. See [roadmap.md](roadmap.md).
+AppKit's main-thread and modal-loop rules. So the host backend runs on
+Linux, for developing and measuring Todhchai, and is not shipped. See
+[roadmap.md](roadmap.md), "Decided".
 
 ## 19. Remote access: the export bridge
 

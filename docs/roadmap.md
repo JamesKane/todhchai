@@ -227,32 +227,34 @@ Feeding in from the hosted and F tracks:
 
 ## Open decisions
 
-These need the project owner's call. Each one has a recommendation, and
-none blocks M0.
+These need the project owner's call. None blocks M0.
 
-1. **SDK GPU API:** Prism, a "No Graphics API"-style library over Vulkan 1.4
-   (*recommended*), or `webgpu.h` as the NeoDarwin study chose. See
-   [sdk.md](sdk.md) §5.
+1. ~~SDK GPU API~~: decided (see "Decided").
 2. ~~Desktop architecture priority~~: decided (see "Decided").
 3. ~~Reference hardware~~: decided (see "Decided").
-4. **App format:** an ELF with an appended archive plus attributes
-   (*recommended*, single file) or a directory bundle.
-5. **Debug info format:** our own fast format, designed from what RDI shows
-   works and converted from DWARF at link time (*recommended to evaluate*),
-   or DWARF plus our own index.
-6. **Hosted backend:** a Wayland client first (*recommended*, easier) or
-   DRM/KMS first (better latency measurements).
+4. ~~App format~~: decided (see "Decided").
+5. ~~Debug info format~~: decided (see "Decided").
+6. ~~Hosted backend~~: decided (see "Decided").
 7. **Component names.** Working names are descriptive ("compositor",
    "BeFS-NG", "Prism"). Irish names would match croi and Todhchai.
 8. ~~License~~: decided (see "Decided").
-9. **Hosted mode as a product.** Keep hosted mode a development tool
-   (*recommended until M6*), or ship it Inferno-style on Linux, macOS and
-   Windows so developers can target Todhchai early. See
-   [architecture.md](architecture.md) §18. Revisit once the native desktop
-   is usable and the host backend's cost is known.
+9. ~~Hosted mode as a product~~: decided (see "Decided").
 
 ## Decided
 
+- **SDK GPU API** (2026-10-09): Prism, a "No Graphics API"-style library
+  over Vulkan 1.4, not `webgpu.h` ([sdk.md](sdk.md) §5).
+- **App format** (2026-10-09): one file, an ELF with an appended resource
+  archive plus BeFS-NG attributes, not a directory bundle
+  ([architecture.md](architecture.md) §14).
+- **Debug info format** (2026-10-09): our own fast format, designed from
+  what RAD Debugger's RDI shows works and converted from DWARF at link time.
+  The toolchain still emits DWARF ([architecture.md](architecture.md) §16).
+- **Hosted backend** (2026-10-09): a Wayland client first; DRM/KMS
+  fullscreen comes later, for latency work.
+- **Hosted mode** (2026-10-09): a development tool, not a product. It is
+  not shipped for Linux, macOS or Windows
+  ([architecture.md](architecture.md) §18).
 - **Desktop architecture priority** (2026-10-09): amd64 first. The kernel
   stays tri-arch, and the arm64 boards follow once the amd64 code works
   (M10).
