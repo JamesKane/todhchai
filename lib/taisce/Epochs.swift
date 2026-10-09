@@ -71,7 +71,8 @@ import Synchronization
 
   public func exit(_ slot: Int) { active[slot].store(0, ordering: .releasing) }
 
-  /// Moves the epoch on if no reading reader is behind it.
+  /// Moves the epoch on if no reading reader is behind it. Safe from any
+  /// number of threads.
   @discardableResult
   public func tryAdvance() -> Bool {
     let e = epoch.load(ordering: .sequentiallyConsistent)
@@ -79,8 +80,9 @@ import Synchronization
       let a = active[i].load(ordering: .sequentiallyConsistent)
       if a != 0 && a < e { return false }
     }
-    epoch.store(e + 1, ordering: .sequentiallyConsistent)
-    return true
+    // From e only: another thread may have advanced meanwhile, and a plain
+    // store would move the epoch back.
+    return epoch.compareExchange(expected: e, desired: e + 1, ordering: .sequentiallyConsistent).exchanged
   }
 }
 

@@ -159,3 +159,26 @@ func versioned(_ v: Int) -> [UInt8] { [UInt8](repeating: UInt8(truncatingIfNeede
   #expect(fs.engine.limboCount == 0)
   try fs.check()
 }
+
+final class EpochRun: Sendable {
+  let epochs = EpochManager()
+  let backwards = Atomic<Int>(0)
+}
+
+@Test func theEpochNeverGoesBackEvenAdvancedFromManyThreads() {
+  let run = EpochRun()
+  var threads: [pthread_t] = []
+  for _ in 0..<4 {
+    threads.append(ToolSupport.spawn {
+      var last: UInt64 = 0
+      for _ in 0..<200_000 {
+        run.epochs.tryAdvance()
+        let now = run.epochs.current
+        if now < last { run.backwards.add(1, ordering: .relaxed) }
+        last = now
+      }
+    })
+  }
+  for t in threads { ToolSupport.join(t) }
+  #expect(run.backwards.load(ordering: .relaxed) == 0)
+}
