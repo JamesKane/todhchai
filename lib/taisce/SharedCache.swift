@@ -90,6 +90,12 @@ import Synchronization
     guard sequence & 1 == 0,
       unsafe sequences[slot].compareExchange(expected: sequence, desired: sequence + 1, ordering: .acquiring).exchanged
     else { return }
+    // The odd sequence must be visible before any of the new bytes: an
+    // acquiring compare-and-swap doesn't order its own store before later
+    // ones on weakly ordered CPUs (arm64), so a reader could see new bytes
+    // under the old, even, sequence. (Linux's seqcount writers have
+    // smp_wmb() here.)
+    atomicMemoryFence(ordering: .releasing)
     unsafe keys[3 * slot].store(block + 1, ordering: .relaxed)
     unsafe keys[3 * slot + 1].store(checksum.a, ordering: .relaxed)
     unsafe keys[3 * slot + 2].store(checksum.b, ordering: .relaxed)
