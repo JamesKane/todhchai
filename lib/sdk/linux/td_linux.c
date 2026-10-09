@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -111,3 +112,31 @@ int td_swift_costs_install(void) {
 }
 
 td_swift_costs td_swift_costs_read(void) { return costs; }
+
+// MARK: Passing descriptors
+
+int td_linux_receive_fd(int socket) {
+  char byte;
+  struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+  union {
+    struct cmsghdr header;
+    char space[CMSG_SPACE(sizeof(int))];
+  } control;
+  struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control.space, .msg_controllen = sizeof control.space};
+  ssize_t n;
+  do {
+    n = recvmsg(socket, &msg, MSG_CMSG_CLOEXEC);
+  } while (n < 0 && errno == EINTR);
+  if (n <= 0) {
+    if (n == 0) errno = ECONNRESET;
+    return -1;
+  }
+  struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+  if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS || c->cmsg_len != CMSG_LEN(sizeof(int))) {
+    errno = EPROTO;
+    return -1;
+  }
+  int fd;
+  memcpy(&fd, CMSG_DATA(c), sizeof fd);
+  return fd;
+}

@@ -21,6 +21,10 @@ let package = Package(
   products: [
     // libtodhchai.so: the C ABI (sdk.md §12), for C, Zig, Odin and the rest.
     .library(name: "todhchai", type: .dynamic, targets: ["TodhchaiCABI"]),
+    // Taisce on the host (filesystem.md §9).
+    .executable(name: "mkfs.taisce", targets: ["MkfsTaisce"]),
+    .executable(name: "fsck.taisce", targets: ["FsckTaisce"]),
+    .executable(name: "taisce-fuse", targets: ["TaisceFuse"]),
   ],
   dependencies: [
     // Toolchain, not third-party code (principle 29): the release matching
@@ -105,8 +109,14 @@ let package = Package(
     // Taisce (filesystem.md): the file system's core is tier 0, built
     // again as Embedded Swift by CMake; the host's devices and tools are not.
     .target(name: "Taisce", dependencies: ["TDUnicode"], path: "lib/taisce", swiftSettings: tier0),
-    .target(name: "TaisceHost", dependencies: ["Taisce"], path: "lib/taisce-host"),
+    .target(name: "TaisceHost", dependencies: ["Taisce", "TDLinux"], path: "lib/taisce-host"),
+    .executableTarget(name: "MkfsTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/mkfs-taisce"),
+    .executableTarget(name: "FsckTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/fsck-taisce"),
+    .executableTarget(name: "TaisceFuse", dependencies: ["Taisce", "TaisceHost"], path: "tools/taisce-fuse"),
     .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "tests/taisce"),
+    .target(name: "FuseLayoutC", path: "tests/taisce-host/c"),
+    .testTarget(name: "TaisceHostTests", dependencies: ["Taisce", "TaisceHost", "FuseLayoutC"], path: "tests/taisce-host",
+                exclude: ["c"]),
     // Loinnir: the SDK's GPU library (sdk.md §5), on Vulkan.
     .target(name: "Loinnir", dependencies: ["Vulkan", "Todhchai"], path: "lib/loinnir"),
     .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir", exclude: ["shaders"]),

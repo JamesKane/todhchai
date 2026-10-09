@@ -117,6 +117,29 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 
   func isOpen(_ ino: UInt64) -> Bool { openCounts.contains { $0.ino == ino } }
 
+  /// A node's names: (directory, name) for each, from its own records.
+  public mutating func names(_ ino: UInt64) throws(TaisceError) -> [(dir: UInt64, name: [UInt8])] {
+    try engine.scan(Self.tree, from: FSKey.make(ino, FSKey.name), to: FSKey.make(ino, FSKey.name + 1)).map {
+      (FSKey.readU64($0.key, at: 9), Array($0.key[17...]))
+    }
+  }
+
+  /// A path to the node from the root ("/" for the root; its first name at
+  /// each level), or nil for one with no name (an orphan).
+  public mutating func path(_ ino: UInt64) throws(TaisceError) -> [UInt8]? {
+    if ino == Self.root { return [0x2F] }
+    var parts: [[UInt8]] = []
+    var at = ino
+    while at != Self.root {
+      guard let first = try names(at).first, parts.count < 4096 else { return nil }
+      parts.append(first.name)
+      at = first.dir
+    }
+    var out: [UInt8] = []
+    for p in parts.reversed() { out += [0x2F] + p }
+    return out
+  }
+
   // MARK: Directories
 
   /// The node `name` names in `dir`.
@@ -127,19 +150,19 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   }
 
   /// A new, empty file or directory named `name` in `dir`.
-  public mutating func create(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, now: UInt64)
-    throws(TaisceError) -> UInt64
+  public mutating func create(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, uid: UInt32 = 0,
+                               gid: UInt32 = 0, now: UInt64) throws(TaisceError) -> UInt64
   {
     guard type != .symlink else { throw .invalid }
-    return try make(dir, name, type, mode: mode, target: nil, now: now)
+    return try make(dir, name, type, mode: mode, uid: uid, gid: gid, target: nil, now: now)
   }
 
   /// A symbolic link to `target`.
-  public mutating func symlink(_ dir: UInt64, _ name: [UInt8], target: [UInt8], now: UInt64) throws(TaisceError)
-    -> UInt64
+  public mutating func symlink(_ dir: UInt64, _ name: [UInt8], target: [UInt8], uid: UInt32 = 0, gid: UInt32 = 0,
+                                now: UInt64) throws(TaisceError) -> UInt64
   {
     guard !target.isEmpty, target.count <= BTree.maxValue else { throw .invalid }
-    return try make(dir, name, .symlink, mode: 0o777, target: target, now: now)
+    return try make(dir, name, .symlink, mode: 0o777, uid: uid, gid: gid, target: target, now: now)
   }
 
   public mutating func readlink(_ ino: UInt64) throws(TaisceError) -> [UInt8] {
@@ -147,8 +170,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     return t
   }
 
-  mutating func make(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, target: [UInt8]?, now: UInt64)
-    throws(TaisceError) -> UInt64
+  mutating func make(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, uid: UInt32, gid: UInt32,
+                     target: [UInt8]?, now: UInt64) throws(TaisceError) -> UInt64
   {
     try Self.checkName(name)
     var c = Changes()
@@ -157,6 +180,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     guard try entry(dir, name, &c) == nil else { throw .exists }
     let ino = engine.nextInode
     var node = Inode(type: type, mode: mode, parent: dir, now: now)
+    node.uid = uid
+    node.gid = gid
     if let target {
       node.size = UInt64(target.count)
       c.set(FSKey.make(ino, FSKey.symlink), target)

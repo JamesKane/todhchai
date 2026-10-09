@@ -57,4 +57,9 @@ int td_swift_costs_install(void);
 // The calling thread's totals since it started.
 td_swift_costs td_swift_costs_read(void);
 
+// Receives one file descriptor passed over a Unix socket (SCM_RIGHTS), as
+// fusermount3 passes /dev/fuse; -1 and errno if none came. CMSG_* are
+// macros Swift can't use.
+int td_linux_receive_fd(int socket);
+
 #endif

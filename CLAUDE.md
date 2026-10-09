@@ -95,6 +95,19 @@ memory layouts. Every change to what reaches the disk goes through a
 `BlockDevice`, so `RecordingDevice` can replay any prefix of the writes as
 a crash.
 
+On the host: `swift build --product mkfs.taisce` (also `fsck.taisce`,
+`taisce-fuse`), then
+
+    .build/debug/mkfs.taisce -s 1G IMAGE
+    .build/debug/taisce-fuse IMAGE MOUNTPOINT      # Ctrl-C unmounts
+    .build/debug/fsck.taisce IMAGE
+
+Queries through the mount: `echo 'size > 1MiB' > MOUNTPOINT/.taisce/query;
+cat MOUNTPOINT/.taisce/query` (`live` streams changes; `index` declares).
+Typed attributes are `user.` xattrs, e.g. `setfattr -n user.Audio:Year -v
+int64:1993 FILE`. If a test leaves a dead mount, `fusermount3 -u -z
+MOUNTPOINT` clears it.
+
 ## Unicode
 
 `TDUnicode` (`lib/unicode`, tier 0) gives NFC and NFD (UAX #15), full case
@@ -172,6 +185,13 @@ cases, comparing results and whole buffers.
   (`EmbeddedRestrictions`), including `\.name` passed as a function to
   `map` or `first(where:)`; write a closure (`{ $0.name }`). The hosted
   build accepts them, so only the Embedded build catches it.
+- **Signal handlers can't be closures in `main.swift`'s top-level code.**
+  Top-level code is main-actor-isolated, so the handler's isolation check
+  traps when the signal lands on another thread. Put the handler in a
+  library, as a plain function that only sets an atomic. Found in S0h.
+- **Don't ignore SIGCHLD before spawning a helper.** The ignore is
+  inherited across exec, and breaks the helper's own `waitpid`
+  (`fusermount3: waitpid: No child processes`). Found in S0h.
 - **Send test signals to the process** (`kill(getpid(), sig)`), not the
   thread: the test runner's worker threads block signals.
 
