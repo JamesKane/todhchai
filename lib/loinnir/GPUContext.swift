@@ -32,7 +32,22 @@ public final class GPUContext {
   ]
 
   /// The device the compositor composites with, as `feedback` names it.
-  public init(matching feedback: DmabufFeedback) throws(LoinnirError) {
+  public convenience init(matching feedback: DmabufFeedback) throws(LoinnirError) {
+    try self.init(choose: .drm(feedback.mainDeviceNumbers))
+  }
+
+  /// A device with no window: the first discrete GPU, else the first one
+  /// (tests and offscreen work).
+  public convenience init() throws(LoinnirError) {
+    try self.init(choose: .anyPreferDiscrete)
+  }
+
+  enum Choice {
+    case drm((major: UInt32, minor: UInt32))
+    case anyPreferDiscrete
+  }
+
+  init(choose: Choice) throws(LoinnirError) {
     do {
       vk = try VulkanLibrary()
     } catch {
@@ -60,15 +75,27 @@ public final class GPUContext {
     vk.loadInstance(inst)
     c = vk.commands
 
-    // The physical device whose DRM node is the compositor's.
+    // The physical device: the compositor's (by DRM node), or any.
     var count: UInt32 = 0
     _ = c.vkEnumeratePhysicalDevices!(inst, &count, nil)
     var all = [VkPhysicalDevice?](repeating: nil, count: Int(count))
     _ = c.vkEnumeratePhysicalDevices!(inst, &count, &all)
-    let (major, minor) = feedback.mainDeviceNumbers
     var chosen: VkPhysicalDevice?
     var chosenName = ""
-    for case let p? in all {
+    if case .anyPreferDiscrete = choose {
+      let usable = all.compactMap { $0 }.filter { Self.supports(c, $0, Self.deviceExtensions) }
+      func props(_ p: VkPhysicalDevice) -> VkPhysicalDeviceProperties {
+        var v = VkPhysicalDeviceProperties()
+        c.vkGetPhysicalDeviceProperties!(p, &v)
+        return v
+      }
+      chosen = usable.first { props($0).deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU } ?? usable.first
+      if let p = chosen {
+        chosenName = withUnsafeBytes(of: props(p).deviceName) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+      }
+    }
+    let (major, minor): (UInt32, UInt32) = if case .drm(let d) = choose { (d.major, d.minor) } else { (0, 0) }
+    for case let p? in all where chosen == nil {
       guard Self.supports(c, p, Self.deviceExtensions) else { continue }
       var drm = VkPhysicalDeviceDrmPropertiesEXT()
       drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT
@@ -88,7 +115,7 @@ public final class GPUContext {
     }
     guard let physical = chosen else {
       c.vkDestroyInstance!(inst, nil)
-      throw .unsupported("no Vulkan device is the compositor's (DRM \(major):\(minor))")
+      throw .unsupported(major == 0 ? "no usable Vulkan device" : "no Vulkan device is the compositor's (DRM \(major):\(minor))")
     }
     self.physical = physical
     name = chosenName
@@ -114,6 +141,12 @@ public final class GPUContext {
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
     features12.bufferDeviceAddress = 1
     features12.timelineSemaphore = 1
+    // The bindless texture heap (descriptor indexing).
+    features12.descriptorIndexing = 1
+    features12.runtimeDescriptorArray = 1
+    features12.descriptorBindingPartiallyBound = 1
+    features12.descriptorBindingSampledImageUpdateAfterBind = 1
+    features12.shaderSampledImageArrayNonUniformIndexing = 1
     let extensionNames = Self.deviceExtensions.map { strdup($0) }
     defer { for p in extensionNames { free(p) } }
     var priority: Float = 1

@@ -4,7 +4,8 @@
 // with a DRM format modifier both the driver and the compositor support,
 // in exportable memory, shared as dmabufs and imported into the window.
 // After rendering, an image is released to the foreign queue family (the
-// compositor's) and, in v0, the CPU waits for the GPU before presenting.
+// compositor's) and, in v0, the CPU waits for the GPU before presenting
+// (Loinnir.present). The command lists do the acquire and release.
 
 import Glibc
 import Todhchai
@@ -17,14 +18,13 @@ final class ImageRing {
     var image: VkImage
     var memory: VkDeviceMemory
     var buffer: GPUBuffer
-    var commands: VkCommandBuffer
-    var fence: VkFence
   }
 
   let gpu: GPUContext
   let window: WindowID
   let width: Int32, height: Int32
   var slots: [Slot] = []
+  var records: [ImageRecord] = []  // the images as render targets
   let modifier: UInt64
 
   /// Three images of `width` × `height`, imported into `window`.
@@ -135,19 +135,18 @@ final class ImageRing {
       }
       close(fd)  // the compositor has its own
 
-      // A command buffer and a fence for this image.
-      var allocInfo = VkCommandBufferAllocateInfo()
-      allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
-      allocInfo.commandPool = gpu.commandPool
-      allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
-      allocInfo.commandBufferCount = 1
-      var cb: VkCommandBuffer?
-      _ = c.vkAllocateCommandBuffers!(gpu.device, &allocInfo, &cb)
-      var fenceInfo = VkFenceCreateInfo()
-      fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
-      var fence: VkFence?
-      _ = c.vkCreateFence!(gpu.device, &fenceInfo, nil, &fence)
-      slots.append(Slot(image: image, memory: memory, buffer: buffer, commands: cb!, fence: fence!))
+      // A view, so the image can be a render target.
+      var viewInfo = VkImageViewCreateInfo()
+      viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+      viewInfo.image = image
+      viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D
+      viewInfo.format = presentFormat
+      viewInfo.subresourceRange = VkImageSubresourceRange(aspectMask: VK_IMAGE_ASPECT_COLOR_BIT.rawValue, baseMipLevel: 0,
+                                                          levelCount: 1, baseArrayLayer: 0, layerCount: 1)
+      var view: VkImageView?
+      _ = c.vkCreateImageView!(gpu.device, &viewInfo, nil, &view)
+      slots.append(Slot(image: image, memory: memory, buffer: buffer))
+      records.append(ImageRecord(image: image, view: view!, memory: nil, width: width, height: height, format: presentFormat))
     }
     modifier = chosen
   }
@@ -155,10 +154,8 @@ final class ImageRing {
   deinit {
     let c = gpu.vk.commands
     _ = c.vkDeviceWaitIdle!(gpu.device)
-    for s in slots {
-      c.vkDestroyFence!(gpu.device, s.fence, nil)
-      var cb: VkCommandBuffer? = s.commands
-      c.vkFreeCommandBuffers!(gpu.device, gpu.commandPool, 1, &cb)
+    for (s, r) in zip(slots, records) {
+      c.vkDestroyImageView!(gpu.device, r.view, nil)
       c.vkDestroyImage!(gpu.device, s.image, nil)
       c.vkFreeMemory!(gpu.device, s.memory, nil)
     }
@@ -167,53 +164,6 @@ final class ImageRing {
   /// A slot the compositor isn't holding, or nil if all three are.
   func free(_ loop: borrowing Loop) -> Int? {
     slots.indices.first { !loop.isBusy(slots[$0].buffer) }
-  }
-
-  /// Records `body` into slot `i`'s command buffer between acquiring the
-  /// image from the compositor and releasing it back, submits, and waits
-  /// for the GPU (v0). The image is in TRANSFER_DST_OPTIMAL inside `body`.
-  func render(_ i: Int, _ body: (VkCommandBuffer, VkImage) -> Void) throws(LoinnirError) {
-    let c = gpu.vk.commands
-    let s = slots[i]
-    _ = c.vkResetCommandBuffer!(s.commands, 0)
-    var begin = VkCommandBufferBeginInfo()
-    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT.rawValue
-    _ = c.vkBeginCommandBuffer!(s.commands, &begin)
-    barrier(s, from: VK_IMAGE_LAYOUT_UNDEFINED, to: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            srcFamily: VK_QUEUE_FAMILY_FOREIGN_EXT, dstFamily: gpu.queueFamily)
-    body(s.commands, s.image)
-    barrier(s, from: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, to: VK_IMAGE_LAYOUT_GENERAL,
-            srcFamily: gpu.queueFamily, dstFamily: VK_QUEUE_FAMILY_FOREIGN_EXT)
-    _ = c.vkEndCommandBuffer!(s.commands)
-    var cb: VkCommandBuffer? = s.commands
-    let r: VkResult = withUnsafePointer(to: &cb) { cbp in
-      var submit = VkSubmitInfo()
-      submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO
-      submit.commandBufferCount = 1
-      submit.pCommandBuffers = cbp
-      return c.vkQueueSubmit!(gpu.queue, 1, &submit, s.fence)
-    }
-    guard r == VK_SUCCESS else { throw .vulkan(.failed("vkQueueSubmit", r)) }
-    var fence: VkFence? = s.fence
-    _ = c.vkWaitForFences!(gpu.device, 1, &fence, 1, UInt64.max)
-    _ = c.vkResetFences!(gpu.device, 1, &fence)
-  }
-
-  func barrier(_ s: Slot, from: VkImageLayout, to: VkImageLayout, srcFamily: UInt32, dstFamily: UInt32) {
-    var b = VkImageMemoryBarrier()
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT.rawValue
-    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT.rawValue
-    b.oldLayout = from
-    b.newLayout = to
-    b.srcQueueFamilyIndex = srcFamily
-    b.dstQueueFamilyIndex = dstFamily
-    b.image = s.image
-    b.subresourceRange = VkImageSubresourceRange(aspectMask: VK_IMAGE_ASPECT_COLOR_BIT.rawValue, baseMipLevel: 0,
-                                                 levelCount: 1, baseArrayLayer: 0, layerCount: 1)
-    gpu.vk.commands.vkCmdPipelineBarrier!(s.commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT.rawValue,
-                                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT.rawValue, 0, 0, nil, 0, nil, 1, &b)
   }
 
   /// Single-plane modifiers the driver can render into, clear and export.

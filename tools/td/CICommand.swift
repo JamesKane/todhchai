@@ -19,6 +19,7 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("hosted-build", [["swift", "build"]]),
     ("hosted-tests", [["swift", "test"]]),
     ("embedded", [["cmake", "--workflow", "--preset", "embedded"]]),
+    ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
   for p in protocols {
     steps.append(("baseline \(p.file)", [["swift", "run", "idlc", "--baseline", p.baselines, p.file]]))

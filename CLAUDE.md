@@ -80,6 +80,16 @@ commit:
 A test checks every struct's size and field offsets against Khronos's
 header where the host has it.
 
+## Shaders
+
+Shaders are GLSL (`.vert`, `.frag`, `.comp`) compiled with glslang to a
+`.spv` beside each source, and the `.spv` is committed. After editing a
+shader, run `.build/debug/td shaders`; `td ci` fails on stale SPIR-V.
+Loinnir shaders read their inputs through the root pointer
+(`GL_EXT_buffer_reference`, a push constant) and textures from the heap
+(set 0: binding 0 `texture2D[]`, binding 1 a sampler). Don't name a GLSL
+variable `texture`: it hides the `texture()` function.
+
 ## Audio
 
 The hosted SDK plays through PipeWire's native protocol, spoken directly
