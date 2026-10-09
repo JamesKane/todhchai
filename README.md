@@ -11,9 +11,18 @@ aims:
 - the desktop is built on Vulkan with a retro-future cyberpunk look and never
   makes a game wait for its effects.
 
-Status: **design.** No code yet. To resume, start with
-[docs/next-steps.md](docs/next-steps.md). croi boots on amd64, arm64 and rv64 and is
-working toward user space.
+Status: **hosted SDK.** Todhchai runs hosted on Linux while croi works
+toward user space (milestone M2). Done so far:
+- M0, the groundwork: the build, `td bench` and `td ci`, the IPC wire
+  format, the `@IPCProtocol` macro and `idlc`, and the start of our libc.
+- M1, the hosted SDK core: the loop, windows over our own Wayland client,
+  input, audio over PipeWire's native protocol, Loinnir v0 on Vulkan, the
+  C ABI with Zig and Odin bindings, tracing, and the three reference
+  programs within their budgets.
+
+In progress: S0, Taisce's first stage, developed hosted ahead of M3. Each
+milestone's steps and their status are in [docs/milestones/](docs/milestones/);
+how to build and test is in [CLAUDE.md](CLAUDE.md).
 
 ## Goals
 1. The whole stack in Swift: Embedded Swift for system services, full Swift
@@ -52,6 +61,7 @@ working toward user space.
 | [docs/wire-format.md](docs/wire-format.md) | The IPC wire format: header, message kinds, ordinals, cancellation, epitaphs, body layout |
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
 | [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M10 with exit tests, risks, open and decided questions |
+| [docs/milestones/](docs/milestones/) | Each milestone's plan: its steps, what each delivered, and the decisions made along the way |
 | [docs/next-steps.md](docs/next-steps.md) | Where the design stopped, how to re-sync with croi, which milestone to start, and what to re-verify |
 | [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P), and the hardware targets (the amd64 reference machine and the two arm64 boards, from AbyssBSD's bring-up) |
 
