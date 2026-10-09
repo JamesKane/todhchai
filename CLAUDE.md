@@ -19,6 +19,15 @@ through swiftly. There are two builds, and each step keeps both passing:
   test programs in `tests/embedded/` run on the host. A tier 0 library
   is listed in both `Package.swift` and `CMakeLists.txt`.
 
+## Toolchain pitfalls
+
+- **Swift 6.4 miscompiles a `throws(E)` closure passed to a `rethrows`
+  function** (such as `Array.withUnsafeMutableBytes`) when the caller then
+  casts the caught error (`error as? E`). The error comes out corrupt: wrong
+  values and garbage type metadata, and printing it crashes. Pass an
+  untyped closure there. Found in M0c; a minimal reproduction is
+  `tests/toolchain/TypedThrowsRethrows.swift`.
+
 ## Layout
 
 - `lib/`    libraries, by component (`lib/ipc/wire/` is `IPCWire`, tier 0).
