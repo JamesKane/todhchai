@@ -25,7 +25,7 @@ is further along.
   driver with three tiers (§10), the board database and SCMI (§9), DMA
   exceptions (§17), new croi requirements (items 1–3, 5, 7, 13, 14; §3 items
   11–12; §4), and milestone M10.
-- **Still open:** seven decisions in [roadmap.md](roadmap.md), "Open
+- **Still open:** six decisions in [roadmap.md](roadmap.md), "Open
   decisions". None blocks M0 or M1.
 - **croi at the time of writing:** it boots on amd64, arm64 and rv64,
   builds its own page tables, installs exception vectors and halts. It has
@@ -88,7 +88,7 @@ is further along.
 | Before | Decide |
 |---|---|
 | M1 | hosted backend: Wayland first or DRM/KMS first (open decision 6); SDK GPU API: Prism or `webgpu.h` (1) |
-| M3 | license for the OS and the SDK (8), before outside contributions; component names (7), before names reach code and protocol ids |
+| M3 | component names (7), before names reach code and protocol ids |
 | M4 | app format (4) |
 | M7 | debug-info format (5) |
 | after M6 | hosted mode as a product (9) |

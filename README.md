@@ -57,3 +57,10 @@ working toward user space.
 The research notes tag each claim: `[V]` verified against a cited source,
 `[S]` secondary source, `[K]`/`[U]` background knowledge or unverified.
 Check a `[U]` claim before you rely on it.
+
+## License
+
+Todhchai, the OS and the SDK, is licensed under the
+[BSD 3-Clause License](LICENSE). Every source file starts with
+`SPDX-License-Identifier: BSD-3-Clause` in its language's comment syntax
+([CLAUDE.md](CLAUDE.md)).

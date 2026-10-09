@@ -244,8 +244,7 @@ none blocks M0.
    DRM/KMS first (better latency measurements).
 7. **Component names.** Working names are descriptive ("compositor",
    "BeFS-NG", "Prism"). Irish names would match croi and Todhchai.
-8. **License**, for the OS and for the SDK, which may differ (for example
-   MIT or Apache-2.0 for the SDK so game engines can use it freely).
+8. ~~License~~: decided (see "Decided").
 9. **Hosted mode as a product.** Keep hosted mode a development tool
    (*recommended until M6*), or ship it Inferno-style on Linux, macOS and
    Windows so developers can target Todhchai early. See
@@ -257,6 +256,9 @@ none blocks M0.
 - **Desktop architecture priority** (2026-10-09): amd64 first. The kernel
   stays tri-arch, and the arm64 boards follow once the amd64 code works
   (M10).
+- **License** (2026-10-09): BSD-3-Clause, for the OS and the SDK alike, so
+  game engines and other projects can use the SDK freely. Every source file
+  starts with an SPDX identifier ([CLAUDE.md](../CLAUDE.md)).
 - **Reference hardware** (2026-10-09): an i7-12700KF with a Radeon RX 6750
   XT, plus QEMU `q35` and `virt`. Then the Orange Pi 6 Plus and the Radxa
   Dragon Q8B, the boards AbyssBSD brought up
