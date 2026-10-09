@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import Echo
 import IPC
 import Testing
-
-struct EchoImpl: EchoHandler {
-  var notes: UInt64 = 0
-
-  mutating func say(_ text: String, times: UInt32) throws(EchoError) -> String {
-    guard text.utf8.count * Int(times) <= 64 else { throw .tooLong }
-    return String(repeating: text, count: Int(times))
-  }
-
-  mutating func note(_ value: UInt64, loud: Bool) { notes += loud ? value * 2 : value }
-
-  mutating func swap(_ handle: consuming Handle) -> Handle { handle }
-
-  mutating func noted() -> UInt64 { notes }
-}
-
-/// Starts a server on its own thread; it sends one event, then serves.
-func startServer(_ raw: UInt32) -> Task<IPCError<Never>?, Never> {
-  Task.detached {
-    var server = EchoServer(channel: Handle(raw: raw), impl: EchoImpl())
-    do throws(IPCError<Never>) {
-      try server.sendTicked(7, label: "first")
-      try server.serve()
-      return nil
-    } catch {
-      return error
-    }
-  }
-}
 
 @Test func callsRepliesErrorsEventsAndHandles() async throws {
   let ends = try Channel.create()

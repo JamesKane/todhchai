@@ -19,14 +19,14 @@ let root: String = {
 func read(_ path: String) throws -> String { try String(contentsOfFile: "\(root)/\(path)", encoding: .utf8) }
 
 func echoInterface() throws -> Interface {
-  let path = "tests/ipc/runtime/Echo.swift"
+  let path = "tests/ipc/echo/Echo.swift"
   return try scan([(path, try read(path))])
 }
 
 @Test func checkedInOutputsMatchIdlc() throws {
   let interface = try echoInterface()
   let echo = try #require(interface.protocols.first)
-  let source = "tests/ipc/runtime/Echo.swift"
+  let source = "tests/ipc/echo/Echo.swift"
   #expect(cHeader(echo, errors: interface.errors, source: source) == (try read("tests/ipc/c/generated/echo.h")),
           "regenerate: swift run idlc --c-out tests/ipc/c/generated \(source)")
   #expect(markdown(echo, errors: interface.errors, source: source) == (try read("tests/ipc/docs/Echo.md")))

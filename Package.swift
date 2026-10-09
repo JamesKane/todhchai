@@ -55,6 +55,10 @@ let package = Package(
             cSettings: [.headerSearchPath("generated")]),
     .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC"], path: "tests/ipc/idl",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+
+    // Each milestone's exit test (docs/milestones/).
+    .testTarget(name: "MilestoneTests", dependencies: ["Echo", "IDLCTests"], path: "tests/milestones",
+                swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // td_wire.h: the wire format in C, for idlc's headers.
     .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
     .target(name: "IPC", dependencies: ["IPCWire", "IPCHost", "IPCMacros"], path: "lib/ipc/runtime",
@@ -63,7 +67,10 @@ let package = Package(
       "IPCMacros",
       .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
     ], path: "tests/ipc/macros"),
-    .testTarget(name: "IPCTests", dependencies: ["IPC"], path: "tests/ipc/runtime",
+    // The test protocol and its server, shared by the tests below.
+    .target(name: "Echo", dependencies: ["IPC"], path: "tests/ipc/echo",
+            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "IPCTests", dependencies: ["IPC", "Echo"], path: "tests/ipc/runtime",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   ]
 )
