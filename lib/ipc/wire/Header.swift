@@ -25,9 +25,17 @@ public enum MessageKind: UInt8, Equatable {
 public enum HeaderFlags {
   /// On a reply: the request was cancelled, and there is no body.
   public static let canceled: UInt16 = 1 << 0
+  /// On a reply: the call failed. The body is only the error code (see
+  /// `errorInlineSize`).
+  public static let error: UInt16 = 1 << 1
   /// Every flag this version defines; the rest must be zero.
-  public static let known: UInt16 = canceled
+  public static let known: UInt16 = canceled | error
 }
+
+/// An error reply's body: a 4-byte signed code, then 4 bytes of padding.
+/// Positive codes are the method's own error type; negative codes are the
+/// framework's (the transport's status values, such as "unknown method").
+public let errorInlineSize = 8
 
 /// The 16 bytes every message starts with, little-endian:
 ///

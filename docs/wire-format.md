@@ -30,8 +30,11 @@ little-endian.
 | cancel | 4 | the request to cancel | none |
 | epitaph | 5 | 0 | the closing status |
 
-- **Flags.** Bit 0, `canceled`, is defined on replies only. Every other
-  bit must be zero.
+- **Flags.** Two bits are defined, both on replies only:
+  - bit 0, `canceled`: the request was cancelled, and there is no body;
+  - bit 1, `error`: the call failed, and the body is the error (below).
+
+  Every other bit must be zero.
 - **Unknown values.** A receiver rejects a message whose version, kind or
   flags it does not know.
 
@@ -55,6 +58,16 @@ sends exactly one of these:
 It never sends both, and never neither (9P's `Tflush` rule). A client that
 receives a normal reply after cancelling uses it.
 
+### Error replies
+
+A reply with the `error` flag has an 8-byte body: a 4-byte signed code,
+then 4 bytes of zero padding.
+- **Positive codes** are the method's own error type. A Swift method
+  declared `throws(E)` uses an `Int32`-backed enum whose cases are positive.
+- **Negative codes** are the framework's, the transport's status values.
+  For example, a server answers a call to a method it doesn't know with
+  `-2` (not supported).
+
 ### Epitaph
 
 An epitaph is the last message before a channel closes. Its body is a
@@ -77,7 +90,7 @@ A body is an **inline part** followed by **out-of-line data**.
 | Type | Inline | Out of line |
 |---|---|---|
 | Integers, `Bool` (1 byte, 0 or 1) | the value | — |
-| Byte string, `String` (UTF-8) | 16 bytes: the count (u64), then the presence marker (u64, all ones) | the bytes, padded to 8 |
+| Byte string, `String` (UTF-8, validated by the receiver) | 16 bytes: the count (u64), then the presence marker (u64, all ones) | the bytes, padded to 8 |
 | Handle | 4 bytes: 0 if absent, all ones if present | the handle, next in the side array |
 
 Handles appear in the side array in the order their markers are encoded.

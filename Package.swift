@@ -6,6 +6,7 @@
 // again by CMake as Embedded Swift (CMakeLists.txt), which proves they are
 // Embedded-clean.
 
+import CompilerPluginSupport
 import PackageDescription
 
 // The flags tier 0 code is held to everywhere (croi's, cmake/embedded.cmake).
@@ -17,6 +18,11 @@ let tier0: [SwiftSetting] = [
 
 let package = Package(
   name: "todhchai",
+  dependencies: [
+    // Toolchain, not third-party code (principle 29): the release matching
+    // the Swift 6.4 compiler, for the @IPCProtocol macro and idlc.
+    .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "604.0.0"),
+  ],
   targets: [
     .target(name: "IPCWire", path: "lib/ipc/wire", swiftSettings: tier0),
     .testTarget(name: "IPCWireTests", dependencies: ["IPCWire"], path: "tests/ipc/wire",
@@ -29,5 +35,20 @@ let package = Package(
     .target(name: "IPCHostCTests", dependencies: ["TDKernel"], path: "tests/ipc/host/c"),
     .testTarget(name: "IPCHostTests", dependencies: ["IPCHost", "IPCHostCTests"],
                 path: "tests/ipc/host", exclude: ["c"]),
+
+    // @IPCProtocol: the macro, and the runtime its generated code calls.
+    .macro(name: "IPCMacros", dependencies: [
+      "IPCWire",
+      .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+      .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+    ], path: "lib/ipc/macros"),
+    .target(name: "IPC", dependencies: ["IPCWire", "IPCHost", "IPCMacros"], path: "lib/ipc/runtime",
+            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "IPCMacrosTests", dependencies: [
+      "IPCMacros",
+      .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
+    ], path: "tests/ipc/macros"),
+    .testTarget(name: "IPCTests", dependencies: ["IPC"], path: "tests/ipc/runtime",
+                swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   ]
 )

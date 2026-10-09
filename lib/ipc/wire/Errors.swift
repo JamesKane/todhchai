@@ -26,4 +26,12 @@ public enum WireError: Error, Equatable {
   case missingHandle
   /// Bytes or handles are left over after decoding.
   case unconsumed
+  /// A string is not valid UTF-8.
+  case invalidUTF8
+  /// A field holds a value its type doesn't allow (a Bool that is not 0 or
+  /// 1, an absent handle where one is required).
+  case invalidValue
+  /// A message of the wrong kind arrived (a one-way request with a
+  /// transaction id, a reply to no call).
+  case unexpectedMessage
 }
