@@ -69,6 +69,11 @@ let package = Package(
     .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader"], path: "tests/trace"),
     .executableTarget(name: "trace-cost", dependencies: ["Trace"], path: "tools/trace-cost"),
 
+    // The SDK (sdk.md): the Swift overlay of libtodhchai, hosted on Linux.
+    .target(name: "TDLinux", path: "lib/sdk/linux"),
+    .target(name: "Todhchai", dependencies: ["Trace", "TDLinux"], path: "lib/sdk", exclude: ["linux"]),
+    .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai"], path: "tests/sdk"),
+
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", path: "lib/bench"),
     .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tools/td"),

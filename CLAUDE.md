@@ -72,6 +72,15 @@ cases, comparing results and whole buffers.
   untyped closure there. Found in M0c; a minimal reproduction is
   `tests/toolchain/TypedThrowsRethrows.swift`.
 
+- **Swift's Glibc module lacks Linux's own interfaces** (epoll, eventfd,
+  timerfd) and the GNU extensions (prctl, sched_setattr,
+  pthread_setname_np), and Swift can't call variadic C (syscall). They
+  come through the `TDLinux` shim (`lib/sdk/linux`).
+- **Swift Testing's `#expect` and `#require` can't take an expression on a
+  `~Copyable` value** (an `Arena`, a `Handle`): compute into a local first.
+- **Send test signals to the process** (`kill(getpid(), sig)`), not the
+  thread: the test runner's worker threads block signals.
+
 ## Layout
 
 - `lib/`    libraries, by component (`lib/ipc/wire/` is `IPCWire`, tier 0).
