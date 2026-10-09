@@ -69,7 +69,8 @@ func counter(_ t: UInt64, _ name: UInt64, _ v: Int64) -> TraceRecord {
   let perFrame = Rule.for("program.gameloop.allocations_per_frame")
   let past = [Sample(date: "d", commit: "c", name: "program.gameloop.allocations_per_frame", seconds: 26)]
   #expect(judge("program.gameloop.allocations_per_frame", seconds: 26, history: past, rule: perFrame).verdict == .ok)
-  #expect(judge("program.gameloop.allocations_per_frame", seconds: 27, history: past, rule: perFrame).verdict == .regressed)
+  #expect(judge("program.gameloop.allocations_per_frame", seconds: 28, history: past, rule: perFrame).verdict == .ok)
+  #expect(judge("program.gameloop.allocations_per_frame", seconds: 32, history: past, rule: perFrame).verdict == .regressed)
   #expect(judge("program.gameloop.allocations_per_frame", seconds: 20, history: past, rule: perFrame).verdict == .ok)
   #expect(Rule.for("program.minimal.calls").format(11) == "11")
 }

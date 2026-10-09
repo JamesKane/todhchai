@@ -41,8 +41,11 @@ public struct Rule: Sendable {
   /// p99 frame error against present feedback, at most 1 ms. Below that,
   /// a rise of a quarter millisecond is noise on a shared desktop.
   public static let frameError = Rule(tolerance: 0.5, floor: 0.25e-3, window: 5, limit: 1e-3)
-  /// Retains and allocations per frame: recorded per program; a rise fails.
-  public static let perFrame = Rule(tolerance: 0, floor: 0.5, window: 5, unit: .count)
+  /// Retains and allocations per frame: recorded per program; a rise
+  /// fails. Each is counted exactly, but a frame's share moves with how
+  /// events batch between waits (minimal: 45/26, then 40/23, on the same
+  /// commit), so the rise must pass both 20% and 3 a frame.
+  public static let perFrame = Rule(tolerance: 0.20, floor: 3, window: 5, unit: .count)
 
   /// The rule for a measurement, by name.
   public static func `for`(_ name: String) -> Rule {
