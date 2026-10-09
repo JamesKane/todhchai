@@ -2,6 +2,7 @@
 #include "fuse_layout.h"
 #include <linux/fuse.h>
 #include <string.h>
+#include <sys/xattr.h>
 
 size_t fuse_layout_size(const char *n) {
 #define S(t) if (!strcmp(n, #t)) return sizeof(struct t);
@@ -24,4 +25,12 @@ size_t fuse_layout_offset(const char *f) {
   if (!strcmp(f, "init_out.max_pages")) return offsetof(struct fuse_init_out, max_pages);
   if (!strcmp(f, "attr.mode")) return offsetof(struct fuse_attr, mode);
   return (size_t)-1;
+}
+
+int fuse_test_setxattr(const char *path, const char *name, const void *value, size_t size) {
+  return setxattr(path, name, value, size, 0);
+}
+
+ssize_t fuse_test_getxattr(const char *path, const char *name, void *value, size_t size) {
+  return getxattr(path, name, value, size);
 }

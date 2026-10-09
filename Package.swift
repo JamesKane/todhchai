@@ -25,6 +25,7 @@ let package = Package(
     .executable(name: "mkfs.taisce", targets: ["MkfsTaisce"]),
     .executable(name: "fsck.taisce", targets: ["FsckTaisce"]),
     .executable(name: "taisce-fuse", targets: ["TaisceFuse"]),
+    .executable(name: "taisce-bench", targets: ["TaisceBench"]),
   ],
   dependencies: [
     // Toolchain, not third-party code (principle 29): the release matching
@@ -113,6 +114,7 @@ let package = Package(
     .executableTarget(name: "MkfsTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/mkfs-taisce"),
     .executableTarget(name: "FsckTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/fsck-taisce"),
     .executableTarget(name: "TaisceFuse", dependencies: ["Taisce", "TaisceHost"], path: "tools/taisce-fuse"),
+    .executableTarget(name: "TaisceBench", dependencies: ["Taisce", "Trace"], path: "tools/taisce-bench"),
     .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "tests/taisce"),
     .target(name: "FuseLayoutC", path: "tests/taisce-host/c"),
     .testTarget(name: "TaisceHostTests", dependencies: ["Taisce", "TaisceHost", "FuseLayoutC"], path: "tests/taisce-host",

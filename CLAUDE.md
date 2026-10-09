@@ -106,7 +106,8 @@ Queries through the mount: `echo 'size > 1MiB' > MOUNTPOINT/.taisce/query;
 cat MOUNTPOINT/.taisce/query` (`live` streams changes; `index` declares).
 Typed attributes are `user.` xattrs, e.g. `setfattr -n user.Audio:Year -v
 int64:1993 FILE`. If a test leaves a dead mount, `fusermount3 -u -z
-MOUNTPOINT` clears it.
+MOUNTPOINT` clears it. The S0 exit test mounts for real and runs only with
+`TODHCHAI_LIVE_FUSE=1`; Taisce's budgets are in `td bench --programs`.
 
 ## Unicode
 

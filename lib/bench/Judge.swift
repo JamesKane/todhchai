@@ -55,6 +55,10 @@ public struct Rule: Sendable {
     case "program.minimal.calls": .minimalCalls
     case "program.minimal.idle_wakeups", "program.synth.underruns": .zero
     case "program.gameloop.frame_error_p99": .frameError
+    // Taisce (S0, ahead of M3's QEMU budgets): a live query's update after a
+    // matching write, at most 1 ms; a cached 4 KiB read, M3's target 5 µs.
+    case "program.taisce.live_p99": Rule(tolerance: 0.5, floor: 50e-6, window: 5, limit: 1e-3)
+    case "program.taisce.read4k_p99": Rule(tolerance: 0.5, floor: 1e-6, window: 5, limit: 5e-6)
     default:
       if name.hasPrefix("program.") { .perFrame } else if name.hasPrefix("build.clean.") { .cleanBuild } else { .buildTime }
     }

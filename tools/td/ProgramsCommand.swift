@@ -6,6 +6,8 @@
 //   minimal   calls in minimal.c ≤ 13; 0 wakeups over 10 s with nothing to do
 //   synth     0 underruns at 128 frames over 60 s (muted)
 //   gameloop  p99 frame error ≤ 1 ms over 1,000+ frames
+//   taisce    a cached 4 KiB read, and a live query's update after a
+//             matching write (S0, ahead of M3's QEMU budgets)
 //   and Swift's retains and allocations per frame in each steady state.
 //
 // They open windows and play (silent) audio, so they need the desktop and
@@ -25,7 +27,7 @@ func programBudgets(out: String) -> [(String, Double)] {
   let traces = "\(out)/programs"
   removeTree(traces)
   makeDirectory(traces)
-  for product in ["minimal", "synth", "gameloop"] {
+  for product in ["minimal", "synth", "gameloop", "taisce-bench"] {
     guard run(["swift", "build", "-c", "release", "--product", product, "--scratch-path", scratch],
               log: "\(out)/logs/build-\(product).log").ok
     else { fail("building \(product) failed; see \(out)/logs/build-\(product).log") }
@@ -88,5 +90,10 @@ func programBudgets(out: String) -> [(String, Double)] {
   result("program.gameloop.retains_per_frame", perFrame(game, "swift.retains", from: "steady", to: "steady.end"))
   result("program.gameloop.allocations_per_frame",
          perFrame(game, "swift.allocations", from: "steady", to: "steady.end"))
+  // Taisce (S0): its budgets from zones, on an in-memory volume.
+  let taisce = traced("taisce-bench", [])
+  let zones = taisce.file.zones()
+  result("program.taisce.read4k_p99", percentile(zones["fs.read4k"] ?? [], 0.99))
+  result("program.taisce.live_p99", percentile(zones["fs.live"] ?? [], 0.99))
   return results
 }
