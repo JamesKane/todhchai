@@ -100,6 +100,13 @@ Volume FS tree   CoW B+tree, key = (inode_id: u64, kind: u8, sub_key)
   whole or changes nothing, so the commit in between is safe. A reserve of
   128 blocks is kept for commits alone, so a commit always has room for
   the catalog nodes it copies.
+- **A failed write to the device stops writing.** If a commit fails on the
+  device, or a failed change can't put back blocks it rewrote in place,
+  what is in memory no longer matches what a later commit could safely
+  build on. The volume then refuses changes (`readOnly`, EROFS) and keeps
+  serving reads until it's mounted again, which finds the last commit
+  that completed. Linux file systems go read-only on such errors for the
+  same reason.
 
 ## 4. Storage engine: a CoW B+tree, not a Bε-tree (yet)
 
