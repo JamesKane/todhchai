@@ -48,6 +48,14 @@ import Taisce
       check(try again.lookup(1, [0x67]) == file, "fs rename")
       check(try again.read(file, offset: 8999, count: 10) == [0, 1, 2, 3], "fs data")
       check(try again.check() == 3, "fs check")
+      // Attributes, an index, the journal.
+      try again.setAttribute(file, [0x75, 0x3A, 0x74], .string([0x61, 0xCC, 0x81]), now: 6)  // u:t = "á", decomposed
+      check(try again.attribute(file, [0x75, 0x3A, 0x74]) == .string([0xC3, 0xA1]), "attribute in NFC")
+      try again.declareIndex([0x75, 0x3A, 0x74], .string, collation: .caseFolded)
+      while try !again.backfill(budget: 1) {}
+      check(try again.indexLookup([0x75, 0x3A, 0x74], equal: .string([0xC3, 0x81])) == [file], "caseless index")
+      check(try again.journal(after: 0).last?.reasons == .attribute, "journal")
+      check(try again.check() == 3, "fs check with indices")
     } catch {
       check(false, "a Taisce call threw")
     }

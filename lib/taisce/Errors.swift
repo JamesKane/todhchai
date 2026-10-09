@@ -43,6 +43,9 @@ public enum Corruption: Equatable, Sendable {
   case inode
   case directory
   case extent
+  case attribute
+  case index
+  case journal
   /// The file system's own invariants (FileSystem.check).
   case fileSystem(FileSystemFault)
   /// Blocks in use that no tree holds, or held twice.
@@ -69,4 +72,5 @@ public enum FileSystemFault: Equatable, Sendable {
   case unreachable  // an inode no name or orphan holds
   case sharedBlock  // two extents, or an extent and a node, on one block
   case extentPastEnd
+  case indexMismatch  // an index isn't what the attributes and fields say
 }

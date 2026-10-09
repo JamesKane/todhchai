@@ -15,11 +15,25 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// Nodes open now, with how often: one unlinked while open becomes an
   /// orphan, freed at its last close or at the next mount.
   var openCounts: [(ino: UInt64, count: Int)] = []
+  /// Every declared index, from the registry.
+  public internal(set) var indices: [IndexInfo] = []
+  /// The next change-journal sequence number.
+  public internal(set) var nextSeq: UInt64 = 1
+  /// Files whose data writes are already in this group's journal.
+  var journaledData: [UInt64] = []
 
   public static var root: UInt64 { 1 }
   public static var maxName: Int { 255 }
   static var tree: UInt64 { 1 }
   static var orphans: UInt64 { 2 }
+  static var registry: UInt64 { 3 }
+  static var journal: UInt64 { 4 }
+  // The default indices: three on node fields, one on an attribute.
+  static var nameIndex: UInt64 { 16 }
+  static var sizeIndex: UInt64 { 17 }
+  static var mtimeIndex: UInt64 { 18 }
+  static var typeIndex: UInt64 { 19 }
+  static var firstDeclaredIndex: UInt64 { 32 }
   static var blockSize: Int { Layout.blockSize }
 
   // MARK: Volumes
@@ -28,8 +42,15 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
                             logBlocks: UInt64? = nil) throws(TaisceError) -> FileSystem {
     var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, logBlocks: logBlocks))
-    let root = Inode(type: .directory, mode: 0o755, parent: Self.root, now: now)
-    try fs.engine.apply([.insert(tree: tree, key: FSKey.make(Self.root, FSKey.inode), value: root.encode())])
+    var c = Changes()
+    for (name, kind, tree) in [(Array("name".utf8), AttributeKind.string, nameIndex), (Array("size".utf8), .uint64, sizeIndex),
+                               (Array("mtime".utf8), .time, mtimeIndex), (Array("sys:type".utf8), .string, typeIndex)] {
+      let info = IndexInfo(name: name, kind: kind, collation: .exact, building: false, tree: tree, cursor: 0)
+      c.other.append(.insert(tree: registry, key: name, value: info.encode()))
+      fs.indices.append(info)
+    }
+    try fs.putInode(Self.root, Inode(type: .directory, mode: 0o755, parent: Self.root, now: now), &c)
+    try fs.applyChanges(c)
     try fs.engine.commitGroup()
     return fs
   }
@@ -38,6 +59,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// orphans a crash left.
   public static func mount(_ device: consuming Device) throws(TaisceError) -> FileSystem {
     var fs = FileSystem(engine: try Engine.mount(device))
+    for (key, value) in try fs.engine.scan(registry, from: []) { fs.indices.append(try IndexInfo.decode(key, value)) }
+    if let (last, _) = try fs.engine.floor(journal, [UInt8](repeating: 0xFF, count: 8)) {
+      fs.nextSeq = FSKey.readU64(last, at: 0) + 1
+    }
     for (key, _) in try fs.engine.scan(orphans, from: []) {
       try fs.destroy(FSKey.readU64(key, at: 0))
     }
@@ -48,7 +73,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   init(engine: consuming Engine<Device>) { self.engine = engine }
 
   /// Makes everything so far durable.
-  public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
+  public mutating func sync() throws(TaisceError) {
+    try engine.commitGroup()
+    journaledData = []
+  }
 
   // MARK: Nodes
 
@@ -69,8 +97,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     if let mtime { n.mtime = mtime }
     n.ctime = now
     n.version += 1
-    c.set(FSKey.make(ino, FSKey.inode), n.encode())
-    try engine.apply(c.messages(Self.tree))
+    try putInode(ino, n, &c)
+    journal(&c, ino, parent: n.parent, .metadata)
+    try applyChanges(c)
   }
 
   /// Marks a node open (FUSE open, or a native handle).
@@ -137,12 +166,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       node.size = UInt64(target.count)
       c.set(FSKey.make(ino, FSKey.symlink), target)
     }
-    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try putInode(ino, node, &c)
     try addEntry(dir, DirectoryEntry(name: name, ino: ino, type: type), &c)
     if type == .directory { parent.links += 1 }
     touch(&parent, now)
-    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
-    try engine.apply(c.messages(Self.tree))
+    try putInode(dir, parent, &c)
+    journal(&c, ino, parent: dir, .created, name: name)
+    try applyChanges(c)
     engine.nextInode += 1
     return ino
   }
@@ -160,10 +190,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     node.links += 1
     node.ctime = now
     node.version += 1
-    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try putInode(ino, node, &c)
     touch(&parent, now)
-    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
-    try engine.apply(c.messages(Self.tree))
+    try putInode(dir, parent, &c)
+    journal(&c, ino, parent: dir, .linked, name: name)
+    try applyChanges(c)
   }
 
   /// Removes a file's or symlink's name; its last name frees it, or makes
@@ -175,9 +206,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     try removeEntry(dir, name, &c)
     var parent = try inode(dir, &c)
     touch(&parent, now)
-    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    try putInode(dir, parent, &c)
     let freeing = try dropLink(e.ino, now, &c)
-    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    journal(&c, e.ino, parent: dir, .unlinked, name: name)
+    try applyChanges(c)
     if freeing { try destroy(e.ino) }
   }
 
@@ -191,9 +223,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     var parent = try inode(dir, &c)
     parent.links -= 1
     touch(&parent, now)
-    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    try putInode(dir, parent, &c)
     let freeing = try dropLink(e.ino, now, &c)
-    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    journal(&c, e.ino, parent: dir, .unlinked, name: name)
+    try applyChanges(c)
     if freeing { try destroy(e.ino) }
   }
 
@@ -230,30 +263,32 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       if target.type == .directory {
         var to = try inode(toDir, &c)
         to.links -= 1
-        c.set(FSKey.make(toDir, FSKey.inode), to.encode())
+        try putInode(toDir, to, &c)
       }
       if try dropLink(target.ino, now, &c) { freeing = target.ino }
+      journal(&c, target.ino, parent: toDir, .unlinked, name: toName)
     }
     try removeEntry(fromDir, fromName, &c)
     try addEntry(toDir, DirectoryEntry(name: toName, ino: source.ino, type: source.type), &c)
     var node = try inode(source.ino, &c)
     node.ctime = now
     node.version += 1
+    node.parent = toDir  // a file's most recent directory, for the journal
     if source.type == .directory && fromDir != toDir {
-      node.parent = toDir
       var from = try inode(fromDir, &c), to = try inode(toDir, &c)
       from.links -= 1
-      c.set(FSKey.make(fromDir, FSKey.inode), from.encode())
+      try putInode(fromDir, from, &c)
       to.links += 1
-      c.set(FSKey.make(toDir, FSKey.inode), to.encode())
+      try putInode(toDir, to, &c)
     }
-    c.set(FSKey.make(source.ino, FSKey.inode), node.encode())
+    try putInode(source.ino, node, &c)
     for d in fromDir == toDir ? [fromDir] : [fromDir, toDir] {
       var p = try inode(d, &c)
       touch(&p, now)
-      c.set(FSKey.make(d, FSKey.inode), p.encode())
+      try putInode(d, p, &c)
     }
-    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    journal(&c, source.ino, parent: toDir, .renamed, name: toName)
+    try applyChanges(c)
     if let freeing { try destroy(freeing) }
   }
 
@@ -304,7 +339,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     let freed = try replaceBlocks(ino, first, data, &c)
     node.size = max(node.size, end)
     touchData(&node, now)
-    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try putInode(ino, node, &c)
+    journalData(&c, ino, node.parent)
     try commitData(c, freed)
   }
 
@@ -329,7 +365,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     }
     node.size = size
     touchData(&node, now)
-    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try putInode(ino, node, &c)
+    journalData(&c, ino, node.parent)
     try commitData(c, freed)
   }
 
@@ -337,9 +374,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// replaced (held until the group commits).
   mutating func commitData(_ c: Changes, _ freed: [Extent]) throws(TaisceError) {
     do {
-      try engine.apply(c.messages(Self.tree))
+      try applyChanges(c)
     } catch {
       for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
+      if let ino = c.journaledData { journaledData.removeAll { $0 == ino } }
       throw error
     }
     for e in freed { engine.store.volume.allocator.free(e) }
@@ -550,7 +588,85 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       data += e.count
     }
     _ = try engine.check(dataBlocks: data)
+    try checkIndices(inodes.map { ($0.ino, $0.node) }, entries)
     return inodes.count
+  }
+
+  /// Every ready index holds exactly the keys the nodes call for: rebuilt
+  /// from scratch and compared, as the query fuzzer will by query.
+  mutating func checkIndices(_ inodes: [(ino: UInt64, node: Inode)], _ entries: [(dir: UInt64, entry: DirectoryEntry)])
+    throws(TaisceError)
+  {
+    func sorted(_ keys: [[UInt8]]) -> [[UInt8]] { keys.sorted { $0.lexicographicallyPrecedes($1) } }
+    for index in indices where !index.building {
+      var expected: [[UInt8]] = []
+      switch index.tree {
+      case Self.nameIndex: expected = entries.map { Self.nameKey($0.entry.name, $0.entry.ino, $0.dir) }
+      case Self.sizeIndex: expected = inodes.map { Self.fieldKey(.uint64($0.node.size), $0.ino) }
+      case Self.mtimeIndex: expected = inodes.map { Self.fieldKey(.time(Int64(bitPattern: $0.node.mtime)), $0.ino) }
+      default:
+        for n in inodes {
+          if let v = try attribute(n.ino, index.name), index.accepts(v) {
+            expected.append(index.key(v) + FSKey.u64(n.ino))
+          }
+        }
+      }
+      let actual = try engine.scan(index.tree, from: []).map { $0.key }
+      guard actual == sorted(expected) else { throw .corrupt(.fileSystem(.indexMismatch)) }
+    }
+  }
+
+  // MARK: Indices and the journal, as operations change things
+
+  /// Writes an inode, keeping the size and mtime indices with it.
+  mutating func putInode(_ ino: UInt64, _ n: Inode, _ c: inout Changes) throws(TaisceError) {
+    let old: Inode?
+    if let v = try c.get(FSKey.make(ino, FSKey.inode), &engine) { old = try Inode.decode(v) } else { old = nil }
+    c.set(FSKey.make(ino, FSKey.inode), n.encode())
+    if old?.size != n.size {
+      if let o = old { c.other.append(.delete(tree: Self.sizeIndex, key: Self.fieldKey(.uint64(o.size), ino))) }
+      c.other.append(.insert(tree: Self.sizeIndex, key: Self.fieldKey(.uint64(n.size), ino), value: []))
+    }
+    if old?.mtime != n.mtime {
+      if let o = old { c.other.append(.delete(tree: Self.mtimeIndex, key: Self.fieldKey(.time(Int64(bitPattern: o.mtime)), ino))) }
+      c.other.append(.insert(tree: Self.mtimeIndex, key: Self.fieldKey(.time(Int64(bitPattern: n.mtime)), ino), value: []))
+    }
+  }
+
+  static func fieldKey(_ v: AttributeValue, _ ino: UInt64) -> [UInt8] { IndexKey.encode(v, .exact) + FSKey.u64(ino) }
+
+  /// The name index's key: the name, then the node, then its directory, so
+  /// each hard link has its own entry.
+  static func nameKey(_ name: [UInt8], _ ino: UInt64, _ dir: UInt64) -> [UInt8] {
+    IndexKey.escaped(name) + FSKey.u64(ino) + FSKey.u64(dir)
+  }
+
+  /// Adds a change-journal record to `c`.
+  mutating func journal(_ c: inout Changes, _ ino: UInt64, parent: UInt64, _ reasons: ChangeReason,
+                        name: [UInt8] = []) {
+    let e = JournalEntry(seq: nextSeq, txg: engine.txg, ino: ino, parent: parent, reasons: reasons, name: name)
+    c.other.append(.insert(tree: Self.journal, key: FSKey.u64(nextSeq), value: e.encode()))
+    nextSeq += 1
+  }
+
+  /// Journals a data change, once per file per transaction group.
+  mutating func journalData(_ c: inout Changes, _ ino: UInt64, _ parent: UInt64) {
+    guard !journaledData.contains(ino) else { return }
+    journaledData.append(ino)
+    c.journaledData = ino
+    journal(&c, ino, parent: parent, .data)
+  }
+
+  /// Applies an operation's changes as one batch; if it fails, the
+  /// journal numbers it took are given back.
+  mutating func applyChanges(_ c: Changes) throws(TaisceError) {
+    let seq = nextSeq - UInt64(c.other.count { if case .insert(let t, _, _) = $0 { t == Self.journal } else { false } })
+    do {
+      try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans) + c.other)
+    } catch {
+      nextSeq = seq
+      throw error
+    }
   }
 
   // MARK: Helpers
@@ -578,12 +694,17 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     if let v = try c.get(key, &engine) { bucket = try Bucket.decode(v) }
     bucket.append(e)
     c.set(key, Bucket.encode(bucket))
+    c.other.append(.insert(tree: Self.nameIndex, key: Self.nameKey(e.name, e.ino, dir), value: []))
   }
 
   mutating func removeEntry(_ dir: UInt64, _ name: [UInt8], _ c: inout Changes) throws(TaisceError) {
     let key = FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name)))
     guard let v = try c.get(key, &engine) else { return }
-    let bucket = try Bucket.decode(v).filter { $0.name != name }
+    let all = try Bucket.decode(v)
+    for e in all where e.name == name {
+      c.other.append(.delete(tree: Self.nameIndex, key: Self.nameKey(name, e.ino, dir)))
+    }
+    let bucket = all.filter { $0.name != name }
     if bucket.isEmpty { c.delete(key) } else { c.set(key, Bucket.encode(bucket)) }
   }
 
@@ -599,7 +720,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     node.links = node.type == .directory ? 0 : node.links - 1
     node.ctime = now
     node.version += 1
-    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try putInode(ino, node, &c)
     guard node.links == 0 else { return false }
     if isOpen(ino) {
       c.orphans.append(ino)
@@ -610,15 +731,28 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 
   /// Frees a node with no links: its keys, its blocks, its orphan entry.
   mutating func destroy(_ ino: UInt64) throws(TaisceError) {
-    var batch: [Message] = [.delete(tree: Self.orphans, key: FSKey.u64(ino))]
+    var c = Changes()
+    c.other.append(.delete(tree: Self.orphans, key: FSKey.u64(ino)))
     var freed: [Extent] = []
+    var parent: UInt64 = 0
     for (key, value) in try engine.scan(Self.tree, from: FSKey.make(ino, 0), to: FSKey.make(ino + 1, 0)) {
-      batch.append(.delete(tree: Self.tree, key: key))
-      if key[8] == FSKey.extent, value.count == 16 {
+      c.other.append(.delete(tree: Self.tree, key: key))
+      switch key[8] {
+      case FSKey.inode:
+        let n = try Inode.decode(value)
+        parent = n.parent
+        c.other.append(.delete(tree: Self.sizeIndex, key: Self.fieldKey(.uint64(n.size), ino)))
+        c.other.append(.delete(tree: Self.mtimeIndex, key: Self.fieldKey(.time(Int64(bitPattern: n.mtime)), ino)))
+      case FSKey.attribute:
+        let name = Array(key[9...])
+        if let v = try attribute(ino, name) { indexChange(ino, name, old: v, new: nil, &c) }
+      case FSKey.extent where value.count == 16:
         freed.append(Extent(start: value.get(UInt64.self, at: 0), count: value.get(UInt64.self, at: 8)))
+      default: break
       }
     }
-    try engine.apply(batch)
+    journal(&c, ino, parent: parent, .removed)
+    try applyChanges(c)
     for e in freed { engine.store.volume.allocator.free(e) }
   }
 
@@ -635,6 +769,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 struct Changes {
   var entries: [(key: [UInt8], value: [UInt8]?)] = []  // nil: deleted
   var orphans: [UInt64] = []
+  /// Messages for other trees: indices, the journal, the registry.
+  var other: [Message] = []
+  /// A file this operation journaled data for (undone if it fails).
+  var journaledData: UInt64?
   /// Blocks allocated for this operation's data, to release if it fails.
   var allocated: [Extent] = []
 

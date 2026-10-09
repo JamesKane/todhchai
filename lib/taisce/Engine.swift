@@ -86,7 +86,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   }
 
   /// The IDs of every tree with entries.
-  public var treeIDs: [UInt64] { trees.filter { $0.tree.root != 0 }.map(\.id) }
+  public var treeIDs: [UInt64] { trees.filter { $0.tree.root != 0 }.map { $0.id } }
 
   // MARK: Reading
 

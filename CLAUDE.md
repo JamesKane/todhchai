@@ -168,6 +168,10 @@ cases, comparing results and whole buffers.
   hashed collections size their storage with `ceil`, and tier 0 links
   without libm, so the Embedded link fails with `undefined reference to
   'ceil'`. Use arrays (flags, sorted arrays) in tier 0 code. Found in S0a.
+- **No key paths in tier 0 code.** Embedded Swift rejects them
+  (`EmbeddedRestrictions`), including `\.name` passed as a function to
+  `map` or `first(where:)`; write a closure (`{ $0.name }`). The hosted
+  build accepts them, so only the Embedded build catches it.
 - **Send test signals to the process** (`kill(getpid(), sig)`), not the
   thread: the test runner's worker threads block signals.
 

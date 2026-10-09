@@ -18,11 +18,14 @@ struct ModelNode: Equatable {
   var parent: UInt64
   var links: UInt32
   var target: [UInt8] = []
+  var attributes: [[UInt8]: AttributeValue] = [:]
 }
 
 struct Model: Equatable {
   var nodes: [UInt64: ModelNode] = [FileSystem<MemoryDevice>.root: ModelNode(type: .directory, parent: 1, links: 2)]
   var open: [UInt64: Int] = [:]
+  /// Whether user:tag has an index (declared partway through a run).
+  var tagIndex = false
 
   func dirs() -> [UInt64] { nodes.filter { $0.value.type == .directory }.map(\.key).sorted() }
   func files() -> [UInt64] { nodes.filter { $0.value.type == .file }.map(\.key).sorted() }
@@ -183,16 +186,39 @@ struct Fuzzer: ~Copyable {
           if model.nodes[f]!.links == 0 { model.nodes[f] = nil }
         }
       }
-    case 76..<80:  // errors on the wrong kind of node
+    case 76..<77:  // errors on the wrong kind of node
       if let d = pick(model.dirs()) {
         expect(.isDirectory, "write a directory") { try $0.write(d, offset: 0, [1], now: t) }
       }
-    case 80..<92:
+    case 77..<87:  // an attribute, set or removed, sometimes too big to stay inline
+      guard let ino = pick(model.nodes.keys.sorted()) else { return }
+      let names = ["user:tag", "user:n", "Audio:Artist", "sys:type"].map { Array($0.utf8) }
+      let nm = names[rng.below(names.count)]
+      if rng.below(4) == 0 {
+        expect(nil, "remove \(ino) attribute") { _ = try $0.removeAttribute(ino, nm, now: t) }
+        model.nodes[ino]!.attributes[nm] = nil
+      } else {
+        let tags = ["Rock", "rock", "ROCK", "Jazz", "jazz", "Folk"]
+        let v: AttributeValue = switch rng.below(4) {
+        case 0: .int64(Int64(rng.below(5)) - 2)
+        case 1: .bytes(bytes(rng.below(8) == 0 ? 3000 + rng.below(6000) : rng.below(40)))
+        default: .string(Array(tags[rng.below(tags.count)].utf8))
+        }
+        expect(nil, "set \(ino) attribute") { try $0.setAttribute(ino, nm, v, now: t) }
+        model.nodes[ino]!.attributes[nm] = v
+      }
+    case 87..<95:
       try fs.sync()
       synced = model
     default:  // crash, after the last sync
       try crash()
     }
+    // Partway through, index user:tag, then fill it in a little each step.
+    if steps >= 300 && !model.tagIndex {
+      try fs.declareIndex(Array("user:tag".utf8), .string, collation: .caseFolded)
+      model.tagIndex = true
+    }
+    if model.tagIndex { try fs.backfill(budget: 3) }
   }
 
   mutating func rename(_ from: UInt64, _ fromName: [UInt8], _ to: UInt64, _ toName: [UInt8], _ t: UInt64) throws {
@@ -267,6 +293,23 @@ struct Fuzzer: ~Copyable {
       case .symlink:
         #expect(try fs.readlink(ino) == m.target)
       }
+      let names = try fs.attributes(ino).map(\.name)
+      #expect(Set(names) == Set(m.attributes.keys) && names.count == m.attributes.count, "step \(steps): \(ino)'s attribute names")
+      for (name, value) in m.attributes {
+        #expect(try fs.attribute(ino, name) == value, "step \(steps): \(ino)'s \(String(decoding: name, as: UTF8.self))")
+      }
+    }
+    // The tag index, once ready, answers as the model does (ASCII tags: lowercase is their folding).
+    if model.tagIndex, fs.indices.contains(where: { $0.name == Array("user:tag".utf8) && !$0.building }) {
+      for tag in ["rock", "JAZZ", "folk"] {
+        let want = model.nodes.filter {
+          if case .string(let s)? = $0.value.attributes[Array("user:tag".utf8)] {
+            String(decoding: s, as: UTF8.self).lowercased() == tag.lowercased()
+          } else { false }
+        }.map(\.key).sorted()
+        let got = try fs.indexLookup(Array("user:tag".utf8), equal: .string(Array(tag.utf8))).sorted()
+        #expect(got == want, "step \(steps): user:tag ~= \(tag)")
+      }
     }
   }
 }
@@ -282,4 +325,5 @@ func theFileSystemMatchesAShadowModel(seed: UInt64) throws {
   try f.fs.check()
   #expect(f.crashes > 5, "too few crashes to mean much")
   #expect(f.model.nodes.count > 10, "the tree stayed small: \(f.model.nodes.count)")
+  #expect(f.model.nodes.values.contains { !$0.attributes.isEmpty }, "no attributes survived")
 }
