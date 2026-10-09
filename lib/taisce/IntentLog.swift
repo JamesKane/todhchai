@@ -94,8 +94,9 @@ enum IntentLog {
       header.get(UInt64.self, at: 16) == seq
     else { return nil }
     let blocks = UInt64(header.get(UInt32.self, at: 4))
-    let length = Int(header.get(UInt64.self, at: 32))
-    guard block + 1 + blocks <= end, length <= Int(blocks) * Layout.blockSize else { return nil }
+    let stated = header.get(UInt64.self, at: 32)  // unchecked yet: compared before it's an Int
+    guard block + 1 + blocks <= end, stated <= blocks * UInt64(Layout.blockSize) else { return nil }
+    let length = Int(stated)
     let payload = try device.read(block + 1, count: Int(blocks))
     let stored = Checksum(a: header.get(UInt64.self, at: checksumOffset), b: header.get(UInt64.self, at: checksumOffset + 8))
     header.put(UInt64(0), at: checksumOffset)

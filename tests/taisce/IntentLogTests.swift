@@ -160,3 +160,19 @@ import Testing
   #expect(after.store.volume.allocator.isUsed(first[0].start))
   _ = try after.check(dataBlocks: 1)
 }
+
+@Test func aRecordHeaderWithAnImpossibleLengthEndsReplay() throws {
+  var e = try newEngine()
+  try e.commitGroup()
+  let sb = e.store.volume.superblock
+  // Magic, txg and seq right, the length damaged: the checksum would
+  // reject it, but the length mustn't trap before it gets the chance.
+  var header = [UInt8](repeating: 0, count: 4096)
+  for (i, b) in [0x54, 0x49, 0x6E, 0x74].enumerated() { header[i] = UInt8(b) }  // "TInt"
+  header[4] = 1  // one payload block
+  for i in 0..<8 { header[8 + i] = UInt8(truncatingIfNeeded: sb.txg >> (8 * UInt64(i))) }
+  for i in 32..<40 { header[i] = 0xFF }  // the length: 2^64 - 1
+  try e.store.volume.device.write(sb.layout.intentStart, header)
+  var after = try Engine<MemoryDevice>.mount(e.store.volume.device)
+  _ = try after.check()
+}
