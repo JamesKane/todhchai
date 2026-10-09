@@ -150,3 +150,74 @@ func server() throws -> FuseServer<MemoryDevice> {
   #expect(replies.count == 2)  // the create's, and the held read's
   #expect(Client.parse(replies[1]).body == Array("+ /y.mp3\n".utf8))
 }
+
+@Test func readerThreadsAnswerReadsBesideTheWriter() throws {
+  var sv: [Int32] = [-1, -1]
+  #expect(socketpair(AF_UNIX, Int32(SOCK_SEQPACKET.rawValue), 0, &sv) == 0)
+  let fs = try FileSystem.format(SharedMemoryDevice(blocks: 8192), label: [], uuid: Array(1...16), now: 1)
+  let s = FuseServer(fs, fd: sv[0])
+  s.startReaders(3)
+  let serving = Background { s.serve() }
+  var c = Client()
+  func send(_ message: [UInt8]) { _ = message.withUnsafeBytes { write(sv[1], $0.baseAddress, $0.count) } }
+  /// Replies to `count` requests, by unique.
+  func receive(_ count: Int) -> [UInt64: (error: Int32, body: [UInt8])] {
+    var out: [UInt64: (error: Int32, body: [UInt8])] = [:]
+    var buffer = [UInt8](repeating: 0, count: 1 << 21)
+    while out.count < count {
+      let n = buffer.withUnsafeMutableBytes { read(sv[1], $0.baseAddress, $0.count) }
+      guard n > 0 else { break }
+      out[le(buffer, 8, UInt64.self)] = Client.parse(Array(buffer[..<n]))
+    }
+    return out
+  }
+  var w = FuseWriter()
+  w.u32(0o101); w.u32(0o100644); w.u32(0o022); w.u32(0)
+  send(c.request(.create, node: 1, w.bytes + Client.name("f")))
+  let created = receive(1)[c.unique]!
+  #expect(created.error == 0)
+  let ino = le(created.body, 0, UInt64.self), handle = le(created.body, FuseSize.entryOut, UInt64.self)
+  func writeRequest(_ v: UInt8) -> [UInt8] {
+    var w = FuseWriter()
+    w.u64(handle); w.u64(0); w.u32(17_000); w.u32(0); w.u64(0); w.u32(0); w.u32(0)
+    return c.request(.write, node: ino, w.bytes + [UInt8](repeating: v, count: 17_000))
+  }
+  send(writeRequest(0))
+  _ = receive(1)
+  // Rounds of requests in flight together: a write among reads and
+  // attributes. Each read sees one write's bytes, whole.
+  var reads: [UInt64] = []
+  for round in 0..<200 {
+    var batch: [UInt64] = []
+    for k in 0..<8 {
+      if k == 3 {
+        send(writeRequest(UInt8(truncatingIfNeeded: round + 1)))
+      } else if k % 2 == 0 {
+        var w = FuseWriter()
+        w.u64(handle); w.u64(0); w.u32(1 << 20); w.u32(0); w.u64(0); w.u32(0); w.u32(0)
+        send(c.request(.read, node: ino, w.bytes))
+        reads.append(c.unique)
+      } else {
+        send(c.request(.getattr, node: ino, [UInt8](repeating: 0, count: 16)))
+      }
+      batch.append(c.unique)
+    }
+    let replies = receive(batch.count)
+    #expect(replies.count == batch.count)
+    for u in batch {
+      guard let r = replies[u] else { continue }
+      #expect(r.error == 0)
+      if reads.contains(u) {
+        #expect(r.body.count == 17_000 && r.body.allSatisfy { $0 == r.body[0] }, "a torn read")
+      }
+    }
+  }
+  send(c.request(.release, node: ino, [UInt8](repeating: 0, count: 8)))
+  _ = receive(0)
+  // The readers answered the reads and attributes; the writer, the writes.
+  #expect(s.queue!.answered.load(ordering: .relaxed) >= 200 * 7)
+  close(sv[1])  // the "kernel" goes away: the reader threads stop, then serve
+  serving.join()
+  close(sv[0])
+  try s.fs.check()
+}

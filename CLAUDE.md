@@ -205,6 +205,9 @@ cases, comparing results and whole buffers.
 - **Don't ignore SIGCHLD before spawning a helper.** The ignore is
   inherited across exec, and breaks the helper's own `waitpid`
   (`fusermount3: waitpid: No child processes`). Found in S0h.
+- **Outside the repository, swiftly picks its default toolchain**, not
+  `.swift-version`'s: a scratch experiment gets 6.3.1, which crashes
+  compiling Embedded atomics. Call 6.4.0's `swiftc` by its path there.
 - **Send test signals to the process** (`kill(getpid(), sig)`), not the
   thread: the test runner's worker threads block signals.
 

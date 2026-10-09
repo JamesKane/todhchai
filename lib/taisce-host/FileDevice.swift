@@ -6,13 +6,13 @@
 import Glibc
 import Taisce
 
-public final class FileHandle {
+public final class FileHandle: Sendable {
   let fd: Int32
   init(_ fd: Int32) { self.fd = fd }
   deinit { close(fd) }
 }
 
-public struct FileDevice: BlockDevice {
+public struct FileDevice: ConcurrentReadable {
   public let blockSize = Layout.blockSize
   public let blockCount: UInt64
   let file: FileHandle
@@ -33,6 +33,11 @@ public struct FileDevice: BlockDevice {
   }
 
   public mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    try readConcurrently(block, count: count)
+  }
+
+  /// pread: any thread, any time (S1f's readers).
+  public func readConcurrently(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
     guard count >= 0, block + UInt64(count) <= blockCount else { throw .outOfRange }
     var bytes = [UInt8](repeating: 0, count: count * blockSize)
     let wanted = bytes.count

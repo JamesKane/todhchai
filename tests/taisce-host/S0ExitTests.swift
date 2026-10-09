@@ -65,6 +65,7 @@ func s0ExitThroughAFuseMount() throws {
   try made.sync()
   _ = consume made
   let server = FuseServer(try FileSystem.mount(FileDevice(path: image)), fd: try FuseMount.mount(mnt, name: image))
+  server.startReaders(4)
   let serving = Background { server.serve() }
   var unmounted = false
   defer { if !unmounted { FuseMount.unmount(mnt); serving.join() } }

@@ -15,7 +15,9 @@ do {
   let fs = try FileSystem.mount(FileDevice(path: image))
   let fd = try FuseMount.mount(mountpoint, name: image)
   ToolSupport.say("taisce-fuse: \(image) on \(mountpoint)")
-  FuseMount.serve(FuseServer(fs, fd: fd), at: mountpoint)
+  let server = FuseServer(fs, fd: fd)
+  server.startReaders(4)  // lookups, attributes and reads, lock-free beside the writer (S1f)
+  FuseMount.serve(server, at: mountpoint)
   ToolSupport.say("taisce-fuse: unmounted; synced")
 } catch {
   ToolSupport.fail("taisce-fuse: \(error)")

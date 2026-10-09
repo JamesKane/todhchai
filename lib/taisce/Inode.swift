@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDUnicode
+
 /// What a node is.
 public enum NodeType: UInt8, Sendable {
   case file = 1
@@ -82,6 +84,23 @@ public struct Inode: Equatable, Sendable {
 /// Keys in the file system tree: `(ino, kind, sub_key)`, big-endian so
 /// byte order is numeric order and a node's keys are together.
 enum FSKey {
+  /// The file system's own tree: inodes, entries, extents, attributes.
+  static let tree: UInt64 = 1
+  static let rootDirectory: UInt64 = 1
+  static let overflowFlag: UInt8 = 0x80
+
+  /// A valid attribute name, normalized: UTF-8 in NFC, a namespace before a
+  /// colon ("user:rating", "Audio:Artist"), no NUL, at most 255 bytes.
+  static func attributeName(_ name: [UInt8]) throws(TaisceError) -> [UInt8] {
+    guard let n = Text.normalized(name), n.count <= 255, !n.contains(0) else { throw .invalid }
+    guard let colon = n.firstIndex(of: 0x3A), colon > 0, colon < n.count - 1 else { throw .invalid }
+    return n
+  }
+
+  static func chunkKey(_ ino: UInt64, _ name: [UInt8], _ index: UInt32) -> [UInt8] {
+    FSKey.make(ino, FSKey.attributeChunk, name + [0] + (0..<4).map { UInt8(truncatingIfNeeded: index >> (24 - 8 * $0)) })
+  }
+
   static let inode: UInt8 = 0
   static let dirent: UInt8 = 1
   static let attribute: UInt8 = 2  // S0f

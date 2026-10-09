@@ -15,8 +15,15 @@
 //
 // Durability: fsync writes the intent log; syncfs, unmount, a second with
 // nothing to do, and a large transaction group commit a group.
+//
+// With reader threads (S1f, `startReaders`), those threads read every
+// request: they answer lookups, attributes, file reads, links and xattrs
+// through lock-free readers, and pass the rest to the thread in `serve`,
+// the only one that writes. An open file's handle is its inode number with
+// the top bit set, so a reader needs no shared handle table.
 
 import Glibc
+import Synchronization
 import Taisce
 
 public final class FuseServer<Device: BlockDevice> {
@@ -36,8 +43,11 @@ public final class FuseServer<Device: BlockDevice> {
   var lastQuery: [UInt8] = []
   var lastLive: [UInt8] = []
 
+  /// Requests passed from reader threads, when there are any.
+  var queue: RequestQueue?
+  var readerThreads: [pthread_t] = []
+
   enum Handle {
-    case file(UInt64)
     case directory([(name: [UInt8], ino: UInt64, type: NodeType)])
     case query(text: [UInt8], output: [UInt8]?)
     case live(text: [UInt8], query: LiveQuery?, pending: [UInt8])
@@ -66,6 +76,7 @@ public final class FuseServer<Device: BlockDevice> {
 
   /// Serves until the kernel unmounts (DESTROY, or the device goes away).
   public func serve() {
+    if let queue { return serveQueue(queue) }
     var buffer = [UInt8](repeating: 0, count: (1 << 20) + 8192)
     while !finished {
       var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -84,8 +95,42 @@ public final class FuseServer<Device: BlockDevice> {
     if dirty { syncNow() }
   }
 
-  func send(_ reply: [UInt8]) {
+  /// Serves what reader threads pass on, until they've all stopped
+  /// (unmounted) or DESTROY.
+  func serveQueue(_ queue: RequestQueue) {
+    while !finished {
+      var pfd = pollfd(fd: queue.wakeRead, events: Int16(POLLIN), revents: 0)
+      if poll(&pfd, 1, 1000) == 0 {
+        if dirty { syncNow() }  // a second with nothing to do
+        continue
+      }
+      let (messages, readers) = queue.take()
+      for m in messages { for reply in handle(m) { send(reply) } }
+      if readers == 0 { break }
+    }
+    if dirty { syncNow() }
+    for t in readerThreads { ToolSupport.join(t) }
+    readerThreads = []
+  }
+
+  func send(_ reply: [UInt8]) { Self.send(fd, reply) }
+
+  static func send(_ fd: Int32, _ reply: [UInt8]) {
     _ = reply.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+  }
+
+  /// A reply to request `unique` from `body`: its bytes, or its error as
+  /// an errno; nil for none.
+  static func reply(_ unique: UInt64, _ body: () throws -> [UInt8]?) -> [UInt8]? {
+    do {
+      return try body().map { FuseEncode.reply(unique, $0) }
+    } catch let e as TaisceError {
+      return FuseEncode.reply(unique, error: e.fuseError)
+    } catch let e as FuseErrno {
+      return FuseEncode.reply(unique, error: -e.code)
+    } catch {
+      return FuseEncode.reply(unique, error: -5)
+    }
   }
 
   func syncNow() {
@@ -98,15 +143,7 @@ public final class FuseServer<Device: BlockDevice> {
   public func handle(_ message: [UInt8]) -> [[UInt8]] {
     guard let r = FuseRequest(message) else { return [] }
     var replies: [[UInt8]] = []
-    do {
-      if let reply = try dispatch(r) { replies.append(FuseEncode.reply(r.unique, reply)) }
-    } catch let e as TaisceError {
-      replies.append(FuseEncode.reply(r.unique, error: e.fuseError))
-    } catch let e as FuseErrno {
-      replies.append(FuseEncode.reply(r.unique, error: -e.code))
-    } catch {
-      replies.append(FuseEncode.reply(r.unique, error: -5))
-    }
+    if let reply = Self.reply(r.unique, { try dispatch(r) }) { replies.append(reply) }
     if FuseServer.mutating.contains(r.opcode) {
       dirty = true
       replies += releaseWaiting()
@@ -128,6 +165,7 @@ public final class FuseServer<Device: BlockDevice> {
     let now = Self.now
     guard let op = FuseOpcode(rawValue: request.opcode) else { throw FuseErrno(38) }  // ENOSYS
     if node >= Self.controlDirectory { return try control(op, request, &r) }
+    if Self.isReadOnly(op, request) { return try Self.answer(op, request, &fs) }
     switch op {
     case .initialize:
       let major = r.u32(), minor = r.u32(), readahead = r.u32(), flags = r.u32()
@@ -151,13 +189,10 @@ public final class FuseServer<Device: BlockDevice> {
       return []
     case .forget, .batchForget, .interrupt:
       return nil
-    case .lookup:
-      let name = r.name()
-      if node == FileSystem<Device>.root && name == Self.controlName { return controlEntry(Self.controlDirectory) }
-      let ino = try fs.lookup(node, name)
-      return FuseEncode.entry(ino, try fs.stat(ino))
-    case .getattr:
-      return FuseEncode.attrOut(node, try fs.stat(node))
+    case .lookup:  // of /.taisce: the rest are read-only
+      return controlEntry(Self.controlDirectory)
+    case .getattr, .readlink, .getxattr, .listxattr:
+      throw FuseErrno(38)  // read-only, answered above
     case .setattr:
       let valid = r.u32()
       r.skip(4 + 8)
@@ -181,8 +216,6 @@ public final class FuseServer<Device: BlockDevice> {
                              gid: valid & FuseSetattr.gid != 0 ? gid : nil, atime: at, mtime: mt, now: now)
       }
       return FuseEncode.attrOut(node, try fs.stat(node))
-    case .readlink:
-      return try fs.readlink(node)
     case .symlink:
       let name = r.name(), target = r.name()
       let ino = try fs.symlink(node, name, target: target, uid: request.uid, gid: request.gid, now: now)
@@ -223,7 +256,7 @@ public final class FuseServer<Device: BlockDevice> {
     case .open:
       guard try fs.stat(node).type == .file else { throw TaisceError.isDirectory }
       fs.opened(node)
-      return openReply(add(.file(node)), flags: 0)
+      return openReply(node | Self.fileHandle, flags: 0)
     case .create:
       r.skip(4)  // fuse_create_in: flags, then mode, umask, open_flags
       let mode = r.u32()
@@ -231,15 +264,14 @@ public final class FuseServer<Device: BlockDevice> {
       let ino = try fs.create(node, r.name(), .file, mode: mode, uid: request.uid, gid: request.gid, now: now)
       let entry = FuseEncode.entry(ino, try fs.stat(ino))
       fs.opened(ino)
-      return entry + openReply(add(.file(ino)), flags: 0)
-    case .read:
-      let handle = r.u64(), offset = r.u64(), size = Int(r.u32())
-      guard case .file(let ino)? = handles[handle] else { throw FuseErrno(9) }  // EBADF
-      return try fs.read(ino, offset: offset, count: size)
+      return entry + openReply(ino | Self.fileHandle, flags: 0)
+    case .read:  // with a file's handle, read-only (answered above)
+      throw FuseErrno(9)  // EBADF
     case .write:
       let handle = r.u64(), offset = r.u64(), size = Int(r.u32())
       r.skip(4 + 8 + 4 + 4)
-      guard case .file(let ino)? = handles[handle] else { throw FuseErrno(9) }
+      guard handle & Self.fileHandle != 0 else { throw FuseErrno(9) }
+      let ino = handle & ~Self.fileHandle
       let data = Array(r.rest().prefix(size))
       try fs.write(ino, offset: offset, data, now: now)
       var w = FuseWriter()
@@ -248,7 +280,7 @@ public final class FuseServer<Device: BlockDevice> {
       return w.bytes
     case .release:
       let handle = r.u64()
-      if case .file(let ino)? = handles.removeValue(forKey: handle) { try fs.closed(ino) }
+      if handle & Self.fileHandle != 0 { try fs.closed(handle & ~Self.fileHandle) }
       return []
     case .flush, .access, .fsyncdir:
       return []
@@ -292,22 +324,63 @@ public final class FuseServer<Device: BlockDevice> {
       let value = Array(r.rest().prefix(size))
       try fs.setAttribute(node, try Self.attributeName(name), Self.decodeValue(value), now: now)
       return []
+    case .removexattr:
+      let name = r.name()
+      guard try fs.removeAttribute(node, try Self.attributeName(name), now: now) else { throw FuseErrno(61) }
+      return []
+    }
+  }
+
+  // MARK: Read-only requests
+
+  /// An open file's handle: its inode with this bit.
+  static var fileHandle: UInt64 { 1 << 63 }
+
+  /// Whether a lock-free reader can answer `request` (S1f): a lookup, an
+  /// attribute, a link, an xattr or a file read, on an ordinary node.
+  static func isReadOnly(_ op: FuseOpcode, _ request: FuseRequest) -> Bool {
+    guard request.node < controlDirectory else { return false }
+    var r = request.body
+    switch op {
+    case .getattr, .readlink, .getxattr, .listxattr: return true
+    case .lookup: return !(request.node == FileSystem<Device>.root && r.name() == controlName)
+    case .read: return r.u64() & fileHandle != 0
+    default: return false
+    }
+  }
+
+  /// Answers a read-only request from `fs`: the writer's file system, or a
+  /// reader thread's snapshot.
+  static func answer<R: FileReading & ~Copyable>(_ op: FuseOpcode, _ request: FuseRequest, _ fs: inout R) throws
+    -> [UInt8]
+  {
+    var r = request.body
+    let node = request.node
+    switch op {
+    case .lookup:
+      let ino = try fs.lookup(node, r.name())
+      return FuseEncode.entry(ino, try fs.stat(ino))
+    case .getattr:
+      return FuseEncode.attrOut(node, try fs.stat(node))
+    case .readlink:
+      return try fs.readlink(node)
+    case .read:
+      let handle = r.u64(), offset = r.u64(), size = Int(r.u32())
+      return try fs.read(handle & ~fileHandle, offset: offset, count: size)
     case .getxattr:
       let size = Int(r.u32())
       r.skip(4)
       let name = r.name()
       guard name.starts(with: Array("user.".utf8)) else { throw FuseErrno(61) }  // ENODATA
       guard let v = try fs.attribute(node, Array(name.dropFirst(5))) else { throw FuseErrno(61) }
-      return try Self.sized(Self.encodeValue(v), size)
+      return try sized(encodeValue(v), size)
     case .listxattr:
       let size = Int(r.u32())
       var names: [UInt8] = []
       for (n, _) in try fs.attributes(node) { names += Array("user.".utf8) + n + [0] }
-      return try Self.sized(names, size)
-    case .removexattr:
-      let name = r.name()
-      guard try fs.removeAttribute(node, try Self.attributeName(name), now: now) else { throw FuseErrno(61) }
-      return []
+      return try sized(names, size)
+    default:
+      throw FuseErrno(38)
     }
   }
 
@@ -624,4 +697,109 @@ public final class FuseServer<Device: BlockDevice> {
 struct FuseErrno: Error {
   let code: Int32
   init(_ code: Int32) { self.code = code }
+}
+
+// MARK: Reader threads (S1f)
+
+extension FuseServer where Device: ConcurrentReadable {
+  /// Starts `count` threads that read requests, answer the read-only ones
+  /// through lock-free readers, and pass the rest to `serve`'s thread. Call
+  /// before `serve`.
+  public func startReaders(_ count: Int) {
+    let queue = self.queue ?? RequestQueue()
+    self.queue = queue
+    for _ in 0..<count {
+      guard let reader = fs.reader() else { break }
+      let box = ReaderHandoff(reader)
+      let fd = self.fd
+      queue.readerStarted()
+      readerThreads.append(ToolSupport.spawn {
+        var r = box.reader.take()!
+        FuseServer.readLoop(fd, &r, queue)
+        queue.readerStopped()
+      })
+    }
+  }
+
+  /// A reader thread: until the device goes away.
+  static func readLoop(_ fd: Int32, _ r: inout FileReader<Device>, _ queue: RequestQueue) {
+    var buffer = [UInt8](repeating: 0, count: (1 << 20) + 8192)
+    while true {
+      let n = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+      if n < 0 {
+        if errno == EINTR || errno == EAGAIN || errno == ENOENT { continue }
+        return  // ENODEV: unmounted
+      }
+      if n == 0 { return }
+      let message = Array(buffer[..<n])
+      guard let request = FuseRequest(message), let op = FuseOpcode(rawValue: request.opcode),
+        isReadOnly(op, request)
+      else {
+        queue.push(message)
+        continue
+      }
+      let reply = Self.reply(request.unique) {
+        try r.withSnapshot { (r: inout FileReader<Device>) throws -> [UInt8] in try answer(op, request, &r) }
+      }
+      queue.answered.add(1, ordering: .relaxed)
+      if let reply { send(fd, reply) }
+    }
+  }
+
+  final class ReaderHandoff: @unchecked Sendable {
+    var reader: FileReader<Device>?
+    init(_ reader: consuming FileReader<Device>) { self.reader = consume reader }
+  }
+}
+
+/// Requests reader threads pass to the writing thread, and a pipe that
+/// wakes it.
+public final class RequestQueue: Sendable {
+  let state = Mutex<(messages: [[UInt8]], readers: Int)>(([], 0))
+  let wakeRead: Int32, wakeWrite: Int32
+  /// Requests the reader threads answered themselves.
+  public let answered = Atomic<Int>(0)
+
+  init() {
+    var fds: [Int32] = [-1, -1]
+    if pipe(&fds) != 0 { ToolSupport.fail("pipe: \(errno)") }  // pipe2 is a GNU extension Glibc lacks
+    for fd in fds {
+      _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+      _ = fcntl(fd, F_SETFL, O_NONBLOCK)
+    }
+    wakeRead = fds[0]
+    wakeWrite = fds[1]
+  }
+
+  deinit {
+    close(wakeRead)
+    close(wakeWrite)
+  }
+
+  func push(_ message: [UInt8]) {
+    state.withLock { $0.messages.append(message) }
+    wake()
+  }
+
+  func readerStarted() { state.withLock { $0.readers += 1 } }
+
+  func readerStopped() {
+    state.withLock { $0.readers -= 1 }
+    wake()
+  }
+
+  func wake() {
+    var b: UInt8 = 1
+    _ = write(wakeWrite, &b, 1)
+  }
+
+  /// The messages waiting, and how many reader threads are still running.
+  func take() -> (messages: [[UInt8]], readers: Int) {
+    var drain = [UInt8](repeating: 0, count: 256)
+    while drain.withUnsafeMutableBytes({ read(wakeRead, $0.baseAddress, 256) }) > 0 {}
+    return state.withLock { s in
+      defer { s.messages = [] }
+      return (s.messages, s.readers)
+    }
+  }
 }

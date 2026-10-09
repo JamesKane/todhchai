@@ -37,6 +37,25 @@ public enum ToolSupport {
     _ = text.withUnsafeBytes { write(1, $0.baseAddress, $0.count) }
   }
 
+  /// Runs `body` on a new thread; join it with the result.
+  public static func spawn(_ body: @escaping @Sendable () -> Void) -> pthread_t {
+    final class Box {
+      let body: @Sendable () -> Void
+      init(_ body: @escaping @Sendable () -> Void) { self.body = body }
+    }
+    var thread = pthread_t()
+    let box = Unmanaged.passRetained(Box(body)).toOpaque()
+    let r = pthread_create(&thread, nil, { arg in
+      let box = Unmanaged<Box>.fromOpaque(arg!).takeRetainedValue()
+      box.body()
+      return nil
+    }, box)
+    if r != 0 { fail("pthread_create: \(r)") }
+    return thread
+  }
+
+  public static func join(_ thread: pthread_t) { pthread_join(thread, nil) }
+
   public static func fail(_ message: String) -> Never {
     let text = Array("\(message)\n".utf8)
     _ = text.withUnsafeBytes { write(2, $0.baseAddress, $0.count) }

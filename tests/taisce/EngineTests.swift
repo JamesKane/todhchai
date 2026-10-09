@@ -46,6 +46,27 @@ func contents<D>(_ e: inout Engine<D>) throws -> [UInt64: [[UInt8]: [UInt8]]] {
   #expect(try contents(&e) == [1: [[1]: [1], [2]: [2]]])
 }
 
+@Test func aBatchThatRunsOutOfSpaceChangesNothing() throws {
+  var e = try newEngine(blocks: 640)  // room for about 90 nodes
+  let value = [UInt8](repeating: 7, count: 200)
+  try e.apply((0..<500).map { .insert(tree: 1, key: bigEndian($0), value: value) })
+  try e.commitGroup()
+  try e.apply([.insert(tree: 2, key: [1], value: [1])])  // a change in this group, fresh nodes
+  let before = try contents(&e)
+  let free = e.store.volume.allocator.freeCount
+  // Some 330 nodes' worth: it runs out part-way, splitting nodes.
+  #expect(throws: TaisceError.noSpace) {
+    try e.apply((500..<6500).map { .insert(tree: 1, key: bigEndian($0), value: value) })
+  }
+  #expect(try contents(&e) == before)
+  #expect(e.store.volume.allocator.freeCount == free)  // nothing it allocated is left in use
+  _ = try e.check()
+  // And what fits still applies, and commits.
+  try e.apply([.insert(tree: 1, key: bigEndian(9999), value: value)])
+  try e.commitGroup()
+  _ = try e.check()
+}
+
 @Test func committedGroupsSurviveARemount() throws {
   var e = try newEngine()
   for g in 0..<5 {

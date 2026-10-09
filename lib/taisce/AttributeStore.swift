@@ -13,15 +13,6 @@ extension FileSystem {
   static var chunk: Int { 3072 }
   /// The largest attribute value.
   public static var maxAttribute: Int { 16 << 20 }
-  static var overflowFlag: UInt8 { 0x80 }
-
-  /// A valid attribute name, normalized: UTF-8 in NFC, a namespace before a
-  /// colon ("user:rating", "Audio:Artist"), no NUL, at most 255 bytes.
-  static func attributeName(_ name: [UInt8]) throws(TaisceError) -> [UInt8] {
-    guard let n = Text.normalized(name), n.count <= maxName, !n.contains(0) else { throw .invalid }
-    guard let colon = n.firstIndex(of: 0x3A), colon > 0, colon < n.count - 1 else { throw .invalid }
-    return n
-  }
 
   // MARK: Attributes
 
@@ -29,7 +20,7 @@ extension FileSystem {
   public mutating func setAttribute(_ ino: UInt64, _ name: [UInt8], _ value: AttributeValue, now: UInt64)
     throws(TaisceError)
   {
-    let name = try Self.attributeName(name)
+    let name = try FSKey.attributeName(name)
     var value = value
     switch value {
     case .string(let s):
@@ -51,13 +42,13 @@ extension FileSystem {
       c.set(key, [value.kind.rawValue] + payload)
     } else {
       var head = [UInt8](repeating: 0, count: 9)
-      head[0] = value.kind.rawValue | Self.overflowFlag
+      head[0] = value.kind.rawValue | FSKey.overflowFlag
       head.put(UInt64(payload.count), at: 1)
       c.set(key, head)
       var i = 0
       while i * Self.chunk < payload.count {
         let part = Array(payload[(i * Self.chunk)..<min(payload.count, (i + 1) * Self.chunk)])
-        c.set(Self.chunkKey(ino, name, UInt32(i)), part)
+        c.set(FSKey.chunkKey(ino, name, UInt32(i)), part)
         i += 1
       }
     }
@@ -69,26 +60,10 @@ extension FileSystem {
     try applyChanges(c)
   }
 
-  /// An attribute's value, or nil if the node hasn't one by that name.
-  public mutating func attribute(_ ino: UInt64, _ name: [UInt8]) throws(TaisceError) -> AttributeValue? {
-    let name = try Self.attributeName(name)
-    guard let v = try engine.get(Self.tree, FSKey.make(ino, FSKey.attribute, name)), !v.isEmpty else { return nil }
-    guard let kind = AttributeKind(rawValue: v[0] & ~Self.overflowFlag) else { throw .corrupt(.attribute) }
-    if v[0] & Self.overflowFlag == 0 { return try AttributeValue.decode(kind, Array(v[1...])) }
-    guard v.count == 9 else { throw .corrupt(.attribute) }
-    let length = Int(v.get(UInt64.self, at: 1))
-    var payload: [UInt8] = []
-    payload.reserveCapacity(length)
-    let from = Self.chunkKey(ino, name, 0), to = Self.chunkKey(ino, name, UInt32.max)
-    for (_, part) in try engine.scan(Self.tree, from: from, to: to) { payload += part }
-    guard payload.count == length else { throw .corrupt(.attribute) }
-    return try AttributeValue.decode(kind, payload)
-  }
-
   /// Removes an attribute; false if there was none.
   @discardableResult
   public mutating func removeAttribute(_ ino: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) -> Bool {
-    let name = try Self.attributeName(name)
+    let name = try FSKey.attributeName(name)
     var c = Changes()
     var node = try inode(ino, &c)
     guard let old = try attribute(ino, name) else { return false }
@@ -103,27 +78,10 @@ extension FileSystem {
     return true
   }
 
-  /// A node's attribute names and kinds, in name order.
-  public mutating func attributes(_ ino: UInt64) throws(TaisceError) -> [(name: [UInt8], kind: AttributeKind)] {
-    _ = try stat(ino)
-    var out: [(name: [UInt8], kind: AttributeKind)] = []
-    let from = FSKey.make(ino, FSKey.attribute), to = FSKey.make(ino, FSKey.attribute + 1)
-    for (key, value) in try engine.scan(Self.tree, from: from, to: to) {
-      guard !value.isEmpty, let kind = AttributeKind(rawValue: value[0] & ~Self.overflowFlag) else {
-        throw .corrupt(.attribute)
-      }
-      out.append((Array(key[9...]), kind))
-    }
-    return out
-  }
-
-  static func chunkKey(_ ino: UInt64, _ name: [UInt8], _ index: UInt32) -> [UInt8] {
-    FSKey.make(ino, FSKey.attributeChunk, name + [0] + (0..<4).map { UInt8(truncatingIfNeeded: index >> (24 - 8 * $0)) })
-  }
 
   mutating func deleteOverflow(_ ino: UInt64, _ name: [UInt8], _ c: inout Changes) throws(TaisceError) {
-    let from = Self.chunkKey(ino, name, 0), to = Self.chunkKey(ino, name, UInt32.max)
-    for (key, _) in try engine.scan(Self.tree, from: from, to: to) { c.delete(key) }
+    let from = FSKey.chunkKey(ino, name, 0), to = FSKey.chunkKey(ino, name, UInt32.max)
+    for (key, _) in try engine.scan(FSKey.tree, from: from, to: to) { c.delete(key) }
   }
 
   /// Moves the indices on `name` from `old` to `new` for `ino`.
@@ -145,7 +103,7 @@ extension FileSystem {
   public mutating func declareIndex(_ name: [UInt8], _ kind: AttributeKind, collation: Collation = .exact)
     throws(TaisceError)
   {
-    let name = try Self.attributeName(name)
+    let name = try FSKey.attributeName(name)
     guard !indices.contains(where: { $0.name == name }) else { throw .exists }
     let tree = max(Self.firstDeclaredIndex, (indices.map { $0.tree }.max() ?? 0) + 1)
     let info = IndexInfo(name: name, kind: kind, collation: collation, building: true, tree: tree, cursor: 0)
@@ -164,7 +122,7 @@ extension FileSystem {
     var visited = 0
     var next = index.cursor
     let from = FSKey.make(index.cursor, FSKey.inode)
-    for (key, _) in try engine.scan(Self.tree, from: from, limit: Int.max) {
+    for (key, _) in try engine.scan(FSKey.tree, from: from, limit: Int.max) {
       guard key[8] == FSKey.inode else { continue }
       let ino = FSKey.readU64(key, at: 0)
       if visited == budget {

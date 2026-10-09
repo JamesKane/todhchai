@@ -10,7 +10,7 @@
 /// commit, and the blocks it replaces stay held until that commit. So data
 /// changes atomically with its group, and a crash shows a file exactly as
 /// some group left it.
-public struct FileSystem<Device: BlockDevice>: ~Copyable {
+public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   public var engine: Engine<Device>
   /// Nodes open now, with how often: one unlinked while open becomes an
   /// orphan, freed at its last close or at the next mount.
@@ -30,9 +30,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// The next change-journal sequence number.
   public internal(set) var nextSeq: UInt64 = 1
 
-  public static var root: UInt64 { 1 }
+  public static var root: UInt64 { FSKey.rootDirectory }
   public static var maxName: Int { 255 }
-  static var tree: UInt64 { 1 }
   static var orphans: UInt64 { 2 }
   static var registry: UInt64 { 3 }
   static var journal: UInt64 { 4 }
@@ -91,11 +90,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 
   // MARK: Nodes
 
-  public mutating func stat(_ ino: UInt64) throws(TaisceError) -> Inode {
-    guard let v = try engine.get(Self.tree, FSKey.make(ino, FSKey.inode)) else { throw .notFound }
-    return try Inode.decode(v)
-  }
-
   /// Changes a node's permissions, owners or times; nil leaves one as is.
   public mutating func setAttributes(_ ino: UInt64, mode: UInt32? = nil, uid: UInt32? = nil, gid: UInt32? = nil,
                                      atime: UInt64? = nil, mtime: UInt64? = nil, now: UInt64) throws(TaisceError) {
@@ -133,37 +127,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 
   func isOpen(_ ino: UInt64) -> Bool { openCounts.contains { $0.ino == ino } }
 
-  /// A node's names: (directory, name) for each, from its own records.
-  public mutating func names(_ ino: UInt64) throws(TaisceError) -> [(dir: UInt64, name: [UInt8])] {
-    try engine.scan(Self.tree, from: FSKey.make(ino, FSKey.name), to: FSKey.make(ino, FSKey.name + 1)).map {
-      (FSKey.readU64($0.key, at: 9), Array($0.key[17...]))
-    }
-  }
-
-  /// A path to the node from the root ("/" for the root; its first name at
-  /// each level), or nil for one with no name (an orphan).
-  public mutating func path(_ ino: UInt64) throws(TaisceError) -> [UInt8]? {
-    if ino == Self.root { return [0x2F] }
-    var parts: [[UInt8]] = []
-    var at = ino
-    while at != Self.root {
-      guard let first = try names(at).first, parts.count < 4096 else { return nil }
-      parts.append(first.name)
-      at = first.dir
-    }
-    var out: [UInt8] = []
-    for p in parts.reversed() { out += [0x2F] + p }
-    return out
-  }
-
   // MARK: Directories
-
-  /// The node `name` names in `dir`.
-  public mutating func lookup(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
-    var c = Changes()
-    guard let e = try entry(dir, name, &c) else { throw .notFound }
-    return e.ino
-  }
 
   /// A new, empty file or directory named `name` in `dir`.
   public mutating func create(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, uid: UInt32 = 0,
@@ -179,11 +143,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   {
     guard !target.isEmpty, target.count <= BTree.maxValue else { throw .invalid }
     return try make(dir, name, .symlink, mode: 0o777, uid: uid, gid: gid, target: target, now: now)
-  }
-
-  public mutating func readlink(_ ino: UInt64) throws(TaisceError) -> [UInt8] {
-    guard let t = try engine.get(Self.tree, FSKey.make(ino, FSKey.symlink)) else { throw .invalid }
-    return t
   }
 
   mutating func make(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, uid: UInt32, gid: UInt32,
@@ -333,38 +292,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     if let freeing { try destroy(freeing) }
   }
 
-  /// A directory's entries after `cookie` (nil: from the start), at most
-  /// about `limit`, each with the cookie to continue after it. Order is by
-  /// name hash; entries sharing a hash come together.
-  public mutating func list(_ dir: UInt64, after cookie: UInt64? = nil, limit: Int = Int.max) throws(TaisceError)
-    -> [(entry: DirectoryEntry, cookie: UInt64)]
-  {
-    guard try stat(dir).type == .directory else { throw .notDirectory }
-    if cookie == UInt64.max { return [] }
-    let from = FSKey.make(dir, FSKey.dirent, FSKey.u64(cookie.map { $0 + 1 } ?? 0))
-    var out: [(entry: DirectoryEntry, cookie: UInt64)] = []
-    for (key, value) in try engine.scan(Self.tree, from: from, to: FSKey.make(dir, FSKey.dirent + 1), limit: limit) {
-      let hash = FSKey.readU64(key, at: 9)
-      for e in try Bucket.decode(value) { out.append((e, hash)) }
-    }
-    return out
-  }
-
   // MARK: Data
-
-  /// Up to `count` bytes from `offset`; fewer at the end of the file.
-  public mutating func read(_ ino: UInt64, offset: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
-    let node = try stat(ino)
-    guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
-    guard offset < node.size, count > 0 else { return [] }
-    let end = min(node.size, offset + UInt64(count))
-    let bs = UInt64(Self.blockSize)
-    let first = offset / bs, last = (end - 1) / bs
-    var none = Changes()
-    let blocks = try readBlocks(ino, first, Int(last - first + 1), &none)
-    let start = Int(offset - first * bs)
-    return Array(blocks[start..<(start + Int(end - offset))])
-  }
 
   /// Writes `bytes` at `offset`, growing the file as needed.
   public mutating func write(_ ino: UInt64, offset: UInt64, _ bytes: [UInt8], now: UInt64) throws(TaisceError) {
@@ -440,19 +368,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   mutating func extents(_ ino: UInt64, _ first: UInt64, _ end: UInt64, _ c: inout Changes) throws(TaisceError)
     -> [FileExtent]
   {
-    var found: [FileExtent] = []
+    var found = try storedExtents(ino, first, end)
     func add(_ key: [UInt8], _ value: [UInt8]) throws(TaisceError) {
-      guard key.count == 17, FSKey.readU64(key, at: 0) == ino, key[8] == FSKey.extent else { return }
       found.append(try FileExtent.decode(start: FSKey.readU64(key, at: 9), value))
-    }
-    if let (key, value) = try engine.floor(Self.tree, FSKey.make(ino, FSKey.extent, FSKey.u64(first))) {
-      try add(key, value)
-    }
-    if end > first + 1 {
-      let from = FSKey.make(ino, FSKey.extent, FSKey.u64(first + 1))
-      for (key, value) in try engine.scan(Self.tree, from: from, to: FSKey.make(ino, FSKey.extent, FSKey.u64(end))) {
-        try add(key, value)
-      }
     }
     // Pending changes win: the last for each key.
     for (i, e) in c.entries.enumerated() where e.key.count == 17 && e.key[8] == FSKey.extent
@@ -465,35 +383,12 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     return found.filter { $0.start < end && $0.start + $0.count > first }.sorted { $0.start < $1.start }
   }
 
-  /// `count` file blocks from `first`, holes as zeros.
+  /// `count` file blocks from `first`, holes as zeros, with `c`'s pending
+  /// changes on top.
   mutating func readBlocks(_ ino: UInt64, _ first: UInt64, _ count: Int, _ c: inout Changes) throws(TaisceError)
     -> [UInt8]
   {
-    var data = [UInt8](repeating: 0, count: count * Self.blockSize)
-    for e in try extents(ino, first, first + UInt64(count), &c) {
-      let lo = max(e.start, first), hi = min(e.start + e.count, first + UInt64(count))
-      guard lo < hi else { continue }
-      let physical = e.physical + (lo - e.start)
-      let n = Int(hi - lo)
-      if (0..<n).allSatisfy({ cached(physical + UInt64($0)) != nil }) {
-        for k in 0..<n {
-          let at = Int(lo - first + UInt64(k)) * Self.blockSize
-          data.replaceSubrange(at..<(at + Self.blockSize), with: cached(physical + UInt64(k))!)
-        }
-        continue
-      }
-      let bytes = try engine.store.volume.device.read(physical, count: n)
-      // Every block must have the checksum its extent records (S1).
-      for k in 0..<n {
-        let block = Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])
-        guard Checksum(of: block) == e.checksums[Int(lo - e.start) + k] else {
-          throw .corrupt(.checksum(physical + UInt64(k)))
-        }
-        cache(physical + UInt64(k), block)
-      }
-      data.replaceSubrange(Int(lo - first) * Self.blockSize..<Int(hi - first) * Self.blockSize, with: bytes)
-    }
-    return data
+    try readBlocks(try extents(ino, first, first + UInt64(count), &c), first, count)
   }
 
   /// Gives file blocks `first...` the contents `data` (whole blocks): blocks
@@ -519,7 +414,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     }
     var hint = old.last.map { $0.physical + $0.count } ?? 0
     if first > 0, let prior = try mapping(ino, first - 1, &c) { hint = prior.1 + prior.2 }
-    let fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
+    let fresh: [Extent]
+    do {
+      fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
+    } catch .noSpace where engine.hasLimboBlocks {
+      engine.waitForReaders()  // back-pressure: readers give space back as they leave
+      fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
+    }
     c.allocated += fresh
     engine.noteAllocated(fresh)
     var spare = fresh.flatMap { e in (e.start..<e.end).map { $0 } }[...]
@@ -591,6 +492,32 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     dataCache[Int(block % UInt64(dataCache.count))] = CachedBlock(block: block, bytes: bytes)
   }
 
+  // MARK: Reading (FileReading)
+
+  public func root(_ id: UInt64) -> BTree? { engine.root(id) }
+
+  public mutating func node(_ pointer: NodePointer) throws(TaisceError) -> Node { try engine.store.node(pointer) }
+
+  public mutating func dataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>) throws(TaisceError)
+    -> [UInt8]
+  {
+    let n = checksums.count
+    if (0..<n).allSatisfy({ cached(physical + UInt64($0)) != nil }) {
+      var out: [UInt8] = []
+      out.reserveCapacity(n * Self.blockSize)
+      for k in 0..<n { out += cached(physical + UInt64(k))! }
+      return out
+    }
+    let bytes = try engine.store.volume.device.read(physical, count: n)
+    // Every block must have the checksum its extent records (S1).
+    for (k, sum) in checksums.enumerated() {
+      let block = Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])
+      guard Checksum(of: block) == sum else { throw .corrupt(.checksum(physical + UInt64(k))) }
+      cache(physical + UInt64(k), block)
+    }
+    return bytes
+  }
+
   // MARK: Checking
 
   /// Every invariant, the engine's and the file system's: what fsck checks.
@@ -603,7 +530,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     var extents: [(ino: UInt64, start: UInt64, physical: UInt64, count: UInt64)] = []
     var backlinks: [[UInt8]] = []
     var extentSums: [FileExtent] = []
-    for (key, value) in try engine.scan(Self.tree, from: []) {
+    for (key, value) in try engine.scan(FSKey.tree, from: []) {
       let ino = FSKey.readU64(key, at: 0)
       switch key[8] {
       case FSKey.inode: inodes.append((ino, try Inode.decode(value), 0, 0))
@@ -753,7 +680,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   mutating func applyChanges(_ c: Changes) throws(TaisceError) {
     let seq = nextSeq - UInt64(c.other.count { if case .insert(let t, _, _) = $0 { t == Self.journal } else { false } })
     do {
-      try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans) + c.other)
+      try engine.apply(c.messages(FSKey.tree) + c.orphanMessages(Self.orphans) + c.other)
     } catch {
       nextSeq = seq
       throw error
@@ -802,7 +729,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   }
 
   mutating func isEmpty(_ dir: UInt64) throws(TaisceError) -> Bool {
-    try engine.scan(Self.tree, from: FSKey.make(dir, FSKey.dirent), to: FSKey.make(dir, FSKey.dirent + 1), limit: 1)
+    try engine.scan(FSKey.tree, from: FSKey.make(dir, FSKey.dirent), to: FSKey.make(dir, FSKey.dirent + 1), limit: 1)
       .isEmpty
   }
 
@@ -828,8 +755,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     c.other.append(.delete(tree: Self.orphans, key: FSKey.u64(ino)))
     var freed: [Extent] = []
     var parent: UInt64 = 0
-    for (key, value) in try engine.scan(Self.tree, from: FSKey.make(ino, 0), to: FSKey.make(ino + 1, 0)) {
-      c.other.append(.delete(tree: Self.tree, key: key))
+    for (key, value) in try engine.scan(FSKey.tree, from: FSKey.make(ino, 0), to: FSKey.make(ino + 1, 0)) {
+      c.other.append(.delete(tree: FSKey.tree, key: key))
       switch key[8] {
       case FSKey.inode:
         let n = try Inode.decode(value)
@@ -870,7 +797,7 @@ struct Changes {
 
   mutating func get<D>(_ key: [UInt8], _ engine: inout Engine<D>) throws(TaisceError) -> [UInt8]? {
     if let e = entries.last(where: { $0.key == key }) { return e.value }
-    return try engine.get(FileSystem<D>.tree, key)
+    return try engine.get(FSKey.tree, key)
   }
 
   mutating func set(_ key: [UInt8], _ value: [UInt8]) { entries.append((key, value)) }

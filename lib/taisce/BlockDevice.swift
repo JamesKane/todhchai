@@ -23,6 +23,70 @@ extension BlockDevice {
   }
 }
 
+/// A device several threads may read at once while one writes (S1f): the
+/// writer never writes a block a reader can still reach (copy-on-write and
+/// epochs see to that), so reads need no lock.
+public protocol ConcurrentReadable: BlockDevice, Sendable {
+  func readConcurrently(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8]
+}
+
+/// Blocks in shared memory, readable from several threads: the readers'
+/// tests and benchmarks. Copies share the blocks (unlike MemoryDevice).
+public struct SharedMemoryDevice: ConcurrentReadable, @unchecked Sendable {
+  public let blockSize: Int
+  public let blockCount: UInt64
+  let storage: SharedBlocks
+
+  public init(blocks: UInt64, blockSize: Int = 4096) {
+    self.blockSize = blockSize
+    blockCount = blocks
+    storage = SharedBlocks(bytes: Int(blocks) * blockSize)
+  }
+
+  public mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    try readConcurrently(block, count: count)
+  }
+
+  public func readConcurrently(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    try check(block, blocks: count)
+    return storage.read(at: Int(block) * blockSize, count: count * blockSize)
+  }
+
+  public mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    guard bytes.count % blockSize == 0 else { throw .outOfRange }
+    try check(block, blocks: bytes.count / blockSize)
+    storage.write(at: Int(block) * blockSize, bytes)
+  }
+
+  public mutating func flush() throws(TaisceError) {}
+}
+
+/// The bytes behind a SharedMemoryDevice: raw memory, so a write to some
+/// blocks and reads of others can happen at once.
+@safe final class SharedBlocks: @unchecked Sendable {
+  let base: UnsafeMutableRawPointer
+  let count: Int
+
+  init(bytes: Int) {
+    count = bytes
+    let memory = UnsafeMutableRawPointer.allocate(byteCount: max(bytes, 1), alignment: 16)
+    unsafe memory.initializeMemory(as: UInt8.self, repeating: 0, count: max(bytes, 1))
+    unsafe base = memory
+  }
+
+  deinit { unsafe base.deallocate() }
+
+  func read(at offset: Int, count n: Int) -> [UInt8] {
+    var out = [UInt8](repeating: 0, count: n)
+    unsafe out.withUnsafeMutableBytes { b in unsafe b.baseAddress!.copyMemory(from: base + offset, byteCount: n) }
+    return out
+  }
+
+  func write(at offset: Int, _ bytes: [UInt8]) {
+    unsafe bytes.withUnsafeBytes { b in unsafe (base + offset).copyMemory(from: b.baseAddress!, byteCount: b.count) }
+  }
+}
+
 /// Blocks in memory: tests, fuzzers and the crash harness.
 public struct MemoryDevice: BlockDevice {
   public let blockSize: Int

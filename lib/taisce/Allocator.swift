@@ -38,6 +38,9 @@ public struct Allocator: Sendable {
   /// in them, so they're no longer rewritten in place, and freeing them
   /// holds them until the group commits.
   var logged: [UInt64]
+  /// Blocks past their deferral that a reader might still be reading
+  /// (S1f): the engine releases them once the epochs say none can.
+  var retired: [UInt64]
   /// Bitmap blocks changed since each on-disk bitmap was last written, a
   /// flag each (no hashed set: tier 0 links without libm, which Set's
   /// sizing uses).
@@ -55,6 +58,7 @@ public struct Allocator: Sendable {
     deferred = words
     fresh = words
     logged = words
+    retired = words
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     freeCount = blockCount
@@ -75,6 +79,7 @@ public struct Allocator: Sendable {
     deferred = held
     fresh = held
     logged = held
+    retired = held
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     let tail = blockCount % 64
@@ -89,7 +94,7 @@ public struct Allocator: Sendable {
   /// Whether `block` may be handed out: free, and not held or deferred.
   func isAvailable(_ block: UInt64) -> Bool {
     let w = Int(block / 64)
-    return (words[w] | held[w] | deferred[w]) & (1 << (block % 64)) == 0
+    return (words[w] | held[w] | deferred[w] | retired[w]) & (1 << (block % 64)) == 0
   }
 
   /// Whether `block` was allocated in the current group.
@@ -107,23 +112,84 @@ public struct Allocator: Sendable {
     for b in e.start..<e.end { logged[Int(b / 64)] |= 1 << (b % 64) }
   }
 
+  /// Pins every fresh block (readers are starting: they may see them all).
+  mutating func pinFresh() { for i in fresh.indices { logged[i] |= fresh[i] } }
+
   /// Marks `e` in use (replaying the intent log onto the committed bitmap).
   public mutating func claim(_ e: Extent) { take(e) }
 
   /// The group committed: what it freed is deferred through the next group,
-  /// what the previous group freed becomes available, and fresh blocks are
-  /// committed state.
-  public mutating func groupCommitted() {
+  /// what the previous group freed is retired (returned, for the engine to
+  /// release once no reader can see it), and fresh blocks are committed
+  /// state.
+  @discardableResult
+  public mutating func groupCommitted() -> [Extent] {
+    var out: [Extent] = []
     for i in held.indices {
+      var bits = deferred[i]
+      while bits != 0 {
+        let bit = UInt64(bits.trailingZeroBitCount)
+        let block = UInt64(i) * 64 + bit
+        if let last = out.last, last.end == block { out[out.count - 1].count += 1 } else { out.append(Extent(start: block, count: 1)) }
+        bits &= bits - 1
+      }
+      retired[i] |= deferred[i]
       deferred[i] = held[i]
       held[i] = 0
       fresh[i] = 0
       logged[i] = 0
     }
+    return out
+  }
+
+  // MARK: Rolling back (Engine.apply)
+
+  /// While a batch applies: each word it changed, as it was before, so a
+  /// failed batch puts back exactly what it allocated and freed.
+  var saved: [SavedWord]?
+  var savedFreeCount: UInt64 = 0
+
+  struct SavedWord: Sendable {
+    var index: Int
+    var words, held, fresh, logged: UInt64
+  }
+
+  mutating func beginBatch() {
+    saved = []
+    savedFreeCount = freeCount
+  }
+
+  mutating func endBatch() { saved = nil }
+
+  mutating func save(_ w: Int) {
+    if saved!.last?.index == w || saved!.contains(where: { $0.index == w }) { return }
+    saved!.append(SavedWord(index: w, words: words[w], held: held[w], fresh: fresh[w], logged: logged[w]))
+  }
+
+  /// Puts back every word the batch changed.
+  mutating func rollBack() {
+    guard let s = saved else { return }
+    saved = nil
+    for w in s {
+      words[w.index] = w.words
+      held[w.index] = w.held
+      fresh[w.index] = w.fresh
+      logged[w.index] = w.logged
+      let index = w.index * 64 / Int(Self.bitsPerBitmapBlock)
+      dirty[0][index] = true
+      dirty[1][index] = true
+    }
+    freeCount = savedFreeCount
+  }
+
+  /// Makes retired blocks available: no reader can see them any more.
+  public mutating func release(retired e: Extent) {
+    for b in e.start..<e.end { retired[Int(b / 64)] &= ~(1 << (b % 64)) }
   }
 
   mutating func set(_ block: UInt64, used: Bool) {
     let w = Int(block / 64), bit: UInt64 = 1 << (block % 64)
+    if saved != nil { save(w) }
     guard (words[w] & bit != 0) != used else { return }
     if used { words[w] |= bit; freeCount -= 1 } else { words[w] &= ~bit; freeCount += 1 }
     let index = Int(block / Self.bitsPerBitmapBlock)
@@ -151,7 +217,7 @@ public struct Allocator: Sendable {
     var scanned: UInt64 = 0
     while needed > 0 && scanned < blockCount {
       // Skip whole unavailable words quickly.
-      if b % 64 == 0, words[Int(b / 64)] | held[Int(b / 64)] | deferred[Int(b / 64)] == ~0 {
+      if b % 64 == 0, words[Int(b / 64)] | held[Int(b / 64)] | deferred[Int(b / 64)] | retired[Int(b / 64)] == ~0 {
         let step = min(64, blockCount - b)
         scanned += step
         b = b + step == blockCount ? 0 : b + step

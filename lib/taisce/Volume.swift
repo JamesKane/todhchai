@@ -87,7 +87,9 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
   /// superblock (ring slot and footer), a barrier. Whatever else the group
   /// changed must already be written (to blocks nothing committed points
   /// at); this barrier makes it durable before the superblock names it.
-  public mutating func commit(_ update: (inout Superblock) -> Void = { _ in }) throws(TaisceError) {
+  /// Returns the blocks this retires (see `Allocator.groupCommitted`).
+  @discardableResult
+  public mutating func commit(_ update: (inout Superblock) -> Void = { _ in }) throws(TaisceError) -> [Extent] {
     var next = superblock
     update(&next)
     next.txg = superblock.txg + 1
@@ -102,6 +104,6 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
     try device.write(layout.footerSlot(txg: next.txg), block)
     try device.flush()
     superblock = next
-    allocator.groupCommitted()
+    return allocator.groupCommitted()
   }
 }

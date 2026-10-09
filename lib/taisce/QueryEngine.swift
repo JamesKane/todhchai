@@ -73,7 +73,7 @@ extension FileSystem {
     var out: [UInt64] = []
     var from = FSKey.make(0, FSKey.inode)
     while true {
-      guard let (key, _) = try engine.scan(Self.tree, from: from, limit: 1).first else { return out }
+      guard let (key, _) = try engine.scan(FSKey.tree, from: from, limit: 1).first else { return out }
       let ino = FSKey.readU64(key, at: 0)
       if key[8] == FSKey.inode { out.append(ino) }
       from = FSKey.make(ino + 1, FSKey.inode)  // the next node's keys
@@ -85,11 +85,11 @@ extension FileSystem {
   /// A node's values for an attribute: its names for `name`, its fields
   /// for `size` and `mtime`, else the attribute (none if it hasn't it).
   mutating func values(_ ino: UInt64, _ attribute: [UInt8]) throws(TaisceError) -> [AttributeValue] {
-    guard let inode = try engine.get(Self.tree, FSKey.make(ino, FSKey.inode)) else { return [] }
+    guard let inode = try engine.get(FSKey.tree, FSKey.make(ino, FSKey.inode)) else { return [] }
     switch attribute {
     case Array("name".utf8):
       let from = FSKey.make(ino, FSKey.name), to = FSKey.make(ino, FSKey.name + 1)
-      return try engine.scan(Self.tree, from: from, to: to).map { .string(Array($0.key[17...])) }
+      return try engine.scan(FSKey.tree, from: from, to: to).map { .string(Array($0.key[17...])) }
     case Array("size".utf8): return [.uint64(try Inode.decode(inode).size)]
     case Array("mtime".utf8): return [.time(Int64(bitPattern: try Inode.decode(inode).mtime))]
     default:

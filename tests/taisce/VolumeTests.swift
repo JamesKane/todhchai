@@ -73,7 +73,10 @@ import Testing
   #expect(try a.allocate(1, near: e.start)[0].start != e.start)  // held: committed state points at it
   a.groupCommitted()  // the group that freed it commits
   #expect(try a.allocate(1, near: e.start)[0].start != e.start)  // deferred: a fallback superblock might
-  a.groupCommitted()
+  let retired = a.groupCommitted()
+  #expect(retired == [e])
+  #expect(try a.allocate(1, near: e.start)[0].start != e.start)  // retired: a reader might still see it
+  a.release(retired: e)
   #expect(try a.allocate(1, near: e.start)[0].start == e.start)  // now it's free
 }
 

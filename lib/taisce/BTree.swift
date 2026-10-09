@@ -27,7 +27,7 @@ public struct BTree: Equatable, Sendable {
 
   // MARK: Reading
 
-  public func get<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> [UInt8]? {
+  public func get<S: NodeSource & ~Copyable>(_ key: [UInt8], _ store: inout S) throws(TaisceError) -> [UInt8]? {
     guard !root.isNull else { return nil }
     var p = root
     while true {
@@ -41,12 +41,14 @@ public struct BTree: Equatable, Sendable {
   }
 
   /// The last entry whose key is at most `key`.
-  public func floor<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> (key: [UInt8], value: [UInt8])? {
+  public func floor<S: NodeSource & ~Copyable>(_ key: [UInt8], _ store: inout S) throws(TaisceError)
+    -> (key: [UInt8], value: [UInt8])?
+  {
     guard !root.isNull else { return nil }
     return try floor(root, key, &store)
   }
 
-  func floor<D>(_ p: NodePointer, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError)
+  func floor<S: NodeSource & ~Copyable>(_ p: NodePointer, _ key: [UInt8], _ store: inout S) throws(TaisceError)
     -> (key: [UInt8], value: [UInt8])?
   {
     let n = try store.node(p)
@@ -64,7 +66,7 @@ public struct BTree: Equatable, Sendable {
 
   /// The entries with `from ≤ key < to` (to the end if `to` is nil), in
   /// order, at most `limit`.
-  public func scan<D>(from: [UInt8], to: [UInt8]? = nil, limit: Int = Int.max, _ store: inout Store<D>)
+  public func scan<S: NodeSource & ~Copyable>(from: [UInt8], to: [UInt8]? = nil, limit: Int = Int.max, _ store: inout S)
     throws(TaisceError) -> [(key: [UInt8], value: [UInt8])]
   {
     var out: [(key: [UInt8], value: [UInt8])] = []
@@ -74,8 +76,10 @@ public struct BTree: Equatable, Sendable {
   }
 
   /// Visits the subtree in order, from the child covering `from`.
-  func collect<D>(_ p: NodePointer, _ from: [UInt8], _ to: [UInt8]?, _ limit: Int,
-                  _ out: inout [(key: [UInt8], value: [UInt8])], _ store: inout Store<D>) throws(TaisceError) {
+  func collect<S: NodeSource & ~Copyable>(_ p: NodePointer, _ from: [UInt8], _ to: [UInt8]?, _ limit: Int,
+                                          _ out: inout [(key: [UInt8], value: [UInt8])], _ store: inout S)
+    throws(TaisceError)
+  {
     let n = try store.node(p)
     if n.isLeaf {
       var i = n.lowerBound(from)

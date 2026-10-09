@@ -51,6 +51,13 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   var intentAt: UInt64 = 0
   var intentSeq: UInt64 = 0
   public var nextInode: UInt64
+  /// Lock-free readers (S1f), once enabled: their epochs, and what waits
+  /// for them in limbo (snapshots replaced, blocks retired), oldest first,
+  /// with the epoch each was retired in.
+  public private(set) var readers: EpochManager?
+  var limbo: [(epoch: UInt64, snapshot: Snapshot?, blocks: [Extent])] = []
+  /// More than this many in limbo and the writer waits for readers.
+  static var limboLimit: Int { 1024 }
 
   /// A new volume on `device`.
   public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
@@ -92,6 +99,12 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     return (lo < trees.count && trees[lo].id == id, lo)
   }
 
+  /// Tree `id`'s root, or nil if it has never had entries.
+  public func root(_ id: UInt64) -> BTree? {
+    let t = treeIndex(id)
+    return t.found ? trees[t.at].tree : nil
+  }
+
   /// The IDs of every tree with entries.
   public var treeIDs: [UInt64] { trees.filter { !$0.tree.isEmpty }.map { $0.id } }
 
@@ -124,18 +137,31 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// none. The messages are sorted by tree and key, keeping their order
   /// within a key. Durable after the next `commitGroup`.
   public mutating func apply(_ batch: [Message]) throws(TaisceError) {
+    do {
+      try applyOnce(batch)
+    } catch .noSpace where hasLimboBlocks {
+      // Back-pressure: space readers still hold comes back when they leave.
+      waitForReaders()
+      try applyOnce(batch)
+    }
+  }
+
+  mutating func applyOnce(_ batch: [Message]) throws(TaisceError) {
     let ordered = batch.indices.sorted { a, b in
       let x = batch[a], y = batch[b]
       if x.tree != y.tree { return x.tree < y.tree }
       if x.key != y.key { return x.key.lexicographicallyPrecedes(y.key) }
       return a < b
     }.map { batch[$0] }
-    // What each changed key held before, to undo with.
-    var undo: [(tree: UInt64, key: [UInt8], value: [UInt8]?)] = []
+    // To roll back to if a message fails: the roots and changed nodes as
+    // they are (shared, copy-on-write), and the allocator's words as the
+    // batch changes them. Re-applying old values instead could itself
+    // need space, and fail, half-way.
+    let savedTrees = trees, savedDirty = store.dirty
+    store.volume.allocator.beginBatch()
     do throws(TaisceError) {
       for m in ordered {
         let before = try get(m.tree, m.key)
-        undo.append((m.tree, m.key, before))
         switch m {
         case .insert(let tree, let key, let value):
           try set(tree, key, value)
@@ -148,13 +174,73 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
         }
       }
     } catch {
-      for u in undo.reversed() {
-        if let v = u.value { try? set(u.tree, u.key, v) } else { try? remove(u.tree, u.key) }
-      }
+      trees = savedTrees
+      store.dirty = savedDirty
+      store.volume.allocator.rollBack()
       throw error
     }
+    store.volume.allocator.endBatch()
     pendingOps.append(IntentOp(messages: batch, allocated: staged, freed: []))
+    if readers != nil {
+      // Readers will see these blocks: never rewritten in place again.
+      for e in staged { store.volume.allocator.pin(e) }
+      publish()
+    }
     staged = []
+  }
+
+  // MARK: Readers (S1f)
+
+  /// Starts publishing snapshots for lock-free readers; returns their
+  /// epochs. From here on, file blocks a reader can see aren't rewritten in
+  /// place, and freed blocks wait in limbo for readers older than them.
+  public mutating func enableReaders() -> EpochManager {
+    if let r = readers { return r }
+    let r = EpochManager()
+    readers = r
+    store.volume.allocator.pinFresh()
+    publish()
+    return r
+  }
+
+  /// Publishes the current state for readers.
+  mutating func publish() {
+    guard let r = readers else { return }
+    retire(r.publish(Snapshot(trees: trees, dirty: store.dirty)), [])
+  }
+
+  /// Puts what readers may still see in limbo (with no readers, blocks are
+  /// released at once), and releases whatever no reader can see any more.
+  /// Back-pressure: with too much in limbo, waits for readers to move on.
+  mutating func retire(_ snapshot: Snapshot?, _ blocks: [Extent]) {
+    guard let r = readers else {
+      for e in blocks { store.volume.allocator.release(retired: e) }
+      return
+    }
+    if snapshot != nil || !blocks.isEmpty { limbo.append((r.current, snapshot, blocks)) }
+    repeat {
+      // Two advances release everything, if no reader holds either back.
+      for _ in 0..<2 where limbo.last.map({ $0.epoch + 2 > r.current }) ?? false { r.tryAdvance() }
+      let now = r.current
+      var done = 0
+      while done < limbo.count, limbo[done].epoch + 2 <= now {
+        for e in limbo[done].blocks { store.volume.allocator.release(retired: e) }
+        done += 1
+      }
+      if done > 0 { limbo.removeFirst(done) }
+    } while limbo.count > Self.limboLimit
+  }
+
+  /// How many retirements wait in limbo (the readers' tests watch it).
+  public var limboCount: Int { limbo.count }
+
+  /// Whether blocks wait in limbo: space that readers will give back.
+  public var hasLimboBlocks: Bool { limbo.contains { !$0.blocks.isEmpty } }
+
+  /// Waits (spinning: readers' snapshots are short) until no reader holds
+  /// anything in limbo, and releases it all.
+  public mutating func waitForReaders() {
+    while !limbo.isEmpty { retire(nil, []) }
   }
 
   // MARK: The intent log (S1e)
@@ -259,37 +345,67 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// superblock naming the catalog's root, and a barrier. File data written
   /// for the group is made durable by that first barrier too.
   public mutating func commitGroup() throws(TaisceError) {
-    var written: [(block: UInt64, bytes: [UInt8])] = []
-    for i in trees.indices where trees[i].changed {
-      try trees[i].tree.write(&store, txg: txg, &written)
-      let key = Self.idKey(trees[i].id)
-      if trees[i].tree.isEmpty {
-        try catalog.delete(key, &store)
-      } else {
-        try catalog.insert(key, trees[i].tree.root.encode(), &store)
-      }
-      trees[i].changed = false
+    let written: [(block: UInt64, bytes: [UInt8])]
+    do {
+      written = try prepareCommit()
+    } catch .noSpace where hasLimboBlocks {
+      // Back-pressure, as in `apply`: the catalog's copies need space that
+      // readers will give back.
+      waitForReaders()
+      written = try prepareCommit()
     }
-    try catalog.write(&store, txg: txg, &written)
     let sb = store.volume.superblock
     guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode else {
-      store.volume.allocator.groupCommitted()
+      retire(nil, store.volume.allocator.groupCommitted())
       pendingOps = []
       return
     }
     for (block, bytes) in written { try store.volume.device.write(block, bytes) }
     store.written()
     let root = catalog.root, inode = nextInode
-    try store.volume.commit { sb in
+    let retired = try store.volume.commit { sb in
       sb.catalogRoot = root
       sb.nextInode = inode
     }
+    retire(nil, retired)
+    publish()
     dataWritten = false
     txg = store.volume.superblock.txg + 1
     // The new txg leaves every intent record behind.
     pendingOps = []
     intentAt = 0
     intentSeq = 0
+  }
+
+  /// A commit's work in memory: each changed tree's nodes take their
+  /// checksums and the catalog takes its roots. Returns the nodes to write.
+  /// All or nothing, like a batch: on failure the trees, catalog, nodes and
+  /// allocator are as they were.
+  mutating func prepareCommit() throws(TaisceError) -> [(block: UInt64, bytes: [UInt8])] {
+    let savedTrees = trees, savedCatalog = catalog, savedDirty = store.dirty
+    store.volume.allocator.beginBatch()
+    var written: [(block: UInt64, bytes: [UInt8])] = []
+    do throws(TaisceError) {
+      for i in trees.indices where trees[i].changed {
+        try trees[i].tree.write(&store, txg: txg, &written)
+        let key = Self.idKey(trees[i].id)
+        if trees[i].tree.isEmpty {
+          try catalog.delete(key, &store)
+        } else {
+          try catalog.insert(key, trees[i].tree.root.encode(), &store)
+        }
+        trees[i].changed = false
+      }
+      try catalog.write(&store, txg: txg, &written)
+    } catch {
+      trees = savedTrees
+      catalog = savedCatalog
+      store.dirty = savedDirty
+      store.volume.allocator.rollBack()
+      throw error
+    }
+    store.volume.allocator.endBatch()
+    return written
   }
 
   /// Every block metadata lives in: each node's four blocks, in every tree
