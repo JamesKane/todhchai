@@ -1,0 +1,11 @@
+# Build-time history for brimstone, AMD Ryzen 7 9700X 8-Core Processor, 16 CPUs. Appended by td bench --record.
+2026-10-09T15:47Z	2ad3e34	build.clean.hosted	16.645
+2026-10-09T15:47Z	2ad3e34	build.clean.embedded	1.191
+2026-10-09T15:47Z	2ad3e34	build.noop.hosted	1.339
+2026-10-09T15:47Z	2ad3e34	build.incremental.IPCWire	2.905
+2026-10-09T15:47Z	2ad3e34	build.incremental.IPCHost	1.665
+2026-10-09T15:47Z	2ad3e34	build.incremental.IPCModel	2.960
+2026-10-09T15:47Z	2ad3e34	build.incremental.IPCMacros	2.521
+2026-10-09T15:47Z	2ad3e34	build.incremental.IPC	1.488
+2026-10-09T15:47Z	2ad3e34	build.incremental.IDL	2.107
+2026-10-09T15:47Z	2ad3e34	build.incremental.embedded.IPCWire	0.556
