@@ -222,8 +222,8 @@ services read the same tree.
 | Compatibility | read-only Haiku BFS driver (later), from Giampaolo's book and our own reverse engineering of the format; FAT32/exFAT for the EFI partition and removable media, from Microsoft's published specifications; ext4 read-only (later), from its on-disk format documentation | — |
 
 ## 9. Tooling
-- `mkfs.befsng`, `fsck.befsng` (scrub verifies every checksum from S1 on),
-  and `befsng-fuse` for hosted mode on Linux. It speaks the `/dev/fuse` kernel
+- `mkfs.taisce`, `fsck.taisce` (scrub verifies every checksum from S1 on),
+  and `taisce-fuse` for hosted mode on Linux. It speaks the `/dev/fuse` kernel
   protocol directly; there is no libfuse.
 - A deterministic crash-test harness: record block writes, cut power at every
   prefix of the write log, then mount and check invariants. This runs in CI

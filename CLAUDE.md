@@ -85,6 +85,16 @@ commit:
 A test checks every struct's size and field offsets against Khronos's
 header where the host has it.
 
+## Taisce
+
+The file system ([docs/filesystem.md](docs/filesystem.md); stage plan in
+`docs/milestones/S0.md`). `lib/taisce` is tier 0, in both builds;
+`lib/taisce-host` holds the host's devices and tools. On-disk structures
+are byte arrays with explicit little-endian fields (`Bytes.swift`), never
+memory layouts. Every change to what reaches the disk goes through a
+`BlockDevice`, so `RecordingDevice` can replay any prefix of the writes as
+a crash.
+
 ## Shaders
 
 Shaders are GLSL (`.vert`, `.frag`, `.comp`) compiled with glslang to a
@@ -142,6 +152,10 @@ cases, comparing results and whole buffers.
   come through the `TDLinux` shim (`lib/sdk/linux`).
 - **Swift Testing's `#expect` and `#require` can't take an expression on a
   `~Copyable` value** (an `Arena`, a `Handle`): compute into a local first.
+- **`Set` and `Dictionary` in tier 0 code need libm.** Embedded Swift's
+  hashed collections size their storage with `ceil`, and tier 0 links
+  without libm, so the Embedded link fails with `undefined reference to
+  'ceil'`. Use arrays (flags, sorted arrays) in tier 0 code. Found in S0a.
 - **Send test signals to the process** (`kill(getpid(), sig)`), not the
   thread: the test runner's worker threads block signals.
 

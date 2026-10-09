@@ -96,6 +96,11 @@ let package = Package(
     .target(name: "TodhchaiCABI", dependencies: ["Todhchai", "TDCABI"], path: "lib/capi/swift"),
     .testTarget(name: "CABITests", dependencies: ["ABIGen", "TodhchaiCABI", "TDCABI"], path: "tests/capi",
                 exclude: ["c"]),
+    // Taisce (filesystem.md): the file system's core is tier 0, built
+    // again as Embedded Swift by CMake; the host's devices and tools are not.
+    .target(name: "Taisce", path: "lib/taisce", swiftSettings: tier0),
+    .target(name: "TaisceHost", dependencies: ["Taisce"], path: "lib/taisce-host"),
+    .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "tests/taisce"),
     // Loinnir: the SDK's GPU library (sdk.md §5), on Vulkan.
     .target(name: "Loinnir", dependencies: ["Vulkan", "Todhchai"], path: "lib/loinnir"),
     .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir", exclude: ["shaders"]),

@@ -26,6 +26,13 @@ set_target_properties(LibC PROPERTIES Swift_MODULE_NAME LibC)
 target_include_directories(LibC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(LibC)
 
+add_library(Taisce STATIC
+  lib/taisce/Allocator.swift lib/taisce/BlockDevice.swift lib/taisce/Bytes.swift lib/taisce/CRC32C.swift
+  lib/taisce/Errors.swift lib/taisce/Superblock.swift lib/taisce/Volume.swift)
+set_target_properties(Taisce PROPERTIES Swift_MODULE_NAME Taisce)
+target_include_directories(Taisce INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(Taisce)
+
 # Embedded test programs, run on the host by ctest.
 add_executable(wire-smoke tests/embedded/WireSmoke.swift)
 set_target_properties(wire-smoke PROPERTIES Swift_MODULE_NAME WireSmoke)
@@ -38,3 +45,9 @@ set_target_properties(libc-smoke PROPERTIES Swift_MODULE_NAME LibCSmoke)
 target_link_libraries(libc-smoke PRIVATE LibC)
 todhchai_tier0(libc-smoke)
 add_test(NAME embedded-libc COMMAND libc-smoke)
+
+add_executable(taisce-smoke tests/embedded/TaisceSmoke.swift)
+set_target_properties(taisce-smoke PROPERTIES Swift_MODULE_NAME TaisceSmoke)
+target_link_libraries(taisce-smoke PRIVATE Taisce)
+todhchai_tier0(taisce-smoke)
+add_test(NAME embedded-taisce COMMAND taisce-smoke)
