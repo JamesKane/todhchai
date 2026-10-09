@@ -2,14 +2,18 @@
 
 // td: the Todhchai developer tool (sdk.md §13). M0 has:
 //
-//   td bench [--repeats N] [--clean-repeats N] [--record [--accept]]
-//       Measures the build-time budgets and judges them against this
-//       machine's history (bench/history/). --record appends a passing
-//       run; --accept records a regressed one too, as a decision made in
-//       the open (docs/performance.md §5).
+//   td bench [--repeats N] [--clean-repeats N] [--record [--accept]] [--enforce]
+//       Measures the budgets and judges them against this machine's
+//       history (bench/history/). Advisory unless --enforce: a shared,
+//       busy machine makes timings noisy, so only a quiet, dedicated one
+//       (the build server) fails on them. --record appends a passing run
+//       taken while the machine was quiet; --accept records anyway, as a
+//       decision made in the open (docs/performance.md §5).
 //   td ci [--no-bench] [bench options]
 //       Hosted build and tests, the Embedded build and tests, every
 //       protocol's API baseline, then the bench.
+//   td trace record|print|summary|diff ...
+//       Records a program's trace, and reads traces (TraceCommand.swift).
 //   td libc-symbols
 //       Lists what the toolchain's Swift runtime imports from the C and
 //       C++ runtimes, into lib/libc/symbols.tsv.
@@ -27,8 +31,9 @@ guard FileManager.default.fileExists(atPath: "Package.swift"),
 else { fail("run td from the repository root") }
 
 var args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: td bench|ci [options]") }
+guard let command = args.first else { fail("usage: td bench|ci|trace|libc-symbols [options]") }
 args.removeFirst()
+if command == "trace" { exit(traceCommand(args) ? 0 : 1) }
 
 var options = BenchOptions()
 var runBench = true
@@ -44,6 +49,7 @@ while i < args.count {
   case "--clean-repeats": options.cleanRepeats = number()
   case "--record": options.record = true
   case "--accept": options.accept = true
+  case "--enforce": options.enforce = true
   case "--no-bench" where command == "ci": runBench = false
   default: fail("unknown option \(args[i])")
   }
@@ -54,5 +60,5 @@ switch command {
 case "bench": exit(bench(options) ? 0 : 1)
 case "ci": exit(ci(bench: runBench ? options : nil) ? 0 : 1)
 case "libc-symbols": exit(libcSymbols() ? 0 : 1)
-default: fail("unknown command \(command); td has bench, ci and libc-symbols")
+default: fail("unknown command \(command); td has bench, ci, trace and libc-symbols")
 }

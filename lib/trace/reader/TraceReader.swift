@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// Reads trace regions (docs/trace-format.md): every ring's records, merged
+// by time, with names resolved; summaries per name; mark pairs for budgets.
+
+import TraceFormat
+
+/// One record, read back.
+public struct TraceRecord: Equatable, Sendable {
+  public var time: UInt64
+  public var kind: UInt16
+  public var cpu: UInt16
+  public var tid: UInt32
+  public var a: UInt64
+  public var b: UInt64
+}
+
+public enum TraceReadError: Error, Equatable {
+  case notATrace
+  case unsupportedVersion(UInt32)
+  case malformed(String)
+}
+
+/// A trace region, read.
+public struct TraceFile: Sendable {
+  public var counterHz: UInt64
+  public var start: UInt64
+  public var processID: UInt32
+  public var circular: Bool
+  public var records: [TraceRecord]  // every ring's, merged by time
+  public var dropped: UInt64
+  var strings: [UInt64: String]
+
+  public init(bytes: [UInt8]) throws(TraceReadError) {
+    func u32(_ o: Int) -> UInt32 { bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) } }
+    func u64(_ o: Int) -> UInt64 { bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt64.self) } }
+    guard bytes.count >= TraceFormat.headerSize, u32(0) == TraceFormat.regionMagic else { throw .notATrace }
+    guard u32(4) == TraceFormat.version else { throw .unsupportedVersion(u32(4)) }
+    counterHz = u64(TraceFormat.counterHz)
+    start = u64(TraceFormat.start)
+    processID = u32(TraceFormat.processID)
+    circular = u32(TraceFormat.flags) & TraceFormat.flagCircular != 0
+    guard counterHz > 0 else { throw .malformed("no counter frequency") }
+
+    // Strings.
+    let stringsAt = Int(u64(TraceFormat.stringsOffset))
+    let stringsSize = Int(u64(TraceFormat.stringsSize))
+    let used = min(Int(u64(TraceFormat.stringsUsed)), stringsSize)
+    guard stringsAt + stringsSize <= bytes.count else { throw .malformed("string table past the end") }
+    strings = [:]
+    var at = 0
+    while at + 4 <= used {
+      let length = Int(u32(stringsAt + at))
+      guard at + 4 + length <= used else { break }
+      strings[UInt64(at)] = String(decoding: bytes[(stringsAt + at + 4)..<(stringsAt + at + 4 + length)], as: UTF8.self)
+      at += 4 + (length + 3) & ~3
+    }
+
+    // Rings.
+    let ringsAt = Int(u64(TraceFormat.ringsOffset))
+    let ringSize = Int(u64(TraceFormat.ringSize))
+    let claimed = min(Int(u32(TraceFormat.ringsClaimed)), Int(u32(TraceFormat.ringCount)))
+    guard ringSize > TraceFormat.ringHeaderSize, ringsAt + claimed * ringSize <= bytes.count else {
+      throw .malformed("rings past the end")
+    }
+    var records: [TraceRecord] = []
+    var dropped: UInt64 = 0
+    for i in 0..<claimed {
+      let ring = ringsAt + i * ringSize
+      guard u32(ring + TraceFormat.ringMagicOffset) == TraceFormat.ringMagic else { continue }
+      let capacity = u64(ring + TraceFormat.ringCapacity)
+      guard capacity > 0, capacity & (capacity - 1) == 0,
+        TraceFormat.ringHeaderSize + Int(capacity) * TraceFormat.recordSize <= ringSize
+      else { throw .malformed("ring \(i)'s capacity") }
+      let head = u64(ring + TraceFormat.ringHead)
+      dropped += u64(ring + TraceFormat.ringDropped)
+      // Oneshot rings stop at capacity. A wrapped circular ring holds the
+      // newest `capacity`, of which the oldest sixteenth may be mid-overwrite.
+      let first = head > capacity ? head - capacity + capacity / 16 : 0
+      for n in first..<head {
+        let r = ring + TraceFormat.ringHeaderSize + Int(n & (capacity - 1)) * TraceFormat.recordSize
+        records.append(TraceRecord(
+          time: u64(r), kind: bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: r + 8, as: UInt16.self) },
+          cpu: bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: r + 10, as: UInt16.self) },
+          tid: u32(r + 12), a: u64(r + 16), b: u64(r + 24)))
+      }
+    }
+    records.sort { $0.time < $1.time }
+    self.records = records
+    self.dropped = dropped
+  }
+
+  /// A name id's text.
+  public func name(_ id: UInt64) -> String { strings[id] ?? "#\(id)" }
+
+  /// Ticks to seconds.
+  public func seconds(_ ticks: UInt64) -> Double { Double(ticks) / Double(counterHz) }
+
+  /// A MARK record's label.
+  public static func label(_ r: TraceRecord) -> String {
+    var bytes: [UInt8] = []
+    for word in [r.a, r.b] { for i in 0..<8 { bytes.append(UInt8(truncatingIfNeeded: word >> (8 * i))) } }
+    return String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+  }
+
+  /// Zones, by name: each zone's duration in seconds.
+  public func zones() -> [String: [Double]] {
+    var out: [String: [Double]] = [:]
+    for r in records where r.kind == TraceKind.zone.rawValue && r.a >= r.time {
+      out[name(r.b), default: []].append(seconds(r.a - r.time))
+    }
+    return out
+  }
+
+  /// The time between each mark labeled `begin` and the next labeled `end`,
+  /// on the same thread, in seconds.
+  public func intervals(from begin: String, to end: String) -> [Double] {
+    var open: [UInt32: UInt64] = [:]
+    var out: [Double] = []
+    for r in records where r.kind == TraceKind.mark.rawValue {
+      let label = Self.label(r)
+      if label == begin {
+        open[r.tid] = r.time
+      } else if label == end, let t = open.removeValue(forKey: r.tid) {
+        out.append(seconds(r.time - t))
+      }
+    }
+    return out
+  }
+}
+
+/// Count, total and percentiles of a set of durations.
+public struct Distribution: Equatable, Sendable {
+  public var count: Int
+  public var total: Double
+  public var p50: Double
+  public var p99: Double
+  public var max: Double
+
+  public init(_ values: [Double]) {
+    let s = values.sorted()
+    count = s.count
+    total = s.reduce(0, +)
+    func at(_ q: Double) -> Double { s.isEmpty ? 0 : s[Swift.min(s.count - 1, Int((Double(s.count) * q).rounded(.up)) - 1)] }
+    p50 = at(0.50)
+    p99 = at(0.99)
+    max = s.last ?? 0
+  }
+}

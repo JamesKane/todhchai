@@ -181,8 +181,14 @@ measured:
 
 ## 5. When a budget is violated
 
-1. **The build fails.** A milestone can't exit with a budget it enforces
-   over. A check is never disabled to make a build pass.
+1. **The build fails, where the numbers can be trusted.** Timings are
+   only as good as the machine they're taken on. On a shared development
+   machine (several agents and QEMU sessions at once), `td bench` reports
+   every budget but fails nothing, and won't record a run taken while the
+   machine was busy. On a quiet, dedicated machine (the build server,
+   still to be set up), `--enforce` makes a regression or a missed limit
+   fail the build. A milestone can't exit with a budget over on the
+   enforcing machine. A check is never disabled to make a build pass.
 2. **Profile it.** Open the failing run's trace, find the flow that missed,
    and compare it with the last passing run (`td trace -d`).
 3. **Fix it, with evidence.** The change that fixes a violation cites the

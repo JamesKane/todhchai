@@ -24,6 +24,9 @@ struct BenchOptions {
   var cleanRepeats = 3
   var record = false
   var accept = false
+  /// Fail on a regression or a missed limit. Only on a quiet, dedicated
+  /// machine; elsewhere results are advisory (docs/performance.md §5).
+  var enforce = false
 }
 
 /// The machine's name for its history file, and a description of it.
@@ -52,8 +55,17 @@ func today() -> String {
   return "\(tm.tm_year + 1900)-\(two(tm.tm_mon + 1))-\(two(tm.tm_mday))T\(two(tm.tm_hour)):\(two(tm.tm_min))Z"
 }
 
+/// The 1-minute load average, and the CPU count: other work on the machine
+/// shows up as noise in build times.
+func load() -> (average: Double, cpus: Int) {
+  var averages = [Double](repeating: 0, count: 1)
+  getloadavg(&averages, 1)
+  return (averages[0], Int(sysconf(Int32(_SC_NPROCESSORS_ONLN))))
+}
+
 func bench(_ options: BenchOptions) -> Bool {
   let out = "bench/out"
+  let loadBefore = load()
   removeTree("\(out)/logs")
   makeDirectory("\(out)/logs")
   let scratch = ".build/td-bench"  // its own, so it never waits on the developer's build
@@ -105,6 +117,20 @@ func bench(_ options: BenchOptions) -> Bool {
   measure("build.incremental.embedded.IPCWire", repeats: options.repeats,
           before: { touch("lib/ipc/wire/Encoder.swift") }, [["cmake", "--build", cmakeDir]])
 
+  // The tracer's own cost, in a release build (docs/performance.md).
+  let release = ".build/td-bench-release"
+  guard run(["swift", "build", "-c", "release", "--product", "trace-cost", "--scratch-path", release],
+            log: "\(out)/logs/trace-cost.log").ok,
+    let output = capture(["\(release)/release/trace-cost"])
+  else { fail("trace-cost failed; see \(out)/logs/trace-cost.log") }
+  for line in output.split(separator: "\n") {
+    let f = line.split(separator: " ")
+    guard f.count == 2, let ns = Double(f[1]), f[0].hasPrefix("zone.") else { continue }
+    let name = "trace.\(f[0])"
+    say("  \(name): \(formatValue(ns * 1e-9))")
+    results.append((name, ns * 1e-9))
+  }
+
   // Judge against this machine's history.
   let (id, description) = machine()
   let historyPath = "bench/history/\(id).tsv"
@@ -112,13 +138,23 @@ func bench(_ options: BenchOptions) -> Bool {
   let judgements = results.map { judge($0.0, seconds: $0.1, history: history, rule: .for($0.0)) }
   let commit = commitID()
   let date = today()
-  let text = report(judgements, machine: description, commit: commit, date: date)
+  let loadAfter = load()
+  var text = report(judgements, machine: description, commit: commit, date: date)
+  let busy = max(loadBefore.average, loadAfter.average) > Double(loadBefore.cpus) / 4
+  text += "\nLoad average: \(format(loadBefore.average)) before, \(format(loadAfter.average)) after, on \(loadBefore.cpus) CPUs."
+  if busy {
+    text += " The machine was busy, so a regression here may be noise: rerun when it is quiet before acting on it."
+  }
+  text += options.enforce ? "\nEnforced: a regression fails.\n"
+    : "\nAdvisory: regressions are reported, not enforced (use --enforce on a quiet, dedicated machine).\n"
   try? text.write(toFile: "\(out)/report.md", atomically: true, encoding: .utf8)
   say("")
   say(text)
 
-  let passed = !judgements.contains { $0.verdict == .regressed }
-  if options.record && (passed || options.accept) {
+  let passed = !judgements.contains { $0.verdict == .regressed || $0.verdict == .overLimit }
+  if options.record && busy && !options.accept {
+    say("not recorded: the machine was busy, and a noisy run would skew the baseline. Rerun when it is quiet.")
+  } else if options.record && (passed || options.accept) {
     var file = (try? String(contentsOfFile: historyPath, encoding: .utf8))
       ?? "# Build-time history for \(description). Appended by td bench --record.\n"
     for j in judgements {
@@ -131,6 +167,9 @@ func bench(_ options: BenchOptions) -> Bool {
   } else if options.record {
     say("not recorded: a budget regressed. Fix it, or re-decide with --accept (docs/performance.md §5).")
   }
-  if !passed { say("logs of each measurement: \(out)/logs/") }
-  return passed
+  if !passed {
+    say("logs of each measurement: \(out)/logs/")
+    if !options.enforce { say("td bench: over budget (advisory, not failing)") }
+  }
+  return passed || !options.enforce
 }

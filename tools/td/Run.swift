@@ -28,15 +28,18 @@ func now() -> Double {
 }
 
 /// Runs `arguments` (found on PATH) in the current directory, with stdout
-/// and stderr appended to `log`. Returns whether it exited 0, and the time.
+/// and stderr appended to `log`, or td's own if `log` is nil. Returns
+/// whether it exited 0, and the time.
 @discardableResult
-func run(_ arguments: [String], log: String) -> (ok: Bool, seconds: Double) {
+func run(_ arguments: [String], log: String?) -> (ok: Bool, seconds: Double) {
   var actions = posix_spawn_file_actions_t()
   posix_spawn_file_actions_init(&actions)
   defer { posix_spawn_file_actions_destroy(&actions) }
-  posix_spawn_file_actions_addopen(&actions, 1, log, O_WRONLY | O_CREAT | O_APPEND, 0o644)
-  posix_spawn_file_actions_adddup2(&actions, 1, 2)
-  posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+  if let log {
+    posix_spawn_file_actions_addopen(&actions, 1, log, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+    posix_spawn_file_actions_adddup2(&actions, 1, 2)
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+  }
 
   var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
   defer { for p in argv { free(p) } }

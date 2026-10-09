@@ -60,9 +60,18 @@ let package = Package(
     .target(name: "LibC", path: "lib/libc", exclude: ["symbols.tsv"], swiftSettings: tier0),
     .testTarget(name: "LibCTests", dependencies: ["LibC"], path: "tests/libc"),
 
+    // The trace format, the SDK's Trace module (the writer) and the reader
+    // (docs/trace-format.md).
+    .target(name: "TraceFormat", path: "lib/trace/format"),
+    .target(name: "TDTraceCPU", path: "lib/trace/c"),
+    .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer"),
+    .target(name: "TraceReader", dependencies: ["TraceFormat"], path: "lib/trace/reader"),
+    .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader"], path: "tests/trace"),
+    .executableTarget(name: "trace-cost", dependencies: ["Trace"], path: "tools/trace-cost"),
+
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", path: "lib/bench"),
-    .executableTarget(name: "td", dependencies: ["Bench"], path: "tools/td"),
+    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tools/td"),
     .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tests/bench"),
 
     // Each milestone's exit test (docs/milestones/).

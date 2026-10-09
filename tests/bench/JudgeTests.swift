@@ -36,6 +36,15 @@ func samples(_ name: String, _ seconds: [Double]) -> [Sample] {
   #expect(judge("build.clean.hosted", seconds: 20, history: history, rule: .for("build.clean.hosted")).verdict == .regressed)
 }
 
+@Test func limitsFailWhateverTheHistory() {
+  let rule = Rule.for("trace.zone.enabled")
+  #expect(judge("trace.zone.enabled", seconds: 14e-9, history: [], rule: rule).verdict == .new)
+  #expect(judge("trace.zone.enabled", seconds: 25e-9, history: [], rule: rule).verdict == .overLimit)
+  #expect(formatValue(14.06e-9) == "14.1 ns" && formatValue(2.5e-3) == "2.5 ms" && formatValue(16.0044) == "16.004 s")
+  let tiny = Sample(date: "d", commit: "c", name: "trace.zone.enabled", seconds: 1.4e-8)
+  #expect(parseHistory(tiny.line).first?.seconds == 1.4e-8)
+}
+
 @Test func otherMeasurementsDontCount() {
   let history = samples("a", [1, 1, 1])
   #expect(judge("b", seconds: 5, history: history, rule: .buildTime).verdict == .new)

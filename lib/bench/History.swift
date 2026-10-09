@@ -21,7 +21,9 @@ public struct Sample: Equatable {
     self.seconds = seconds
   }
 
-  public var line: String { "\(date)\t\(commit)\t\(name)\t\(format(seconds))" }
+  /// Three decimals for seconds; full precision below a millisecond, where
+  /// three decimals would round to nothing.
+  public var line: String { "\(date)\t\(commit)\t\(name)\t\(seconds < 1e-3 ? String(seconds) : format(seconds))" }
 
   public init?(line: Substring) {
     let f = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -40,6 +42,18 @@ public func format(_ seconds: Double) -> String {
   let ms = Int((seconds * 1000).rounded())
   let frac = String(ms % 1000)
   return "\(ms / 1000).\(String(repeating: "0", count: 3 - frac.count))\(frac)"
+}
+
+/// A time in the unit that suits it: "16.004 s", "2.5 ms", "14.0 ns".
+public func formatValue(_ seconds: Double) -> String {
+  func one(_ v: Double) -> String {
+    let tenths = Int((v * 10).rounded())
+    return "\(tenths / 10).\(tenths % 10)"
+  }
+  if seconds >= 1 { return "\(format(seconds)) s" }
+  if seconds >= 1e-3 { return "\(one(seconds * 1e3)) ms" }
+  if seconds >= 1e-6 { return "\(one(seconds * 1e6)) µs" }
+  return "\(one(seconds * 1e9)) ns"
 }
 
 public func median(_ values: [Double]) -> Double {

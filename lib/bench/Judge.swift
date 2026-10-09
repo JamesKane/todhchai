@@ -12,6 +12,8 @@ public struct Rule: Sendable {
   public var floor: Double
   /// How many recent recorded runs form the baseline (their median).
   public var window: Int
+  /// A hard target: above it fails whatever the history says.
+  public var limit: Double? = nil
 
   /// Incremental and no-change builds: a few seconds, steady to ±4%.
   public static let buildTime = Rule(tolerance: 0.10, floor: 0.25, window: 5)
@@ -21,13 +23,24 @@ public struct Rule: Sendable {
   /// longer arriving prebuilt (more than double).
   public static let cleanBuild = Rule(tolerance: 0.20, floor: 2.0, window: 5)
 
+  /// The tracer's own costs (docs/performance.md): an enabled zone under
+  /// 20 ns, a disabled one about a load and a branch.
+  public static let traceZoneEnabled = Rule(tolerance: 0.25, floor: 2e-9, window: 5, limit: 20e-9)
+  public static let traceZoneDisabled = Rule(tolerance: 0.25, floor: 0.5e-9, window: 5, limit: 1e-9)
+
   /// The rule for a measurement, by name.
   public static func `for`(_ name: String) -> Rule {
-    name.hasPrefix("build.clean.") ? .cleanBuild : .buildTime
+    switch name {
+    case "trace.zone.enabled": .traceZoneEnabled
+    case "trace.zone.disabled": .traceZoneDisabled
+    default: name.hasPrefix("build.clean.") ? .cleanBuild : .buildTime
+    }
   }
 
-  /// "+10%, 0.25 s"
-  public var summary: String { "+\(Int((tolerance * 100).rounded()))%, \(format(floor)) s" }
+  /// "+10%, 0.25 s", and the limit if there is one.
+  public var summary: String {
+    "+\(Int((tolerance * 100).rounded()))%, \(formatValue(floor))" + (limit.map { "; ≤ \(formatValue($0))" } ?? "")
+  }
 }
 
 public enum Verdict: Equatable {
@@ -36,6 +49,8 @@ public enum Verdict: Equatable {
   case ok
   /// Slower than the baseline by more than the rule allows.
   case regressed
+  /// Above the rule's hard limit.
+  case overLimit
 }
 
 /// A measurement's judgement.
@@ -52,6 +67,10 @@ public struct Judgement: Equatable {
 
 public func judge(_ name: String, seconds: Double, history: [Sample], rule: Rule) -> Judgement {
   let past = history.filter { $0.name == name }.suffix(rule.window).map(\.seconds)
+  if let limit = rule.limit, seconds > limit {
+    return Judgement(name: name, seconds: seconds, baseline: past.isEmpty ? nil : median(Array(past)),
+                     verdict: .overLimit, rule: rule.summary)
+  }
   guard !past.isEmpty else {
     return Judgement(name: name, seconds: seconds, baseline: nil, verdict: .new, rule: rule.summary)
   }
@@ -68,7 +87,7 @@ public func report(_ judgements: [Judgement], machine: String, commit: String, d
 
     Machine `\(machine)`, commit `\(commit)`, \(date). A measurement fails if it is slower
     than the median of the last 5 recorded runs on this machine by more than both parts of its
-    rule (docs/performance.md). Times are medians of this run's repeats, in seconds.
+    rule (docs/performance.md). Times are medians of this run's repeats.
 
     | Budget | This run | Baseline | Change | Rule | Verdict |
     |---|---:|---:|---:|---|---|
@@ -80,8 +99,9 @@ public func report(_ judgements: [Judgement], machine: String, commit: String, d
     case .new: "new"
     case .ok: "ok"
     case .regressed: "**OVER**"
+    case .overLimit: "**OVER LIMIT**"
     }
-    out += "| `\(j.name)` | \(format(j.seconds)) | \(j.baseline.map(format) ?? "—") | \(change) | \(j.rule) | \(verdict) |\n"
+    out += "| `\(j.name)` | \(formatValue(j.seconds)) | \(j.baseline.map(formatValue) ?? "—") | \(change) | \(j.rule) | \(verdict) |\n"
   }
   return out
 }

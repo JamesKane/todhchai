@@ -21,7 +21,10 @@ Run td's binary, not `swift run td`: the builds it starts would wait on
 SwiftPM's lock. Logs and the budget report go to `bench/out/`; each
 machine's recorded history is `bench/history/<host>.tsv`. A regressed
 budget is fixed, or recorded with `--accept` as a decision made in the
-open, never silently.
+open, never silently. On this machine the bench is advisory: other agents
+and QEMU sessions make timings noisy, so `td ci` reports budgets without
+failing on them, and `--record` refuses while the machine is busy. Only a
+quiet, dedicated build server runs `--enforce`.
 
 - **Hosted (SwiftPM, `Package.swift`).** Everything builds here, tier 0
   libraries included, with croi's strict-memory-safety flags.
@@ -42,6 +45,15 @@ and baseline, and commit them:
 
 `idlc` exits 1 if the change would break a client of the recorded
 baseline. The test protocol's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
+
+## Tracing
+
+`Trace` (lib/trace) records zones, flows, counters and marks in the format
+of `docs/trace-format.md`, the same records croi's kernel writes. Record a
+program and read the result with:
+
+    .build/debug/td trace record -o DIR [-c app,frame,...] [--circular] -- PROGRAM ARGS
+    .build/debug/td trace summary DIR        # also: print, diff A B
 
 ## libc (the F track)
 

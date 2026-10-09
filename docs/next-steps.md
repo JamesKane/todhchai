@@ -111,5 +111,10 @@ None are left; every open decision has been made (roadmap, "Decided").
 ## Housekeeping
 
 - The repo has no remote yet. Pick one before collaborating.
+- **A build server.** The development machine runs several agents and QEMU
+  sessions at once, so its timings are noisy and `td bench` is advisory
+  there. A quiet, dedicated machine running `td ci --enforce` (and
+  recording the baselines) is what makes the budgets binding
+  (performance.md §5). Set it up before M1's exit budgets have to hold.
 - A `CLAUDE.md` for this repo (conventions, build commands, the ownership
   rules) is worth writing once there is code to build.
