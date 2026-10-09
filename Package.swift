@@ -96,6 +96,12 @@ let package = Package(
     .target(name: "TodhchaiCABI", dependencies: ["Todhchai", "TDCABI"], path: "lib/capi/swift"),
     .testTarget(name: "CABITests", dependencies: ["ABIGen", "TodhchaiCABI", "TDCABI"], path: "tests/capi",
                 exclude: ["c"]),
+    // Unicode (filesystem.md §6; the text stack later): NFC and case
+    // folding from the UCD (data/unicode), tier 0.
+    .target(name: "TDUnicode", path: "lib/unicode", swiftSettings: tier0),
+    .target(name: "UCDGen", path: "lib/unicode-gen"),
+    .executableTarget(name: "ucdgen", dependencies: ["UCDGen"], path: "tools/ucdgen"),
+    .testTarget(name: "UnicodeTests", dependencies: ["TDUnicode", "UCDGen"], path: "tests/unicode"),
     // Taisce (filesystem.md): the file system's core is tier 0, built
     // again as Embedded Swift by CMake; the host's devices and tools are not.
     .target(name: "Taisce", path: "lib/taisce", swiftSettings: tier0),

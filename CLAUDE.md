@@ -95,6 +95,18 @@ memory layouts. Every change to what reaches the disk goes through a
 `BlockDevice`, so `RecordingDevice` can replay any prefix of the writes as
 a crash.
 
+## Unicode
+
+`TDUnicode` (`lib/unicode`, tier 0) gives NFC and NFD (UAX #15), full case
+folding and strict UTF-8, from tables generated out of the UCD files in
+`data/unicode` (see its PROVENANCE.md). After changing the data, regenerate
+and commit:
+
+    .build/debug/ucdgen data/unicode lib/unicode/generated/Tables.swift
+
+`tests/unicode` runs all of NormalizationTest.txt, and fails if the
+committed tables don't match the data.
+
 ## Shaders
 
 Shaders are GLSL (`.vert`, `.frag`, `.comp`) compiled with glslang to a

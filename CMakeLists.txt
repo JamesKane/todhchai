@@ -26,6 +26,11 @@ set_target_properties(LibC PROPERTIES Swift_MODULE_NAME LibC)
 target_include_directories(LibC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(LibC)
 
+add_library(TDUnicode STATIC lib/unicode/Normalization.swift lib/unicode/generated/Tables.swift)
+set_target_properties(TDUnicode PROPERTIES Swift_MODULE_NAME TDUnicode)
+target_include_directories(TDUnicode INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(TDUnicode)
+
 add_library(Taisce STATIC
   lib/taisce/Allocator.swift lib/taisce/BlockDevice.swift lib/taisce/Bytes.swift lib/taisce/CRC32C.swift
   lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/Log.swift
@@ -54,3 +59,9 @@ set_target_properties(taisce-smoke PROPERTIES Swift_MODULE_NAME TaisceSmoke)
 target_link_libraries(taisce-smoke PRIVATE Taisce)
 todhchai_tier0(taisce-smoke)
 add_test(NAME embedded-taisce COMMAND taisce-smoke)
+
+add_executable(unicode-smoke tests/embedded/UnicodeSmoke.swift)
+set_target_properties(unicode-smoke PROPERTIES Swift_MODULE_NAME UnicodeSmoke)
+target_link_libraries(unicode-smoke PRIVATE TDUnicode)
+todhchai_tier0(unicode-smoke)
+add_test(NAME embedded-unicode COMMAND unicode-smoke)
