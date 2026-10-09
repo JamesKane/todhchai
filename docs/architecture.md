@@ -254,9 +254,23 @@ interface apps program against.
 - **Arenas** are the SDK's default allocator: a growable arena that reserves a
   large range and commits as it grows, plus thread-local scratch arenas. The
   UI Kit and the event loop allocate their per-frame data from arenas.
-- **JIT:** inside a reservation, a page can be flipped between writable and
-  executable per thread. This needs a manifest entitlement (F-218), for
-  emulators, Wine and scripting engines.
+- **JIT** (F-218), for emulators, Wine and scripting engines, behind a
+  manifest entitlement. croi enforces W^X everywhere (decided in croi's
+  K4c, commit 1fcf507), and the JIT API is written against **dual
+  views**, the model that works on every target:
+  - the JIT maps one VMO twice into its reservation with `mapView`, a
+    read/write view and a read/execute view at different addresses;
+  - code is written through the read/write alias, which every thread in the
+    process can reach;
+  - swapping a view is atomic: another thread sees the old view or the new
+    one, never a hole.
+
+  On amd64 with protection keys, `Jit.mechanism` reports them, and the
+  JIT takes a fast path: the reservation's pages are mapped RWX under a key,
+  and each thread opens writes for itself alone (WRPKRU, no syscall). That
+  is V8's pkeys model, with its caveat: a thread with writes open can also
+  execute the region. arm64 (no POE before Armv9.4, so not on the Sky1 or
+  the Q8B) and rv64 use dual views only.
 - **Memory budgets:** each process sees one budget covering CPU and GPU memory,
   because GPU buffers are VMOs and the kernel accounts them to the owning
   process. It gets one pressure notification on its port. The budget never
@@ -588,8 +602,9 @@ unit of effort):
 3. A **Wayland "core+"** server built into the compositor (core plus 16
    extensions), written from the protocol XML, for GTK, Qt and
    Wayland-native apps.
-4. The F-218 memory APIs (reservations, views, per-thread W^X) that
-   emulators and translation layers depend on.
+4. The F-218 memory APIs that emulators and translation layers depend on:
+   reservations, atomic views, and JIT code through dual views, with
+   per-thread W^X by protection keys as an amd64 fast path (§7).
 
 **What third parties bring**, either upstream or in a separate ports
 collection, never in the Todhchai tree:

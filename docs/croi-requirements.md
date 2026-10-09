@@ -82,8 +82,15 @@ reference machine's C-states and P/E cores too.)
    combined CPU+GPU budget per process, and a memory-pressure packet (F-109).
    Paging and eviction are off for these VMOs.
 7. **Address-space views and JIT** (F-218). Atomic map-view and unmap-view
-   inside a reservation, and per-thread W^X toggling within a reservation
-   that has the right entitlement.
+   inside a reservation, and W^X everywhere. *As built (croi K4c, commit
+   1fcf507):* a JIT reservation on amd64 with PKU gets a protection key
+   (1–15, 15 system-wide), its pages are mapped RWX under it, and each
+   thread opens writes for itself with WRPKRU; the scheduler switches each
+   thread's PKRU. On arm64 (no POE) and rv64 a JIT reservation refuses RWX,
+   and code goes through dual views (RW and RX aliases of one VMO), with
+   atomic view swaps. Per-thread toggling is therefore amd64-only, and
+   Todhchai's JIT targets dual views (architecture.md §7). These are
+   kernel-internal APIs until croi's K6 syscall surface.
 8. **CPU isolation.** Cores can be reserved for a job: no other threads, no
    timer or IRQ routing.
 9. **Topology and power page.** Core types, cache sharing and current power
