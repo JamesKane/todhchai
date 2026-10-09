@@ -56,6 +56,13 @@ import Taisce
       check(try again.indexLookup([0x75, 0x3A, 0x74], equal: .string([0xC3, 0x81])) == [file], "caseless index")
       check(try again.journal(after: 0).last?.reasons == .attribute, "journal")
       check(try again.check() == 3, "fs check with indices")
+      // A query through the caseless index, and a live one.
+      // u:t ~= "Á"
+      let text: [UInt8] = [0x75, 0x3A, 0x74, 0x20, 0x7E, 0x3D, 0x20, 0x22, 0xC3, 0x81, 0x22]
+      check(try again.query(text) == [file], "query")
+      var live = try again.live(text)
+      try again.removeAttribute(file, [0x75, 0x3A, 0x74], now: 7)
+      check(try again.update(&live) == [.removed(file, seq: again.nextSeq - 1)] && live.results.isEmpty, "live query")
     } catch {
       check(false, "a Taisce call threw")
     }

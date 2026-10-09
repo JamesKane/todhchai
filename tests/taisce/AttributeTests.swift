@@ -85,22 +85,22 @@ import Testing
   let d = try fs.create(root, n("d"), .directory, mode: 0o755, now: 2)
   let f = try fs.create(d, n("f"), .file, mode: 0o644, now: 3)
   try fs.write(f, offset: 0, [1], now: 4)
-  try fs.write(f, offset: 1, [2], now: 5)  // the same group: journaled once
+  try fs.write(f, offset: 1, [2], now: 5)  // every write: a live query must hear of each
   try fs.setAttribute(f, n("user:x"), .bool(true), now: 6)
   #expect(throws: TaisceError.exists) { try fs.create(d, n("f"), .file, mode: 0, now: 7) }  // takes no number
   try fs.rename(d, n("f"), root, n("g"), now: 8)
-  try fs.sync()
-  try fs.write(f, offset: 0, [3], now: 9)  // a new group: journaled again
   let all = try fs.journal(after: start - 1)
-  #expect(all.map(\.reasons) == [.created, .created, .data, .attribute, .renamed, .data])
-  #expect(all.map(\.ino) == [d, f, f, f, f, f])
-  #expect(all.map(\.seq) == Array(start..<(start + 6)))
-  #expect(all[4].name == n("g") && all[4].parent == root)
+  // Each change, and each directory it touched.
+  #expect(all.map(\.reasons) == [.created, .metadata, .created, .metadata, .data, .data, .attribute,
+                                 .metadata, .metadata, .renamed])
+  #expect(all.map(\.ino) == [d, root, f, d, f, f, f, d, root, f])
+  #expect(all.map(\.seq) == Array(start..<(start + 10)))
+  #expect(all[9].name == n("g") && all[9].parent == root)
   // A consumer resumes after a remount from the last seq it saw.
   try fs.sync()
   var again = try FileSystem.mount(fs.engine.store.volume.device)
-  #expect(try again.journal(after: all[2].seq).map(\.seq) == Array(all[3].seq...all[5].seq))
-  #expect(again.nextSeq == all[5].seq + 1)
+  #expect(try again.journal(after: all[5].seq).map(\.seq) == Array(all[6].seq...all[9].seq))
+  #expect(again.nextSeq == all[9].seq + 1)
   try again.trimJournal(through: all[3].seq)
   #expect(try again.journal(after: 0).first?.seq == all[4].seq)
 }

@@ -33,6 +33,12 @@ public enum TaisceError: Error, Equatable, Sendable {
   case notEmpty  // ENOTEMPTY
   case nameTooLong  // ENAMETOOLONG
   case invalid  // EINVAL: a bad name, or a directory moved into itself
+  /// A query that doesn't parse, and the byte where it stopped making sense.
+  case badQuery(UInt32)
+  /// A query no index can serve: declare one, or ask for a scan.
+  case needsIndex
+  /// A live query's place is no longer in the journal: run it again.
+  case journalTrimmed
 }
 
 public enum Corruption: Equatable, Sendable {
@@ -73,4 +79,5 @@ public enum FileSystemFault: Equatable, Sendable {
   case sharedBlock  // two extents, or an extent and a node, on one block
   case extentPastEnd
   case indexMismatch  // an index isn't what the attributes and fields say
+  case backlink  // a node's record of its names doesn't match the directories
 }

@@ -19,8 +19,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   public internal(set) var indices: [IndexInfo] = []
   /// The next change-journal sequence number.
   public internal(set) var nextSeq: UInt64 = 1
-  /// Files whose data writes are already in this group's journal.
-  var journaledData: [UInt64] = []
 
   public static var root: UInt64 { 1 }
   public static var maxName: Int { 255 }
@@ -73,10 +71,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   init(engine: consuming Engine<Device>) { self.engine = engine }
 
   /// Makes everything so far durable.
-  public mutating func sync() throws(TaisceError) {
-    try engine.commitGroup()
-    journaledData = []
-  }
+  public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
 
   // MARK: Nodes
 
@@ -172,6 +167,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     touch(&parent, now)
     try putInode(dir, parent, &c)
     journal(&c, ino, parent: dir, .created, name: name)
+    journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
     engine.nextInode += 1
     return ino
@@ -194,6 +190,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     touch(&parent, now)
     try putInode(dir, parent, &c)
     journal(&c, ino, parent: dir, .linked, name: name)
+    journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
   }
 
@@ -209,6 +206,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     try putInode(dir, parent, &c)
     let freeing = try dropLink(e.ino, now, &c)
     journal(&c, e.ino, parent: dir, .unlinked, name: name)
+    journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
     if freeing { try destroy(e.ino) }
   }
@@ -226,6 +224,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     try putInode(dir, parent, &c)
     let freeing = try dropLink(e.ino, now, &c)
     journal(&c, e.ino, parent: dir, .unlinked, name: name)
+    journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
     if freeing { try destroy(e.ino) }
   }
@@ -286,6 +285,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       var p = try inode(d, &c)
       touch(&p, now)
       try putInode(d, p, &c)
+      journal(&c, d, parent: p.parent, .metadata)
     }
     journal(&c, source.ino, parent: toDir, .renamed, name: toName)
     try applyChanges(c)
@@ -377,7 +377,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       try applyChanges(c)
     } catch {
       for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
-      if let ino = c.journaledData { journaledData.removeAll { $0 == ino } }
       throw error
     }
     for e in freed { engine.store.volume.allocator.free(e) }
@@ -526,6 +525,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     var inodes: [(ino: UInt64, node: Inode, names: UInt32, subdirs: UInt32)] = []
     var entries: [(dir: UInt64, entry: DirectoryEntry)] = []
     var extents: [(ino: UInt64, start: UInt64, physical: UInt64, count: UInt64)] = []
+    var backlinks: [[UInt8]] = []
     for (key, value) in try engine.scan(Self.tree, from: []) {
       let ino = FSKey.readU64(key, at: 0)
       switch key[8] {
@@ -533,6 +533,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       case FSKey.dirent: for e in try Bucket.decode(value) { entries.append((ino, e)) }
       case FSKey.extent:
         extents.append((ino, FSKey.readU64(key, at: 9), value.get(UInt64.self, at: 0), value.get(UInt64.self, at: 8)))
+      case FSKey.name:
+        backlinks.append(key)
       default: break
       }
     }
@@ -554,6 +556,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
         inodes[d].subdirs += 1
         guard inodes[i].node.parent == dir else { throw .corrupt(.fileSystem(.parent)) }
       }
+    }
+    // Each name, from the node's side: exactly the directory entries.
+    let names = entries.map { FSKey.make($0.entry.ino, FSKey.name, FSKey.u64($0.dir) + $0.entry.name) }
+    guard backlinks == names.sorted(by: { $0.lexicographicallyPrecedes($1) }) else {
+      throw .corrupt(.fileSystem(.backlink))
     }
     for n in inodes {
       let orphan = try engine.get(Self.orphans, FSKey.u64(n.ino)) != nil
@@ -649,11 +656,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     nextSeq += 1
   }
 
-  /// Journals a data change, once per file per transaction group.
+  /// Journals a data change. Every one: a live query that has read the
+  /// last one must hear of the next.
   mutating func journalData(_ c: inout Changes, _ ino: UInt64, _ parent: UInt64) {
-    guard !journaledData.contains(ino) else { return }
-    journaledData.append(ino)
-    c.journaledData = ino
     journal(&c, ino, parent: parent, .data)
   }
 
@@ -695,6 +700,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     bucket.append(e)
     c.set(key, Bucket.encode(bucket))
     c.other.append(.insert(tree: Self.nameIndex, key: Self.nameKey(e.name, e.ino, dir), value: []))
+    c.set(FSKey.make(e.ino, FSKey.name, FSKey.u64(dir) + e.name), [])
   }
 
   mutating func removeEntry(_ dir: UInt64, _ name: [UInt8], _ c: inout Changes) throws(TaisceError) {
@@ -703,6 +709,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     let all = try Bucket.decode(v)
     for e in all where e.name == name {
       c.other.append(.delete(tree: Self.nameIndex, key: Self.nameKey(name, e.ino, dir)))
+      c.delete(FSKey.make(e.ino, FSKey.name, FSKey.u64(dir) + name))
     }
     let bucket = all.filter { $0.name != name }
     if bucket.isEmpty { c.delete(key) } else { c.set(key, Bucket.encode(bucket)) }
@@ -771,8 +778,6 @@ struct Changes {
   var orphans: [UInt64] = []
   /// Messages for other trees: indices, the journal, the registry.
   var other: [Message] = []
-  /// A file this operation journaled data for (undone if it fails).
-  var journaledData: UInt64?
   /// Blocks allocated for this operation's data, to release if it fails.
   var allocated: [Extent] = []
 

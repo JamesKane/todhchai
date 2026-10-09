@@ -88,6 +88,8 @@ enum FSKey {
   static let extent: UInt8 = 3
   static let symlink: UInt8 = 4
   static let attributeChunk: UInt8 = 5
+  /// (ino, NAME, dir + name): each of a node's names, from the node's side.
+  static let name: UInt8 = 6
 
   static func make(_ ino: UInt64, _ kind: UInt8, _ sub: [UInt8] = []) -> [UInt8] {
     var k = [UInt8](repeating: 0, count: 9)
