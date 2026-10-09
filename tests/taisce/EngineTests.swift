@@ -98,6 +98,8 @@ func contents<D>(_ e: inout Engine<D>) throws -> [UInt64: [[UInt8]: [UInt8]]] {
 /// Whether a FlakyDevice's writes fail, shared by its copies.
 final class Flakiness {
   var failWrites = false
+  /// Writes that succeed before one fails (just that one); nil: none.
+  var writesLeft: Int?
 }
 
 /// A memory device whose writes can be made to fail.
@@ -108,6 +110,10 @@ struct FlakyDevice: BlockDevice {
   var blockCount: UInt64 { base.blockCount }
   mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] { try base.read(block, count: count) }
   mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    if let left = flakiness.writesLeft {
+      flakiness.writesLeft = left == 0 ? nil : left - 1
+      if left == 0 { throw .io(5) }
+    }
     if flakiness.failWrites { throw .io(5) }
     try base.write(block, bytes)
   }

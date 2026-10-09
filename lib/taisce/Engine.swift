@@ -55,6 +55,10 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// marked written, trees marked unchanged, nodes still fresh) can't be
   /// trusted, so the engine writes nothing more until it's mounted again.
   public private(set) var stopped = false
+
+  /// Stops writes until the next mount: something reached the device, or
+  /// failed to, that later commits can't be trusted with.
+  mutating func stop() { stopped = true }
   /// Lock-free readers (S1f), once enabled: their epochs, and what waits
   /// for them in limbo (snapshots replaced, blocks retired), oldest first,
   /// with the epoch each was retired in.

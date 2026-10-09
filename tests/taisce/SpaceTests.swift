@@ -90,7 +90,14 @@ import Testing
   #expect(!c.overwritten.isEmpty, "the blocks were rewritten in place")
   // The batch fails (a delta to a key that isn't there).
   c.other.append(.delta(tree: 99, key: [1], .add(offset: 0, value: 1)))
-  #expect(throws: TaisceError.missingKey) { try fs.commitData(c, freed) }
+  #expect(throws: TaisceError.missingKey) {
+    do {
+      try fs.commitData(c, freed)
+    } catch {
+      fs.abandon(c)  // as write does
+      throw error
+    }
+  }
   #expect(try fs.read(f, offset: 0, count: 8192) == before)
   try fs.sync()
   var again = try FileSystem.mount(fs.engine.store.volume.device)
@@ -133,4 +140,39 @@ import Testing
   try after.check()
   #expect(throws: TaisceError.notFound) { try after.stat(f) }
   #expect(after.engine.store.volume.allocator.freeCount + after.engine.reclaimable >= free + 10)
+}
+
+@Test func aWriteThatFailsOnTheDeviceIsUndoneWhole() throws {
+  let flakiness = Flakiness()
+  var fs = try FileSystem.format(FlakyDevice(base: MemoryDevice(blocks: 4096), flakiness: flakiness), label: [],
+                                 uuid: Array(1...16), now: 1)
+  let f = try fs.create(1, n("f"), .file, mode: 0o644, now: 2)
+  let g = try fs.create(1, n("g"), .file, mode: 0o644, now: 2)
+  let before = [UInt8](repeating: 1, count: 8192)
+  try fs.write(f, offset: 0, before, now: 2)  // fresh: rewritten in place from now on
+  try fs.write(g, offset: 0, [UInt8](repeating: 7, count: 4096), now: 2)  // so f's next blocks aren't next to these
+  let free = fs.engine.store.volume.allocator.freeCount
+  // Four blocks: two in place, two new elsewhere. The first run reaches
+  // the device; the second fails.
+  flakiness.writesLeft = 1
+  #expect(throws: TaisceError.io(5)) { try fs.write(f, offset: 0, [UInt8](repeating: 2, count: 16384), now: 3) }
+  #expect(try fs.read(f, offset: 0, count: 16384) == before)
+  #expect(fs.engine.store.volume.allocator.freeCount == free)
+  try fs.sync()
+  var again = try FileSystem.mount(fs.engine.store.volume.device.base)
+  #expect(try again.read(f, offset: 0, count: 16384) == before)  // from the device, checked
+  try again.check()
+}
+
+@Test func aWriteWhoseUndoCantReachTheDeviceStopsWrites() throws {
+  let flakiness = Flakiness()
+  var fs = try FileSystem.format(FlakyDevice(base: MemoryDevice(blocks: 4096), flakiness: flakiness), label: [],
+                                 uuid: Array(1...16), now: 1)
+  let f = try fs.create(1, n("f"), .file, mode: 0o644, now: 2)
+  try fs.write(f, offset: 0, [UInt8](repeating: 1, count: 4096), now: 2)
+  flakiness.failWrites = true  // the in-place rewrite fails, and so does putting it back
+  #expect(throws: TaisceError.io(5)) { try fs.write(f, offset: 0, [UInt8](repeating: 2, count: 4096), now: 3) }
+  flakiness.failWrites = false
+  #expect(try fs.read(f, offset: 0, count: 4096) == [UInt8](repeating: 1, count: 4096))
+  #expect(throws: TaisceError.readOnly) { try fs.write(f, offset: 0, [UInt8](repeating: 3, count: 1), now: 4) }
 }

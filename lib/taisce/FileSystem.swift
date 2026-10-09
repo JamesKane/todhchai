@@ -364,12 +364,17 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     let first = offset / bs, last = (end - 1) / bs
     var data = try readBlocks(ino, first, Int(last - first + 1), &c)
     data.replaceSubrange(Int(offset - first * bs)..<Int(end - first * bs), with: bytes)
-    let freed = try replaceBlocks(ino, first, data, &c)
-    node.size = max(node.size, end)
-    touchData(&node, now)
-    try putInode(ino, node, &c)
-    journalData(&c, ino, node.parent)
-    try commitData(c, freed)
+    do {
+      let freed = try replaceBlocks(ino, first, data, &c)
+      node.size = max(node.size, end)
+      touchData(&node, now)
+      try putInode(ino, node, &c)
+      journalData(&c, ino, node.parent)
+      try commitData(c, freed)
+    } catch {
+      abandon(c)
+      throw error
+    }
   }
 
   /// Sets a file's size: shrinking frees the blocks past it, growing reads
@@ -383,41 +388,56 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     var node = try inode(ino, &c)
     guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
     var freed: [Extent] = []
-    if size < node.size {
-      let bs = UInt64(Self.blockSize)
-      let keep = (size + bs - 1) / bs  // blocks that still hold data
-      // Bytes past the end of the last block stay zero, so growing later
-      // reads zeros there.
-      if size % bs != 0, try mapping(ino, size / bs, &c) != nil {
-        var tail = try readBlocks(ino, size / bs, 1, &c)
-        for i in Int(size % bs)..<Self.blockSize { tail[i] = 0 }
-        freed += try replaceBlocks(ino, size / bs, tail, &c)
+    do {
+      if size < node.size {
+        let bs = UInt64(Self.blockSize)
+        let keep = (size + bs - 1) / bs  // blocks that still hold data
+        // Bytes past the end of the last block stay zero, so growing later
+        // reads zeros there.
+        if size % bs != 0, try mapping(ino, size / bs, &c) != nil {
+          var tail = try readBlocks(ino, size / bs, 1, &c)
+          for i in Int(size % bs)..<Self.blockSize { tail[i] = 0 }
+          freed += try replaceBlocks(ino, size / bs, tail, &c)
+        }
+        freed += try unmap(ino, from: keep, &c)
       }
-      freed += try unmap(ino, from: keep, &c)
+      node.size = size
+      touchData(&node, now)
+      try putInode(ino, node, &c)
+      journalData(&c, ino, node.parent)
+      try commitData(c, freed)
+    } catch {
+      abandon(c)
+      throw error
     }
-    node.size = size
-    touchData(&node, now)
-    try putInode(ino, node, &c)
-    journalData(&c, ino, node.parent)
-    try commitData(c, freed)
   }
 
   /// Applies a data change's metadata, then lets go of the blocks it
-  /// replaced (held until the group commits).
+  /// replaced (held until the group commits). If it fails, the caller
+  /// abandons the change.
   mutating func commitData(_ c: Changes, _ freed: [Extent]) throws(TaisceError) {
-    do {
-      try applyChanges(c)
-    } catch {
-      for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
-      engine.dropStaged()
-      for (block, bytes) in c.overwritten.reversed() {
-        try engine.store.volume.device.write(block, bytes)
-        cache(block, bytes)
-      }
-      throw error
-    }
+    try applyChanges(c)
     for e in freed { engine.store.volume.allocator.free(e) }
     engine.noteFreed(freed)
+  }
+
+  /// Undoes what a data change that failed had done, wherever it failed:
+  /// its new blocks are let go (fresh: available again at once), the
+  /// intent log forgets them, and blocks it rewrote in place get their
+  /// old contents back. If the device won't take those back, the engine
+  /// stops: the group's extents name checksums those blocks no longer
+  /// match.
+  mutating func abandon(_ c: Changes) {
+    for e in c.allocated { engine.store.volume.allocator.free(e) }
+    engine.dropStaged()
+    for (block, bytes) in c.overwritten.reversed() {
+      cache(block, bytes)
+      do {
+        try engine.store.volume.device.write(block, bytes)
+      } catch {
+        engine.stop()
+      }
+    }
   }
 
   // MARK: Extents
