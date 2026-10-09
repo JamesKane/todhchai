@@ -3,8 +3,8 @@
 *Todhchaí* is Irish for "future".
 
 Todhchai is a desktop operating system written in Swift, built on top of
-[croi](../croi), a Zircon-style microkernel written in Embedded Swift. Its aim
-is to be the OS the Handmade crowd keeps asking for:
+[croi](../croi), a Zircon-style microkernel written in Embedded Swift. Its
+aims:
 - the app owns its loop, its memory and its timing;
 - the layers are thin and you can see through them;
 - the file system answers queries the way BeOS's did;
@@ -36,7 +36,7 @@ working toward user space.
    are written clean-room from specifications or reverse engineering. The
    tree contains no third-party code. The only exception is development
    toolchains (Swift, clang, LLVM).
-7. The Handmade circle's asks: the app owns its loop, arenas with
+7. Control for the programmer: the app owns its loop, arenas with
    reserve/commit, debugging and hot reload as OS services, single-file apps,
    measured latency, and visibility into what the system is doing.
 
@@ -53,7 +53,7 @@ working toward user space.
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
 | [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M10 with exit tests, risks, open and decided questions |
 | [docs/next-steps.md](docs/next-steps.md) | Where the design stopped, how to re-sync with croi, which milestone to start, and what to re-verify |
-| [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, Handmade discussions, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P), and the hardware targets (the amd64 reference machine and the two arm64 boards, from AbyssBSD's bring-up) |
+| [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P), and the hardware targets (the amd64 reference machine and the two arm64 boards, from AbyssBSD's bring-up) |
 
 The research notes tag each claim: `[V]` verified against a cited source,
 `[S]` secondary source, `[K]`/`[U]` background knowledge or unverified.
