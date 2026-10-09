@@ -28,7 +28,8 @@ todhchai_tier0(LibC)
 
 add_library(Taisce STATIC
   lib/taisce/Allocator.swift lib/taisce/BlockDevice.swift lib/taisce/Bytes.swift lib/taisce/CRC32C.swift
-  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/Log.swift lib/taisce/Node.swift
+  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/Log.swift
+  lib/taisce/Node.swift
   lib/taisce/Store.swift
   lib/taisce/Superblock.swift lib/taisce/Volume.swift)
 set_target_properties(Taisce PROPERTIES Swift_MODULE_NAME Taisce)

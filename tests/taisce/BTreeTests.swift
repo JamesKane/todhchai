@@ -141,3 +141,14 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   _ = try store.volume.allocator.allocateContiguous(1, near: leafBlock)
   #expect(try tree.check(&store).entries == 3000)
 }
+
+@Test func floorFindsTheLastKeyAtOrBelow() throws {
+  var store = try newStore()
+  var tree = BTree()
+  for k in stride(from: 0, to: 6000, by: 3) { try tree.insert(bigEndian(UInt64(k)), [UInt8](repeating: 1, count: 200), &store) }
+  #expect(try tree.check(&store).depth >= 2)
+  for probe in [0, 1, 2, 3, 299, 300, 301, 5997, 5998, 9999] {
+    #expect(try tree.floor(bigEndian(UInt64(probe)), &store)?.key == bigEndian(UInt64(min(probe, 5997) / 3 * 3)))
+  }
+  #expect(try tree.floor([0], &store) == nil)  // below every key
+}

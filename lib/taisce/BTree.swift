@@ -32,6 +32,28 @@ public struct BTree: Equatable, Sendable {
     }
   }
 
+  /// The last entry whose key is at most `key`.
+  public func floor<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> (key: [UInt8], value: [UInt8])? {
+    guard root != 0 else { return nil }
+    return try floor(root, key, &store)
+  }
+
+  func floor<D>(_ block: UInt64, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError)
+    -> (key: [UInt8], value: [UInt8])?
+  {
+    let n = try store.node(block)
+    if n.isLeaf {
+      let i = n.childIndex(key) - 1  // the number of keys ≤ key, less one
+      return i >= 0 ? (n.keys[i], n.values[i]) : nil
+    }
+    var c = n.childIndex(key)
+    while c >= 0 {
+      if let found = try floor(n.children[c], key, &store) { return found }
+      c -= 1  // everything in the earlier child is below `key`
+    }
+    return nil
+  }
+
   /// The entries with `from ≤ key < to` (to the end if `to` is nil), in
   /// order, at most `limit`.
   public func scan<D>(from: [UInt8], to: [UInt8]? = nil, limit: Int = Int.max, _ store: inout Store<D>)

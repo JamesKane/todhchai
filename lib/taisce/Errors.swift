@@ -25,6 +25,14 @@ public enum TaisceError: Error, Equatable, Sendable {
   case missingKey
   /// A delta past the end of the value it changes.
   case badDelta
+  // The file system's, as POSIX names them.
+  case notFound  // ENOENT
+  case exists  // EEXIST
+  case notDirectory  // ENOTDIR
+  case isDirectory  // EISDIR
+  case notEmpty  // ENOTEMPTY
+  case nameTooLong  // ENAMETOOLONG
+  case invalid  // EINVAL: a bad name, or a directory moved into itself
 }
 
 public enum Corruption: Equatable, Sendable {
@@ -32,6 +40,11 @@ public enum Corruption: Equatable, Sendable {
   case bitmapSize
   case node
   case catalog
+  case inode
+  case directory
+  case extent
+  /// The file system's own invariants (FileSystem.check).
+  case fileSystem(FileSystemFault)
   /// Blocks in use that no tree holds, or held twice.
   case leakedBlocks
   /// A tree breaks an invariant (BTree.check says which).
@@ -46,4 +59,14 @@ public enum TreeFault: Equatable, Sendable {
   case overfull
   case childCount
   case blockNotAllocated
+}
+
+public enum FileSystemFault: Equatable, Sendable {
+  case danglingEntry  // names an inode that isn't there
+  case wrongType  // an entry's type isn't its inode's
+  case linkCount
+  case parent
+  case unreachable  // an inode no name or orphan holds
+  case sharedBlock  // two extents, or an extent and a node, on one block
+  case extentPastEnd
 }

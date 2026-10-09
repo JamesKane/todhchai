@@ -41,6 +41,9 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   var logAt: UInt64
   var logSeq: UInt64 = 0
   public private(set) var txg: UInt64 = 1
+  /// File data was written since the last commit: it needs a barrier before
+  /// the log (ordered data, as ext4's default mode).
+  public var dataWritten = false
   public var nextInode: UInt64
 
   /// A new volume on `device`.
@@ -91,6 +94,13 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let t = treeIndex(tree)
     guard t.found else { return nil }
     return try trees[t.at].tree.get(key, &store)
+  }
+
+  /// The last entry of `tree` whose key is at most `key`.
+  public mutating func floor(_ tree: UInt64, _ key: [UInt8]) throws(TaisceError) -> (key: [UInt8], value: [UInt8])? {
+    let t = treeIndex(tree)
+    guard t.found else { return nil }
+    return try trees[t.at].tree.floor(key, &store)
   }
 
   public mutating func scan(_ tree: UInt64, from: [UInt8], to: [UInt8]? = nil, limit: Int = Int.max)
@@ -199,7 +209,10 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       targets.append(layout.bitmapStart + index)
       blocks += bytes
     }
-    guard !targets.isEmpty || catalog.root != store.volume.superblock.catalogRoot else { return }
+    guard !targets.isEmpty || catalog.root != store.volume.superblock.catalogRoot else {
+      store.volume.allocator.groupCommitted()
+      return
+    }
 
     // The records: as many as the blocks need, at least one.
     let records = max(1, (targets.count + Log.maxBlocks - 1) / Log.maxBlocks)
@@ -217,8 +230,13 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       image += record.encode()
       logSeq += 1
     }
+    // File data written for this group reaches the disk before the
+    // metadata that points at it.
+    if dataWritten { try store.volume.device.flush() }
     try store.volume.device.write(logAt, image)
     try store.volume.device.flush()  // the commit point
+    dataWritten = false
+    store.volume.allocator.groupCommitted()
     logAt += logBlocks
     // In place; durable by the next checkpoint's barrier.
     try store.writeDirty()
@@ -242,8 +260,9 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   }
 
   /// Every tree's invariants, and that the blocks in use are exactly the
-  /// reserved ones and the trees' nodes: nothing leaked, nothing shared.
-  public mutating func check() throws(TaisceError) -> (entries: Int, nodes: Int) {
+  /// reserved ones, the trees' nodes and `dataBlocks` (the file system's
+  /// extents): nothing leaked, nothing shared.
+  public mutating func check(dataBlocks: UInt64 = 0) throws(TaisceError) -> (entries: Int, nodes: Int) {
     var entries = 0, nodes = try catalog.check(&store).nodes
     for t in trees {
       let s = try t.tree.check(&store)
@@ -252,7 +271,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     }
     let a = store.volume.allocator
     let used = a.blockCount - a.freeCount
-    guard used == store.volume.superblock.layout.dataStart + UInt64(nodes * Layout.nodeBlocks) else {
+    guard used == store.volume.superblock.layout.dataStart + UInt64(nodes * Layout.nodeBlocks) + dataBlocks else {
       throw .corrupt(.leakedBlocks)
     }
     return (entries, nodes)

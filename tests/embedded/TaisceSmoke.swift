@@ -37,6 +37,17 @@ import Taisce
       var m = try Engine.mount(e.store.volume.device)
       check(try m.get(1, [1]) == [41, 0, 0, 0, 0, 0, 0, 0] && m.get(1, [2]) == nil, "engine replay")
       check(try m.check().entries == 1, "engine check")
+      // Files: a directory, data with a hole, a rename, and a remount.
+      var fs = try FileSystem.format(MemoryDevice(blocks: 4096), label: [], uuid: [UInt8](repeating: 3, count: 16), now: 1)
+      let dir = try fs.create(1, [0x64], .directory, mode: 0o755, now: 2)
+      let file = try fs.create(dir, [0x66], .file, mode: 0o644, now: 3)
+      try fs.write(file, offset: 9000, [1, 2, 3], now: 4)
+      try fs.rename(dir, [0x66], 1, [0x67], now: 5)
+      try fs.sync()
+      var again = try FileSystem.mount(fs.engine.store.volume.device)
+      check(try again.lookup(1, [0x67]) == file, "fs rename")
+      check(try again.read(file, offset: 8999, count: 10) == [0, 1, 2, 3], "fs data")
+      check(try again.check() == 3, "fs check")
     } catch {
       check(false, "a Taisce call threw")
     }

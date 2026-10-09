@@ -1,0 +1,664 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+/// Files and directories on the engine (filesystem.md §3): inodes,
+/// directory entries bucketed by name hash, extents, symlinks, and an
+/// orphan list. Every operation is one atomic batch.
+///
+/// File data is copy-on-write per write in S0: a write puts its blocks in
+/// newly allocated space (unless they were allocated in this group, which
+/// nothing committed points at), reaches the disk before the group's log
+/// commit, and the blocks it replaces stay held until that commit. So data
+/// changes atomically with its group, and a crash shows a file exactly as
+/// some group left it.
+public struct FileSystem<Device: BlockDevice>: ~Copyable {
+  public var engine: Engine<Device>
+  /// Nodes open now, with how often: one unlinked while open becomes an
+  /// orphan, freed at its last close or at the next mount.
+  var openCounts: [(ino: UInt64, count: Int)] = []
+
+  public static var root: UInt64 { 1 }
+  public static var maxName: Int { 255 }
+  static var tree: UInt64 { 1 }
+  static var orphans: UInt64 { 2 }
+  static var blockSize: Int { Layout.blockSize }
+
+  // MARK: Volumes
+
+  /// A new file system on `device`, with an empty root directory.
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
+                            logBlocks: UInt64? = nil) throws(TaisceError) -> FileSystem {
+    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, logBlocks: logBlocks))
+    let root = Inode(type: .directory, mode: 0o755, parent: Self.root, now: now)
+    try fs.engine.apply([.insert(tree: tree, key: FSKey.make(Self.root, FSKey.inode), value: root.encode())])
+    try fs.engine.commitGroup()
+    return fs
+  }
+
+  /// Mounts the file system on `device`: replays the log, then frees what
+  /// orphans a crash left.
+  public static func mount(_ device: consuming Device) throws(TaisceError) -> FileSystem {
+    var fs = FileSystem(engine: try Engine.mount(device))
+    for (key, _) in try fs.engine.scan(orphans, from: []) {
+      try fs.destroy(FSKey.readU64(key, at: 0))
+    }
+    try fs.engine.commitGroup()
+    return fs
+  }
+
+  init(engine: consuming Engine<Device>) { self.engine = engine }
+
+  /// Makes everything so far durable.
+  public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
+
+  // MARK: Nodes
+
+  public mutating func stat(_ ino: UInt64) throws(TaisceError) -> Inode {
+    guard let v = try engine.get(Self.tree, FSKey.make(ino, FSKey.inode)) else { throw .notFound }
+    return try Inode.decode(v)
+  }
+
+  /// Changes a node's permissions, owners or times; nil leaves one as is.
+  public mutating func setAttributes(_ ino: UInt64, mode: UInt32? = nil, uid: UInt32? = nil, gid: UInt32? = nil,
+                                     atime: UInt64? = nil, mtime: UInt64? = nil, now: UInt64) throws(TaisceError) {
+    var c = Changes()
+    var n = try inode(ino, &c)
+    if let mode { n.mode = mode & 0o7777 }
+    if let uid { n.uid = uid }
+    if let gid { n.gid = gid }
+    if let atime { n.atime = atime }
+    if let mtime { n.mtime = mtime }
+    n.ctime = now
+    n.version += 1
+    c.set(FSKey.make(ino, FSKey.inode), n.encode())
+    try engine.apply(c.messages(Self.tree))
+  }
+
+  /// Marks a node open (FUSE open, or a native handle).
+  public mutating func opened(_ ino: UInt64) {
+    if let i = openCounts.firstIndex(where: { $0.ino == ino }) {
+      openCounts[i].count += 1
+    } else {
+      openCounts.append((ino, 1))
+    }
+  }
+
+  /// Marks a node closed; an orphan's last close frees it.
+  public mutating func closed(_ ino: UInt64) throws(TaisceError) {
+    guard let i = openCounts.firstIndex(where: { $0.ino == ino }) else { return }
+    openCounts[i].count -= 1
+    guard openCounts[i].count == 0 else { return }
+    openCounts.remove(at: i)
+    if try engine.get(Self.orphans, FSKey.u64(ino)) != nil { try destroy(ino) }
+  }
+
+  func isOpen(_ ino: UInt64) -> Bool { openCounts.contains { $0.ino == ino } }
+
+  // MARK: Directories
+
+  /// The node `name` names in `dir`.
+  public mutating func lookup(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
+    var c = Changes()
+    guard let e = try entry(dir, name, &c) else { throw .notFound }
+    return e.ino
+  }
+
+  /// A new, empty file or directory named `name` in `dir`.
+  public mutating func create(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, now: UInt64)
+    throws(TaisceError) -> UInt64
+  {
+    guard type != .symlink else { throw .invalid }
+    return try make(dir, name, type, mode: mode, target: nil, now: now)
+  }
+
+  /// A symbolic link to `target`.
+  public mutating func symlink(_ dir: UInt64, _ name: [UInt8], target: [UInt8], now: UInt64) throws(TaisceError)
+    -> UInt64
+  {
+    guard !target.isEmpty, target.count <= BTree.maxValue else { throw .invalid }
+    return try make(dir, name, .symlink, mode: 0o777, target: target, now: now)
+  }
+
+  public mutating func readlink(_ ino: UInt64) throws(TaisceError) -> [UInt8] {
+    guard let t = try engine.get(Self.tree, FSKey.make(ino, FSKey.symlink)) else { throw .invalid }
+    return t
+  }
+
+  mutating func make(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, target: [UInt8]?, now: UInt64)
+    throws(TaisceError) -> UInt64
+  {
+    try Self.checkName(name)
+    var c = Changes()
+    var parent = try inode(dir, &c)
+    guard parent.type == .directory else { throw .notDirectory }
+    guard try entry(dir, name, &c) == nil else { throw .exists }
+    let ino = engine.nextInode
+    var node = Inode(type: type, mode: mode, parent: dir, now: now)
+    if let target {
+      node.size = UInt64(target.count)
+      c.set(FSKey.make(ino, FSKey.symlink), target)
+    }
+    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try addEntry(dir, DirectoryEntry(name: name, ino: ino, type: type), &c)
+    if type == .directory { parent.links += 1 }
+    touch(&parent, now)
+    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    try engine.apply(c.messages(Self.tree))
+    engine.nextInode += 1
+    return ino
+  }
+
+  /// Another name for a file.
+  public mutating func link(_ ino: UInt64, _ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    try Self.checkName(name)
+    var c = Changes()
+    var node = try inode(ino, &c)
+    guard node.type != .directory else { throw .isDirectory }
+    var parent = try inode(dir, &c)
+    guard parent.type == .directory else { throw .notDirectory }
+    guard try entry(dir, name, &c) == nil else { throw .exists }
+    try addEntry(dir, DirectoryEntry(name: name, ino: ino, type: node.type), &c)
+    node.links += 1
+    node.ctime = now
+    node.version += 1
+    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    touch(&parent, now)
+    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    try engine.apply(c.messages(Self.tree))
+  }
+
+  /// Removes a file's or symlink's name; its last name frees it, or makes
+  /// it an orphan while it's open.
+  public mutating func unlink(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    var c = Changes()
+    guard let e = try entry(dir, name, &c) else { throw .notFound }
+    guard e.type != .directory else { throw .isDirectory }
+    try removeEntry(dir, name, &c)
+    var parent = try inode(dir, &c)
+    touch(&parent, now)
+    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    let freeing = try dropLink(e.ino, now, &c)
+    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    if freeing { try destroy(e.ino) }
+  }
+
+  /// Removes an empty directory.
+  public mutating func rmdir(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    var c = Changes()
+    guard let e = try entry(dir, name, &c) else { throw .notFound }
+    guard e.type == .directory else { throw .notDirectory }
+    guard try isEmpty(e.ino) else { throw .notEmpty }
+    try removeEntry(dir, name, &c)
+    var parent = try inode(dir, &c)
+    parent.links -= 1
+    touch(&parent, now)
+    c.set(FSKey.make(dir, FSKey.inode), parent.encode())
+    let freeing = try dropLink(e.ino, now, &c)
+    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    if freeing { try destroy(e.ino) }
+  }
+
+  /// Moves `fromName` in `fromDir` to `toName` in `toDir`, replacing what's
+  /// there as POSIX rename does.
+  public mutating func rename(_ fromDir: UInt64, _ fromName: [UInt8], _ toDir: UInt64, _ toName: [UInt8], now: UInt64)
+    throws(TaisceError)
+  {
+    try Self.checkName(toName)
+    var c = Changes()
+    guard let source = try entry(fromDir, fromName, &c) else { throw .notFound }
+    guard try inode(toDir, &c).type == .directory else { throw .notDirectory }
+    if fromDir == toDir && fromName == toName { return }
+    if source.type == .directory {
+      // Not into itself or below it.
+      var d = toDir
+      while true {
+        if d == source.ino { throw .invalid }
+        let p = try inode(d, &c).parent
+        if p == d { break }
+        d = p
+      }
+    }
+    var freeing: UInt64? = nil
+    if let target = try entry(toDir, toName, &c) {
+      if target.ino == source.ino { return }  // two names for one file: nothing to do
+      if source.type == .directory {
+        guard target.type == .directory else { throw .notDirectory }
+        guard try isEmpty(target.ino) else { throw .notEmpty }
+      } else if target.type == .directory {
+        throw .isDirectory
+      }
+      try removeEntry(toDir, toName, &c)
+      if target.type == .directory {
+        var to = try inode(toDir, &c)
+        to.links -= 1
+        c.set(FSKey.make(toDir, FSKey.inode), to.encode())
+      }
+      if try dropLink(target.ino, now, &c) { freeing = target.ino }
+    }
+    try removeEntry(fromDir, fromName, &c)
+    try addEntry(toDir, DirectoryEntry(name: toName, ino: source.ino, type: source.type), &c)
+    var node = try inode(source.ino, &c)
+    node.ctime = now
+    node.version += 1
+    if source.type == .directory && fromDir != toDir {
+      node.parent = toDir
+      var from = try inode(fromDir, &c), to = try inode(toDir, &c)
+      from.links -= 1
+      c.set(FSKey.make(fromDir, FSKey.inode), from.encode())
+      to.links += 1
+      c.set(FSKey.make(toDir, FSKey.inode), to.encode())
+    }
+    c.set(FSKey.make(source.ino, FSKey.inode), node.encode())
+    for d in fromDir == toDir ? [fromDir] : [fromDir, toDir] {
+      var p = try inode(d, &c)
+      touch(&p, now)
+      c.set(FSKey.make(d, FSKey.inode), p.encode())
+    }
+    try engine.apply(c.messages(Self.tree) + c.orphanMessages(Self.orphans))
+    if let freeing { try destroy(freeing) }
+  }
+
+  /// A directory's entries after `cookie` (nil: from the start), at most
+  /// about `limit`, each with the cookie to continue after it. Order is by
+  /// name hash; entries sharing a hash come together.
+  public mutating func list(_ dir: UInt64, after cookie: UInt64? = nil, limit: Int = Int.max) throws(TaisceError)
+    -> [(entry: DirectoryEntry, cookie: UInt64)]
+  {
+    guard try stat(dir).type == .directory else { throw .notDirectory }
+    if cookie == UInt64.max { return [] }
+    let from = FSKey.make(dir, FSKey.dirent, FSKey.u64(cookie.map { $0 + 1 } ?? 0))
+    var out: [(entry: DirectoryEntry, cookie: UInt64)] = []
+    for (key, value) in try engine.scan(Self.tree, from: from, to: FSKey.make(dir, FSKey.dirent + 1), limit: limit) {
+      let hash = FSKey.readU64(key, at: 9)
+      for e in try Bucket.decode(value) { out.append((e, hash)) }
+    }
+    return out
+  }
+
+  // MARK: Data
+
+  /// Up to `count` bytes from `offset`; fewer at the end of the file.
+  public mutating func read(_ ino: UInt64, offset: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    let node = try stat(ino)
+    guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
+    guard offset < node.size, count > 0 else { return [] }
+    let end = min(node.size, offset + UInt64(count))
+    let bs = UInt64(Self.blockSize)
+    let first = offset / bs, last = (end - 1) / bs
+    var none = Changes()
+    let blocks = try readBlocks(ino, first, Int(last - first + 1), &none)
+    let start = Int(offset - first * bs)
+    return Array(blocks[start..<(start + Int(end - offset))])
+  }
+
+  /// Writes `bytes` at `offset`, growing the file as needed.
+  public mutating func write(_ ino: UInt64, offset: UInt64, _ bytes: [UInt8], now: UInt64) throws(TaisceError) {
+    var c = Changes()
+    var node = try inode(ino, &c)
+    guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
+    guard !bytes.isEmpty else { return }
+    let bs = UInt64(Self.blockSize)
+    let end = offset + UInt64(bytes.count)
+    let first = offset / bs, last = (end - 1) / bs
+    var data = try readBlocks(ino, first, Int(last - first + 1), &c)
+    data.replaceSubrange(Int(offset - first * bs)..<Int(end - first * bs), with: bytes)
+    let freed = try replaceBlocks(ino, first, data, &c)
+    node.size = max(node.size, end)
+    touchData(&node, now)
+    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try commitData(c, freed)
+  }
+
+  /// Sets a file's size: shrinking frees the blocks past it, growing reads
+  /// as zeros.
+  public mutating func truncate(_ ino: UInt64, size: UInt64, now: UInt64) throws(TaisceError) {
+    var c = Changes()
+    var node = try inode(ino, &c)
+    guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
+    var freed: [Extent] = []
+    if size < node.size {
+      let bs = UInt64(Self.blockSize)
+      let keep = (size + bs - 1) / bs  // blocks that still hold data
+      // Bytes past the end of the last block stay zero, so growing later
+      // reads zeros there.
+      if size % bs != 0, try mapping(ino, size / bs, &c) != nil {
+        var tail = try readBlocks(ino, size / bs, 1, &c)
+        for i in Int(size % bs)..<Self.blockSize { tail[i] = 0 }
+        freed += try replaceBlocks(ino, size / bs, tail, &c)
+      }
+      freed += try unmap(ino, from: keep, &c)
+    }
+    node.size = size
+    touchData(&node, now)
+    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    try commitData(c, freed)
+  }
+
+  /// Applies a data change's metadata, then lets go of the blocks it
+  /// replaced (held until the group commits).
+  mutating func commitData(_ c: Changes, _ freed: [Extent]) throws(TaisceError) {
+    do {
+      try engine.apply(c.messages(Self.tree))
+    } catch {
+      for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
+      throw error
+    }
+    for e in freed { engine.store.volume.allocator.free(e) }
+  }
+
+  // MARK: Extents
+
+  /// The extent covering file block `block`: (its first file block,
+  /// physical start, count), as `c` leaves it.
+  mutating func mapping(_ ino: UInt64, _ block: UInt64, _ c: inout Changes) throws(TaisceError)
+    -> (UInt64, UInt64, UInt64)?
+  {
+    try extents(ino, block, block + 1, &c).first.map { ($0.start, $0.physical, $0.count) }
+  }
+
+  /// The extents overlapping file blocks `first..<end`, in order, as the
+  /// engine has them with `c`'s pending changes on top.
+  mutating func extents(_ ino: UInt64, _ first: UInt64, _ end: UInt64, _ c: inout Changes) throws(TaisceError)
+    -> [(start: UInt64, physical: UInt64, count: UInt64)]
+  {
+    var found: [(start: UInt64, physical: UInt64, count: UInt64)] = []
+    func add(_ key: [UInt8], _ value: [UInt8]) throws(TaisceError) {
+      guard key.count == 17, FSKey.readU64(key, at: 0) == ino, key[8] == FSKey.extent else { return }
+      guard value.count == 16 else { throw .corrupt(.extent) }
+      found.append((FSKey.readU64(key, at: 9), value.get(UInt64.self, at: 0), value.get(UInt64.self, at: 8)))
+    }
+    if let (key, value) = try engine.floor(Self.tree, FSKey.make(ino, FSKey.extent, FSKey.u64(first))) {
+      try add(key, value)
+    }
+    if end > first + 1 {
+      let from = FSKey.make(ino, FSKey.extent, FSKey.u64(first + 1))
+      for (key, value) in try engine.scan(Self.tree, from: from, to: FSKey.make(ino, FSKey.extent, FSKey.u64(end))) {
+        try add(key, value)
+      }
+    }
+    // Pending changes win: the last for each key.
+    for (i, e) in c.entries.enumerated() where e.key.count == 17 && e.key[8] == FSKey.extent
+      && FSKey.readU64(e.key, at: 0) == ino && !c.entries[(i + 1)...].contains(where: { $0.key == e.key })
+    {
+      let start = FSKey.readU64(e.key, at: 9)
+      found.removeAll { $0.start == start }
+      if let v = e.value { try add(e.key, v) }
+    }
+    return found.filter { $0.start < end && $0.start + $0.count > first }.sorted { $0.start < $1.start }
+  }
+
+  /// `count` file blocks from `first`, holes as zeros.
+  mutating func readBlocks(_ ino: UInt64, _ first: UInt64, _ count: Int, _ c: inout Changes) throws(TaisceError)
+    -> [UInt8]
+  {
+    var data = [UInt8](repeating: 0, count: count * Self.blockSize)
+    for e in try extents(ino, first, first + UInt64(count), &c) {
+      let lo = max(e.start, first), hi = min(e.start + e.count, first + UInt64(count))
+      guard lo < hi else { continue }
+      let bytes = try engine.store.volume.device.read(e.physical + (lo - e.start), count: Int(hi - lo))
+      data.replaceSubrange(Int(lo - first) * Self.blockSize..<Int(hi - first) * Self.blockSize, with: bytes)
+    }
+    return data
+  }
+
+  /// Gives file blocks `first...` the contents `data` (whole blocks): blocks
+  /// allocated in this group are rewritten in place, the rest go to new
+  /// space. Returns the blocks this replaces, to free once it's applied.
+  mutating func replaceBlocks(_ ino: UInt64, _ first: UInt64, _ data: [UInt8], _ c: inout Changes)
+    throws(TaisceError) -> [Extent]
+  {
+    let count = UInt64(data.count / Self.blockSize)
+    let old = try extents(ino, first, first + count, &c)
+    // Where each block goes: in place if fresh, else new space.
+    var target = [UInt64](repeating: 0, count: Int(count))
+    var needed: UInt64 = 0
+    for i in 0..<count {
+      let b = first + i
+      if let e = old.first(where: { b >= $0.start && b < $0.start + $0.count }),
+        engine.store.volume.allocator.isFresh(e.physical + (b - e.start))
+      {
+        target[Int(i)] = e.physical + (b - e.start)
+      } else {
+        needed += 1
+      }
+    }
+    var hint = old.last.map { $0.physical + $0.count } ?? 0
+    if first > 0, let prior = try mapping(ino, first - 1, &c) { hint = prior.1 + prior.2 }
+    let fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
+    c.allocated += fresh
+    var spare = fresh.flatMap { e in (e.start..<e.end).map { $0 } }[...]
+    for i in target.indices where target[i] == 0 { target[i] = spare.removeFirst() }
+    // The data, in runs of consecutive physical blocks.
+    var i = 0
+    while i < target.count {
+      var j = i + 1
+      while j < target.count, target[j] == target[j - 1] + 1 { j += 1 }
+      try engine.store.volume.device.write(target[i], Array(data[(i * Self.blockSize)..<(j * Self.blockSize)]))
+      i = j
+    }
+    engine.dataWritten = true
+    // The mapping: what's kept of old extents outside the range, then the new runs.
+    var freed: [Extent] = []
+    for e in old {
+      c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
+      if e.start < first { c.setExtent(ino, e.start, e.physical, first - e.start) }
+      let end = first + count, eEnd = e.start + e.count
+      if eEnd > end { c.setExtent(ino, end, e.physical + (end - e.start), eEnd - end) }
+      // Its blocks inside the range that weren't kept in place.
+      let lo = max(e.start, first), hi = min(eEnd, end)
+      var b = lo
+      while b < hi {
+        let p = e.physical + (b - e.start)
+        if target[Int(b - first)] != p { freed.append(Extent(start: p, count: 1)) }
+        b += 1
+      }
+    }
+    i = 0
+    while i < target.count {
+      var j = i + 1
+      while j < target.count, target[j] == target[j - 1] + 1 { j += 1 }
+      c.setExtent(ino, first + UInt64(i), target[i], UInt64(j - i))
+      i = j
+    }
+    return freed
+  }
+
+  /// Removes the mapping of file blocks from `first` on; returns the
+  /// blocks to free.
+  mutating func unmap(_ ino: UInt64, from first: UInt64, _ c: inout Changes) throws(TaisceError) -> [Extent] {
+    var freed: [Extent] = []
+    for e in try extents(ino, first, UInt64.max, &c) {
+      c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
+      if e.start < first {
+        c.setExtent(ino, e.start, e.physical, first - e.start)
+        freed.append(Extent(start: e.physical + (first - e.start), count: e.count - (first - e.start)))
+      } else {
+        freed.append(Extent(start: e.physical, count: e.count))
+      }
+    }
+    return freed
+  }
+
+  // MARK: Checking
+
+  /// Every invariant, the engine's and the file system's: what fsck checks.
+  /// Returns how many nodes the volume holds.
+  @discardableResult
+  public mutating func check() throws(TaisceError) -> Int {
+    // Every inode, and every name for it, from the keys themselves.
+    var inodes: [(ino: UInt64, node: Inode, names: UInt32, subdirs: UInt32)] = []
+    var entries: [(dir: UInt64, entry: DirectoryEntry)] = []
+    var extents: [(ino: UInt64, start: UInt64, physical: UInt64, count: UInt64)] = []
+    for (key, value) in try engine.scan(Self.tree, from: []) {
+      let ino = FSKey.readU64(key, at: 0)
+      switch key[8] {
+      case FSKey.inode: inodes.append((ino, try Inode.decode(value), 0, 0))
+      case FSKey.dirent: for e in try Bucket.decode(value) { entries.append((ino, e)) }
+      case FSKey.extent:
+        extents.append((ino, FSKey.readU64(key, at: 9), value.get(UInt64.self, at: 0), value.get(UInt64.self, at: 8)))
+      default: break
+      }
+    }
+    func index(_ ino: UInt64) -> Int? {
+      var lo = 0, hi = inodes.count  // sorted: they came from the tree in key order
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if inodes[mid].ino < ino { lo = mid + 1 } else { hi = mid }
+      }
+      return lo < inodes.count && inodes[lo].ino == ino ? lo : nil
+    }
+    for (dir, e) in entries {
+      guard let i = index(e.ino), let d = index(dir) else { throw .corrupt(.fileSystem(.danglingEntry)) }
+      guard inodes[i].node.type == e.type, inodes[d].node.type == .directory else {
+        throw .corrupt(.fileSystem(.wrongType))
+      }
+      inodes[i].names += 1
+      if e.type == .directory {
+        inodes[d].subdirs += 1
+        guard inodes[i].node.parent == dir else { throw .corrupt(.fileSystem(.parent)) }
+      }
+    }
+    for n in inodes {
+      let orphan = try engine.get(Self.orphans, FSKey.u64(n.ino)) != nil
+      if n.ino == Self.root {
+        guard n.node.links == 2 + n.subdirs, n.node.parent == Self.root else { throw .corrupt(.fileSystem(.linkCount)) }
+      } else if orphan {
+        guard n.node.links == 0, n.names == 0 else { throw .corrupt(.fileSystem(.linkCount)) }
+      } else if n.names == 0 {
+        throw .corrupt(.fileSystem(.unreachable))
+      } else if n.node.type == .directory {
+        guard n.names == 1, n.node.links == 2 + n.subdirs else { throw .corrupt(.fileSystem(.linkCount)) }
+      } else {
+        guard n.node.links == n.names else { throw .corrupt(.fileSystem(.linkCount)) }
+      }
+    }
+    // Extents: inside their file, and no block in two of them. (The engine's
+    // count then catches a data block that's also a node.)
+    let bs = UInt64(Self.blockSize)
+    var data: UInt64 = 0
+    var blocks = extents.map { Extent(start: $0.physical, count: $0.count) }
+    blocks.sort { $0.start < $1.start }
+    for i in blocks.indices.dropFirst() where blocks[i].start < blocks[i - 1].end {
+      throw .corrupt(.fileSystem(.sharedBlock))
+    }
+    for e in extents {
+      guard let i = index(e.ino), (e.start + e.count) * bs < inodes[i].node.size + bs else {
+        throw .corrupt(.fileSystem(.extentPastEnd))
+      }
+      for b in e.physical..<(e.physical + e.count) where !engine.store.volume.allocator.isUsed(b) {
+        throw .corrupt(.fileSystem(.sharedBlock))
+      }
+      data += e.count
+    }
+    _ = try engine.check(dataBlocks: data)
+    return inodes.count
+  }
+
+  // MARK: Helpers
+
+  static func checkName(_ name: [UInt8]) throws(TaisceError) {
+    guard name.count <= maxName else { throw .nameTooLong }
+    guard !name.isEmpty, name != [0x2E], name != [0x2E, 0x2E], !name.contains(0x2F), !name.contains(0) else {
+      throw .invalid
+    }
+  }
+
+  mutating func inode(_ ino: UInt64, _ c: inout Changes) throws(TaisceError) -> Inode {
+    guard let v = try c.get(FSKey.make(ino, FSKey.inode), &engine) else { throw .notFound }
+    return try Inode.decode(v)
+  }
+
+  mutating func entry(_ dir: UInt64, _ name: [UInt8], _ c: inout Changes) throws(TaisceError) -> DirectoryEntry? {
+    guard let v = try c.get(FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name))), &engine) else { return nil }
+    return try Bucket.decode(v).first { $0.name == name }
+  }
+
+  mutating func addEntry(_ dir: UInt64, _ e: DirectoryEntry, _ c: inout Changes) throws(TaisceError) {
+    let key = FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(e.name)))
+    var bucket: [DirectoryEntry] = []
+    if let v = try c.get(key, &engine) { bucket = try Bucket.decode(v) }
+    bucket.append(e)
+    c.set(key, Bucket.encode(bucket))
+  }
+
+  mutating func removeEntry(_ dir: UInt64, _ name: [UInt8], _ c: inout Changes) throws(TaisceError) {
+    let key = FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name)))
+    guard let v = try c.get(key, &engine) else { return }
+    let bucket = try Bucket.decode(v).filter { $0.name != name }
+    if bucket.isEmpty { c.delete(key) } else { c.set(key, Bucket.encode(bucket)) }
+  }
+
+  mutating func isEmpty(_ dir: UInt64) throws(TaisceError) -> Bool {
+    try engine.scan(Self.tree, from: FSKey.make(dir, FSKey.dirent), to: FSKey.make(dir, FSKey.dirent + 1), limit: 1)
+      .isEmpty
+  }
+
+  /// Drops one link to `ino`. True if the node is to be freed now; one
+  /// that's open becomes an orphan instead.
+  mutating func dropLink(_ ino: UInt64, _ now: UInt64, _ c: inout Changes) throws(TaisceError) -> Bool {
+    var node = try inode(ino, &c)
+    node.links = node.type == .directory ? 0 : node.links - 1
+    node.ctime = now
+    node.version += 1
+    c.set(FSKey.make(ino, FSKey.inode), node.encode())
+    guard node.links == 0 else { return false }
+    if isOpen(ino) {
+      c.orphans.append(ino)
+      return false
+    }
+    return true
+  }
+
+  /// Frees a node with no links: its keys, its blocks, its orphan entry.
+  mutating func destroy(_ ino: UInt64) throws(TaisceError) {
+    var batch: [Message] = [.delete(tree: Self.orphans, key: FSKey.u64(ino))]
+    var freed: [Extent] = []
+    for (key, value) in try engine.scan(Self.tree, from: FSKey.make(ino, 0), to: FSKey.make(ino + 1, 0)) {
+      batch.append(.delete(tree: Self.tree, key: key))
+      if key[8] == FSKey.extent, value.count == 16 {
+        freed.append(Extent(start: value.get(UInt64.self, at: 0), count: value.get(UInt64.self, at: 8)))
+      }
+    }
+    try engine.apply(batch)
+    for e in freed { engine.store.volume.allocator.free(e) }
+  }
+
+  func touch(_ n: inout Inode, _ now: UInt64) {
+    n.mtime = now
+    n.ctime = now
+    n.version += 1
+  }
+  func touchData(_ n: inout Inode, _ now: UInt64) { touch(&n, now) }
+}
+
+/// An operation's changes before they're applied: reads see them, so two
+/// edits of one key compose, and they go to the engine as one batch.
+struct Changes {
+  var entries: [(key: [UInt8], value: [UInt8]?)] = []  // nil: deleted
+  var orphans: [UInt64] = []
+  /// Blocks allocated for this operation's data, to release if it fails.
+  var allocated: [Extent] = []
+
+  mutating func get<D>(_ key: [UInt8], _ engine: inout Engine<D>) throws(TaisceError) -> [UInt8]? {
+    if let e = entries.last(where: { $0.key == key }) { return e.value }
+    return try engine.get(FileSystem<D>.tree, key)
+  }
+
+  mutating func set(_ key: [UInt8], _ value: [UInt8]) { entries.append((key, value)) }
+  mutating func delete(_ key: [UInt8]) { entries.append((key, nil)) }
+
+  mutating func setExtent(_ ino: UInt64, _ start: UInt64, _ physical: UInt64, _ count: UInt64) {
+    var v = [UInt8](repeating: 0, count: 16)
+    v.put(physical, at: 0)
+    v.put(count, at: 8)
+    set(FSKey.make(ino, FSKey.extent, FSKey.u64(start)), v)
+  }
+
+  /// The batch: the last change to each key, in the order made.
+  func messages(_ tree: UInt64) -> [Message] {
+    entries.map { e in
+      if let v = e.value { .insert(tree: tree, key: e.key, value: v) } else { .delete(tree: tree, key: e.key) }
+    }
+  }
+
+  func orphanMessages(_ tree: UInt64) -> [Message] { orphans.map { .insert(tree: tree, key: FSKey.u64($0), value: []) } }
+}
