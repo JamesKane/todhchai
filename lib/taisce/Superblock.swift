@@ -2,10 +2,13 @@
 
 /// Where a volume's regions are, in blocks (S1): a ring of superblock slots
 /// at the start, two free-space bitmaps (alternating by transaction group),
-/// data, and the ring's footer copies at the end.
+/// the intent log, data, and the ring's footer copies at the end.
 public struct Layout: Equatable, Sendable {
   public var blockCount: UInt64
   public var bitmapBlocks: UInt64
+  /// The intent log (S1e): where `fsync` writes.
+  public var intentStart: UInt64
+  public var intentBlocks: UInt64
   public var dataStart: UInt64
   /// Where the data ends and the footer ring starts.
   public var dataEnd: UInt64
@@ -19,15 +22,18 @@ public struct Layout: Equatable, Sendable {
   public init(blockCount: UInt64) throws(TaisceError) {
     let bitsPerBlock = UInt64(Self.blockSize * 8)
     let bitmap = (blockCount + bitsPerBlock - 1) / bitsPerBlock
-    self.init(unchecked: blockCount, bitmapBlocks: bitmap)
+    // The intent log: 1% of the volume, from 1 MiB to 16 MiB.
+    self.init(unchecked: blockCount, bitmapBlocks: bitmap, intentBlocks: min(max(blockCount / 100, 256), 4096))
     // Room for at least a few nodes of data.
     guard dataStart + UInt64(Self.nodeBlocks) * 8 <= dataEnd, blockCount > 2 * Self.ringSlots else { throw .tooSmall }
   }
 
-  init(unchecked blockCount: UInt64, bitmapBlocks: UInt64) {
+  init(unchecked blockCount: UInt64, bitmapBlocks: UInt64, intentBlocks: UInt64) {
     self.blockCount = blockCount
     self.bitmapBlocks = bitmapBlocks
-    dataStart = Self.ringSlots + 2 * bitmapBlocks
+    intentStart = Self.ringSlots + 2 * bitmapBlocks
+    self.intentBlocks = intentBlocks
+    dataStart = intentStart + intentBlocks
     dataEnd = blockCount >= Self.ringSlots ? blockCount - Self.ringSlots : 0
   }
 
@@ -36,7 +42,8 @@ public struct Layout: Equatable, Sendable {
   /// A transaction group's superblock: its head copy and its footer copy.
   public func headSlot(txg: UInt64) -> UInt64 { txg % Self.ringSlots }
   public func footerSlot(txg: UInt64) -> UInt64 { dataEnd + txg % Self.ringSlots }
-  /// Blocks never handed out: the ring, the bitmaps, the footer ring.
+  /// Blocks never handed out: the ring, the bitmaps, the intent log, the
+  /// footer ring.
   public var reserved: UInt64 { dataStart + (blockCount - dataEnd) }
 }
 
@@ -45,7 +52,7 @@ public struct Layout: Equatable, Sendable {
 /// valid wins at mount. That write is the commit.
 public struct Superblock: Equatable, Sendable {
   public static let magic: UInt64 = 0x0000_6563_7369_6154  // "Taisce\0\0", little-endian
-  public static let version: UInt32 = 3  // S1: superblock flip, no metadata log; data checksums
+  public static let version: UInt32 = 4  // S1: superblock flip, data checksums, the intent log
 
   public var layout: Layout
   /// The transaction group this superblock commits.
@@ -90,6 +97,7 @@ public struct Superblock: Equatable, Sendable {
     b.put(bytes: label, at: 113)
     b.put(bitmapChecksum.a, at: 184)
     b.put(bitmapChecksum.b, at: 192)
+    b.put(layout.intentBlocks, at: 200)
     let c = Checksum(of: Array(b[..<Self.checksumOffset]))
     b.put(c.a, at: Self.checksumOffset)
     b.put(c.b, at: Self.checksumOffset + 8)
@@ -107,7 +115,8 @@ public struct Superblock: Equatable, Sendable {
     guard b.get(UInt32.self, at: 12) == UInt32(Layout.blockSize), b.get(UInt32.self, at: 40) == UInt32(Layout.nodeBlocks),
       b.get(UInt32.self, at: 44) == UInt32(Layout.ringSlots)
     else { throw .corrupt(.superblockLayout) }
-    let layout = Layout(unchecked: b.get(UInt64.self, at: 24), bitmapBlocks: b.get(UInt64.self, at: 32))
+    let layout = Layout(unchecked: b.get(UInt64.self, at: 24), bitmapBlocks: b.get(UInt64.self, at: 32),
+                        intentBlocks: b.get(UInt64.self, at: 200))
     guard layout.dataStart < layout.dataEnd,
       layout.bitmapBlocks * UInt64(Layout.blockSize) * 8 >= layout.blockCount
     else { throw .corrupt(.superblockLayout) }

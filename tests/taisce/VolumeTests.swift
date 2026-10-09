@@ -19,11 +19,14 @@ import Testing
   let l = try Layout(blockCount: 262_144)  // 1 GiB
   #expect(l.bitmapBlocks == 8)  // 262,144 bits
   #expect(l.bitmapStart(txg: 2) == 4 && l.bitmapStart(txg: 3) == 4 + 8)  // two regions, alternating
-  #expect(l.dataStart == 4 + 16)
+  #expect(l.intentStart == 4 + 16 && l.intentBlocks == 2621)  // the intent log: 1% of the volume
+  #expect(l.dataStart == 4 + 16 + 2621)
   #expect(l.dataEnd == 262_144 - 4)  // the footer ring after the data
   #expect(l.headSlot(txg: 6) == 2 && l.footerSlot(txg: 6) == 262_144 - 4 + 2)
-  #expect(l.reserved == 20 + 4)
-  #expect(throws: TaisceError.tooSmall) { try Layout(blockCount: 40) }
+  #expect(l.reserved == 4 + 16 + 2621 + 4)
+  #expect(try Layout(blockCount: 4096).intentBlocks == 256)  // at least 1 MiB
+  #expect(try Layout(blockCount: 1 << 30).intentBlocks == 4096)  // at most 16 MiB
+  #expect(throws: TaisceError.tooSmall) { try Layout(blockCount: 280) }  // no room left for data
 }
 
 @Test func aSuperblockRoundTripsAndRejectsDamage() throws {

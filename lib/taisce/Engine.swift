@@ -40,9 +40,16 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   var catalog: BTree
   /// The transaction group being built: one past the last committed.
   public private(set) var txg: UInt64
-  /// File data was written since the last commit: it needs a barrier before
-  /// the log (ordered data, as ext4's default mode).
+  /// File data was written since the last commit: the commit's barrier
+  /// covers it.
   public var dataWritten = false
+  /// The operations since the last commit or fsync, for the intent log; and
+  /// file blocks allocated for the batch about to be applied.
+  var pendingOps: [IntentOp] = []
+  var staged: [Extent] = []
+  /// Where the next intent record goes (blocks into the region), and its seq.
+  var intentAt: UInt64 = 0
+  var intentSeq: UInt64 = 0
   public var nextInode: UInt64
 
   /// A new volume on `device`.
@@ -53,10 +60,12 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     return try mount(volume.device)
   }
 
-  /// Mounts the volume on `device`: its newest valid superblock is the
-  /// state (there's nothing to replay).
+  /// Mounts the volume on `device`: its newest valid superblock, then the
+  /// intent log's records for it replayed and committed.
   public static func mount(_ device: consuming Device) throws(TaisceError) -> Engine {
-    try Engine(Store(try Volume.open(device)))
+    var e = try Engine(Store(try Volume.open(device)))
+    try e.replayIntentLog()
+    return e
   }
 
   init(_ store: consuming Store<Device>) throws(TaisceError) {
@@ -144,6 +153,68 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       }
       throw error
     }
+    pendingOps.append(IntentOp(messages: batch, allocated: staged, freed: []))
+    staged = []
+  }
+
+  // MARK: The intent log (S1e)
+
+  /// File blocks the file system allocated for the batch it's about to apply.
+  public mutating func noteAllocated(_ extents: [Extent]) { staged += extents }
+
+  /// The batch failed: those blocks aren't the log's business.
+  public mutating func dropStaged() { staged = [] }
+
+  /// File blocks freed after the last batch.
+  public mutating func noteFreed(_ extents: [Extent]) {
+    guard !extents.isEmpty else { return }
+    if pendingOps.isEmpty { pendingOps.append(IntentOp(messages: [], allocated: [], freed: [])) }
+    pendingOps[pendingOps.count - 1].freed += extents
+  }
+
+  /// Makes everything applied durable without a group commit: the
+  /// operations since the last commit or fsync go to the intent log as one
+  /// record, then a barrier (which also covers the file data already
+  /// written). The blocks they allocated are pinned until the commit. If
+  /// the log is full, it commits the group instead.
+  public mutating func fsync() throws(TaisceError) {
+    guard !pendingOps.isEmpty else {
+      if dataWritten { try store.volume.device.flush() }
+      return
+    }
+    let sb = store.volume.superblock
+    let record = IntentLog.encode(IntentLog.Record(txg: sb.txg, seq: intentSeq, nextInode: nextInode, ops: pendingOps))
+    let blocks = UInt64(record.count / Layout.blockSize)
+    guard intentAt + blocks <= sb.layout.intentBlocks else {
+      try commitGroup()
+      return
+    }
+    try store.volume.device.write(sb.layout.intentStart + intentAt, record)
+    try store.volume.device.flush()
+    intentAt += blocks
+    intentSeq += 1
+    for op in pendingOps { for e in op.allocated { store.volume.allocator.pin(e) } }
+    pendingOps = []
+  }
+
+  /// Replays the intent records that build on the mounted superblock, in
+  /// order, and commits them.
+  mutating func replayIntentLog() throws(TaisceError) {
+    let sb = store.volume.superblock
+    let end = sb.layout.intentStart + sb.layout.intentBlocks
+    var at = sb.layout.intentStart
+    var seq: UInt64 = 0
+    while let (record, blocks) = try IntentLog.read(&store.volume.device, at: at, end: end, txg: sb.txg, seq: seq) {
+      for op in record.ops {
+        for e in op.allocated { store.volume.allocator.claim(e) }
+        try apply(op.messages)
+        for e in op.freed { store.volume.allocator.free(e) }
+      }
+      nextInode = max(nextInode, record.nextInode)
+      at += blocks
+      seq += 1
+    }
+    if seq > 0 { try commitGroup() }
   }
 
   static func apply(_ delta: Delta, to value: inout [UInt8]) throws(TaisceError) {
@@ -203,6 +274,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let sb = store.volume.superblock
     guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode else {
       store.volume.allocator.groupCommitted()
+      pendingOps = []
       return
     }
     for (block, bytes) in written { try store.volume.device.write(block, bytes) }
@@ -214,6 +286,10 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     }
     dataWritten = false
     txg = store.volume.superblock.txg + 1
+    // The new txg leaves every intent record behind.
+    pendingOps = []
+    intentAt = 0
+    intentSeq = 0
   }
 
   /// Every block metadata lives in: each node's four blocks, in every tree

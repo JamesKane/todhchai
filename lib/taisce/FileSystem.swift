@@ -81,8 +81,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
 
   init(engine: consuming Engine<Device>) { self.engine = engine }
 
-  /// Makes everything so far durable.
+  /// Makes everything so far durable, by committing the group.
   public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
+
+  /// Makes everything so far durable, quickly: through the intent log,
+  /// without a group commit (S1e). It covers every operation so far, not
+  /// just one file's.
+  public mutating func fsync() throws(TaisceError) { try engine.fsync() }
 
   // MARK: Nodes
 
@@ -413,9 +418,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       try applyChanges(c)
     } catch {
       for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
+      engine.dropStaged()
       throw error
     }
     for e in freed { engine.store.volume.allocator.free(e) }
+    engine.noteFreed(freed)
   }
 
   // MARK: Extents
@@ -503,7 +510,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     for i in 0..<count {
       let b = first + i
       if let e = old.first(where: { b >= $0.start && b < $0.start + $0.count }),
-        engine.store.volume.allocator.isFresh(e.physical + (b - e.start))
+        engine.store.volume.allocator.isRewritable(e.physical + (b - e.start))
       {
         target[Int(i)] = e.physical + (b - e.start)
       } else {
@@ -514,6 +521,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     if first > 0, let prior = try mapping(ino, first - 1, &c) { hint = prior.1 + prior.2 }
     let fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
     c.allocated += fresh
+    engine.noteAllocated(fresh)
     var spare = fresh.flatMap { e in (e.start..<e.end).map { $0 } }[...]
     for i in target.indices where target[i] == 0 { target[i] = spare.removeFirst() }
     // The data, in runs of consecutive physical blocks.
@@ -839,6 +847,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     journal(&c, ino, parent: parent, .removed)
     try applyChanges(c)
     for e in freed { engine.store.volume.allocator.free(e) }
+    engine.noteFreed(freed)
   }
 
   func touch(_ n: inout Inode, _ now: UInt64) {

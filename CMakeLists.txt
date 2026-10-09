@@ -38,7 +38,7 @@ todhchai_tier0(TDUnicode)
 
 add_library(Taisce STATIC
   lib/taisce/Allocator.swift lib/taisce/AttributeStore.swift lib/taisce/Attributes.swift lib/taisce/BlockDevice.swift lib/taisce/Bytes.swift lib/taisce/CRC32C.swift
-  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/Query.swift lib/taisce/QueryEngine.swift
+  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/IntentLog.swift lib/taisce/Query.swift lib/taisce/QueryEngine.swift
   lib/taisce/Node.swift lib/taisce/Pointer.swift
   lib/taisce/Store.swift
   lib/taisce/Superblock.swift lib/taisce/Volume.swift)

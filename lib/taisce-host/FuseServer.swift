@@ -13,8 +13,8 @@
 //   index  write "ATTRIBUTE KIND [caseless]" to declare an index; read the
 //          declared ones
 //
-// Commits: on fsync, at unmount, after a second with nothing to do, and
-// when a transaction group gets large.
+// Durability: fsync writes the intent log; syncfs, unmount, a second with
+// nothing to do, and a large transaction group commit a group.
 
 import Glibc
 import Taisce
@@ -252,7 +252,10 @@ public final class FuseServer<Device: BlockDevice> {
       return []
     case .flush, .access, .fsyncdir:
       return []
-    case .fsync, .syncfs:  // fsync(2), and sync(1)/syncfs(2)
+    case .fsync:  // fsync(2): through the intent log, no group commit
+      try fs.fsync()
+      return []
+    case .syncfs:  // sync(1), syncfs(2): commit the group
       syncNow()
       return []
     case .statfs:

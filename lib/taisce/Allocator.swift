@@ -34,6 +34,10 @@ public struct Allocator: Sendable {
   /// Blocks allocated in the current group: nothing committed points at
   /// them, so they may be rewritten in place.
   var fresh: [UInt64]
+  /// Fresh blocks the intent log now names (S1e): an fsync promised what's
+  /// in them, so they're no longer rewritten in place, and freeing them
+  /// holds them until the group commits.
+  var logged: [UInt64]
   /// Bitmap blocks changed since each on-disk bitmap was last written, a
   /// flag each (no hashed set: tier 0 links without libm, which Set's
   /// sizing uses).
@@ -50,6 +54,7 @@ public struct Allocator: Sendable {
     held = words
     deferred = words
     fresh = words
+    logged = words
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     freeCount = blockCount
@@ -69,6 +74,7 @@ public struct Allocator: Sendable {
     held = [UInt64](repeating: 0, count: wordCount)
     deferred = held
     fresh = held
+    logged = held
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     let tail = blockCount % 64
@@ -89,6 +95,21 @@ public struct Allocator: Sendable {
   /// Whether `block` was allocated in the current group.
   public func isFresh(_ block: UInt64) -> Bool { fresh[Int(block / 64)] & (1 << (block % 64)) != 0 }
 
+  /// Whether `block` may be rewritten in place: allocated in this group and
+  /// not yet promised to an fsync.
+  public func isRewritable(_ block: UInt64) -> Bool {
+    let w = Int(block / 64), bit: UInt64 = 1 << (block % 64)
+    return fresh[w] & bit != 0 && logged[w] & bit == 0
+  }
+
+  /// The intent log now names `e`.
+  public mutating func pin(_ e: Extent) {
+    for b in e.start..<e.end { logged[Int(b / 64)] |= 1 << (b % 64) }
+  }
+
+  /// Marks `e` in use (replaying the intent log onto the committed bitmap).
+  public mutating func claim(_ e: Extent) { take(e) }
+
   /// The group committed: what it freed is deferred through the next group,
   /// what the previous group freed becomes available, and fresh blocks are
   /// committed state.
@@ -97,6 +118,7 @@ public struct Allocator: Sendable {
       deferred[i] = held[i]
       held[i] = 0
       fresh[i] = 0
+      logged[i] = 0
     }
   }
 
@@ -188,7 +210,7 @@ public struct Allocator: Sendable {
     for b in e.start..<e.end {
       set(b, used: false)
       let w = Int(b / 64), bit: UInt64 = 1 << (b % 64)
-      if fresh[w] & bit != 0 { fresh[w] &= ~bit } else { held[w] |= bit }
+      if fresh[w] & bit != 0 && logged[w] & bit == 0 { fresh[w] &= ~bit } else { held[w] |= bit }
     }
   }
 

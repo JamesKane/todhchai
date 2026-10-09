@@ -214,9 +214,13 @@ struct Fuzzer: ~Copyable {
         expect(nil, "set \(ino) attribute") { try $0.setAttribute(ino, nm, v, now: t) }
         model.nodes[ino]!.attributes[nm] = v
       }
-    case 87..<95:
+    case 87..<91:
       recent.append("\(steps): sync")
       try fs.sync()
+      synced = model
+    case 91..<95:  // as durable as a sync, through the intent log
+      recent.append("\(steps): fsync")
+      try fs.fsync()
       synced = model
     default:  // crash, after the last sync
       try crash()

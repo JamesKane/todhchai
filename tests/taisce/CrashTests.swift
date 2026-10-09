@@ -73,6 +73,13 @@ func record(seed: UInt64, groups: Int) throws -> Workload {
       } catch {
         #expect(expected == nil, "the engine rejected a batch the model applies: \(error)")
       }
+      // Sometimes an fsync: durable through the intent log, mid-group.
+      if rng.below(3) == 0 {
+        w.started.append(units(e.store.volume.device))
+        try e.fsync()
+        w.returned.append(units(e.store.volume.device))
+        w.states.append(model.filter { !$0.value.isEmpty })
+      }
     }
     w.started.append(units(e.store.volume.device))
     try e.commitGroup()
@@ -165,7 +172,10 @@ func writesBetweenBarriersLandInAnyOrder(seed: UInt64) throws {
     // The window: the units up to the next barrier.
     var end = at
     while end < w.units.count, w.units[end].block != nil { end += 1 }
-    let lower = w.returned.lastIndex { $0 <= at } ?? 0
+    // The crash comes at the window's end, before its barrier: whatever
+    // returned by then promised durability (a commit or fsync whose own
+    // barrier closes the window returns after it, so isn't counted).
+    let lower = w.returned.lastIndex { $0 <= end } ?? 0
     let upper = w.started.lastIndex { $0 <= end } ?? 0
     for _ in 0..<4 {
       var crashed = image
