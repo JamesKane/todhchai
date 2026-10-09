@@ -19,6 +19,18 @@ through swiftly. There are two builds, and each step keeps both passing:
   test programs in `tests/embedded/` run on the host. A tier 0 library
   is listed in both `Package.swift` and `CMakeLists.txt`.
 
+## IPC protocols
+
+A protocol is a Swift file with an `@IPCProtocol` protocol (architecture §4,
+`docs/wire-format.md`). After changing one, regenerate its C header, page
+and baseline, and commit them:
+
+    swift run idlc --c-out DIR --doc-out DIR --baseline DIR FILE      # check
+    swift run idlc ... --update-baseline FILE                         # record
+
+`idlc` exits 1 if the change would break a client of the recorded
+baseline. The test protocol's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
+
 ## Toolchain pitfalls
 
 - **Swift 6.4 miscompiles a `throws(E)` closure passed to a `rethrows`

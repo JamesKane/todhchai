@@ -37,11 +37,26 @@ let package = Package(
                 path: "tests/ipc/host", exclude: ["c"]),
 
     // @IPCProtocol: the macro, and the runtime its generated code calls.
+    .target(name: "IPCModel", dependencies: [
+      "IPCWire", .product(name: "SwiftSyntax", package: "swift-syntax"),
+      .product(name: "SwiftParser", package: "swift-syntax"),
+    ], path: "lib/ipc/model"),
     .macro(name: "IPCMacros", dependencies: [
-      "IPCWire",
+      "IPCModel",
       .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
       .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
     ], path: "lib/ipc/macros"),
+    // idlc: C headers, docs and API baselines from the same protocol files.
+    .target(name: "IDL", dependencies: [
+      "IPCModel", .product(name: "SwiftParser", package: "swift-syntax"),
+    ], path: "lib/ipc/idl"),
+    .executableTarget(name: "idlc", dependencies: ["IDL"], path: "tools/idlc"),
+    .target(name: "IDLCTests", dependencies: ["TDWire"], path: "tests/ipc/c", exclude: ["generated"],
+            cSettings: [.headerSearchPath("generated")]),
+    .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC"], path: "tests/ipc/idl",
+                swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    // td_wire.h: the wire format in C, for idlc's headers.
+    .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
     .target(name: "IPC", dependencies: ["IPCWire", "IPCHost", "IPCMacros"], path: "lib/ipc/runtime",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "IPCMacrosTests", dependencies: [

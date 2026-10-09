@@ -3,19 +3,6 @@
 import IPC
 import Testing
 
-enum EchoError: Int32, IPCErrorCode {
-  case tooLong = 1
-}
-
-@IPCProtocol(id: "todhchai.test.Echo", version: 2)
-protocol Echo {
-  func say(_ text: String, times: UInt32) throws(EchoError) -> String
-  @oneway func note(_ value: UInt64, loud: Bool)
-  @event func ticked(_ n: UInt32, label: String)
-  func swap(_ handle: consuming Handle) -> Handle
-  @since(2) func noted() -> UInt64
-}
-
 struct EchoImpl: EchoHandler {
   var notes: UInt64 = 0
 

@@ -1,0 +1,7 @@
+# API baseline for todhchai.test.Echo, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.test.Echo version 2
+method note oneway since 1 params (UInt64,Bool) result - throws -
+method noted call since 2 params () result UInt64 throws -
+method say call since 1 params (String,UInt32) result String throws EchoError
+method swap call since 1 params (Handle) result Handle throws -
+method ticked event since 1 params (UInt32,String) result - throws -

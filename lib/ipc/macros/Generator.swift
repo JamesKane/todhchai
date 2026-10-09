@@ -4,6 +4,7 @@
 // follows the method's Layout, field by field, so the code is the wire
 // format spelled out (docs/wire-format.md).
 
+import IPCModel
 import SwiftSyntax
 
 struct Generator {
