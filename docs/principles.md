@@ -261,12 +261,14 @@ These two rules override every other principle.
       for tier 1. Foundation's internationalization (ICU-backed) and
       networking modules are excluded, and the Kits cover those needs;
     - clang, LLVM, lld and compiler-rt;
+    - LLVM's libc++, libc++abi and libunwind, built with only what the
+      Swift runtime needs (roadmap, "Decided");
     - swift-syntax, for macros and `idlc`;
     - offline shader compilers that produce SPIR-V.
 
-    A toolchain runs at build time. Apart from the language runtime and
-    FoundationEssentials, nothing from a toolchain is linked into what
-    Todhchai ships.
+    A toolchain runs at build time. Apart from the language runtime, the
+    C++ runtime pieces it needs, and FoundationEssentials, nothing from a
+    toolchain is linked into what Todhchai ships.
 
     **Third-party software still runs on Todhchai.** Apps may bundle
     whatever they like, since single-file apps carry their own dependencies.

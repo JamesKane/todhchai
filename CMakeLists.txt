@@ -21,9 +21,20 @@ set_target_properties(IPCWire PROPERTIES Swift_MODULE_NAME IPCWire)
 target_include_directories(IPCWire INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(IPCWire)
 
+add_library(LibC STATIC lib/libc/string/Memory.swift lib/libc/string/Strings.swift)
+set_target_properties(LibC PROPERTIES Swift_MODULE_NAME LibC)
+target_include_directories(LibC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(LibC)
+
 # Embedded test programs, run on the host by ctest.
 add_executable(wire-smoke tests/embedded/WireSmoke.swift)
 set_target_properties(wire-smoke PROPERTIES Swift_MODULE_NAME WireSmoke)
 target_link_libraries(wire-smoke PRIVATE IPCWire)
 todhchai_tier0(wire-smoke)
 add_test(NAME embedded-ipc-wire COMMAND wire-smoke)
+
+add_executable(libc-smoke tests/embedded/LibCSmoke.swift)
+set_target_properties(libc-smoke PROPERTIES Swift_MODULE_NAME LibCSmoke)
+target_link_libraries(libc-smoke PRIVATE LibC)
+todhchai_tier0(libc-smoke)
+add_test(NAME embedded-libc COMMAND libc-smoke)

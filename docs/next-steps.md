@@ -14,7 +14,7 @@ is further along.
   - firmware is hardware; data is data;
   - "study designs, never copy code";
   - FoundationEssentials counts as toolchain;
-  - our own libc;
+  - our own libc; LLVM's libc++ for the Swift runtime, as toolchain;
   - Loinnir as the SDK's GPU API; the single-file ELF app format; our own
     debug-info format converted from DWARF; a Wayland client as the first
     hosted backend; hosted mode as a development tool only;
@@ -28,8 +28,9 @@ is further along.
   driver with three tiers (§10), the board database and SCMI (§9), DMA
   exceptions (§17), new croi requirements (items 1–3, 5, 7, 13, 14; §3 items
   11–12; §4), and milestone M10.
-- **Still open:** no decisions in [roadmap.md](roadmap.md); component
-  names were the last (Taisce, Loinnir, Radharc).
+- **Still open:** no decisions in [roadmap.md](roadmap.md). The last,
+  the C++ runtime under the full Swift runtime, was decided after M0h:
+  LLVM's libc++ as toolchain.
 - **croi at the time of writing:** it boots on amd64, arm64 and rv64,
   builds its own page tables, installs exception vectors and halts. It has
   no PMM, threads, user mode, syscalls or kernel objects yet

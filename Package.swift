@@ -56,6 +56,10 @@ let package = Package(
     .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC"], path: "tests/ipc/idl",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
 
+    // The F track's libc (architecture §20), tier 0, tested against the host's.
+    .target(name: "LibC", path: "lib/libc", exclude: ["symbols.tsv"], swiftSettings: tier0),
+    .testTarget(name: "LibCTests", dependencies: ["LibC"], path: "tests/libc"),
+
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", path: "lib/bench"),
     .executableTarget(name: "td", dependencies: ["Bench"], path: "tools/td"),

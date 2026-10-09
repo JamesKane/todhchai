@@ -785,6 +785,8 @@ usage tables) feed our generators.
 - Swift (compiler, stdlib, runtime, concurrency runtime) and
   FoundationEssentials;
 - clang, LLVM, lld and compiler-rt;
+- LLVM's libc++, libc++abi and libunwind, as far as the Swift runtime
+  needs them;
 - swift-syntax;
 - offline SPIR-V shader compilers.
 

@@ -43,6 +43,14 @@ and baseline, and commit them:
 `idlc` exits 1 if the change would break a client of the recorded
 baseline. The test protocol's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
 
+## libc (the F track)
+
+`lib/libc` is our libc, in Swift, written from ISO C and POSIX
+(principle 29). `lib/libc/symbols.tsv` lists what the toolchain's runtime
+needs (`td libc-symbols` regenerates it). Every function gets a
+differential test in `tests/libc` against the host's glibc: seeded random
+cases, comparing results and whole buffers.
+
 ## Toolchain pitfalls
 
 - **Swift 6.4 miscompiles a `throws(E)` closure passed to a `rethrows`

@@ -16,6 +16,7 @@ let components: [(name: String, file: String)] = [
   ("IPCMacros", "lib/ipc/macros/Generator.swift"),
   ("IPC", "lib/ipc/runtime/Codec.swift"),
   ("IDL", "lib/ipc/idl/CHeader.swift"),
+  ("LibC", "lib/libc/string/Memory.swift"),
 ]
 
 struct BenchOptions {

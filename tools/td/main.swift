@@ -10,6 +10,9 @@
 //   td ci [--no-bench] [bench options]
 //       Hosted build and tests, the Embedded build and tests, every
 //       protocol's API baseline, then the bench.
+//   td libc-symbols
+//       Lists what the toolchain's Swift runtime imports from the C and
+//       C++ runtimes, into lib/libc/symbols.tsv.
 //
 // Run from the repository root. Build td first and run its binary, so the
 // builds td starts don't wait on SwiftPM's lock:
@@ -50,5 +53,6 @@ while i < args.count {
 switch command {
 case "bench": exit(bench(options) ? 0 : 1)
 case "ci": exit(ci(bench: runBench ? options : nil) ? 0 : 1)
-default: fail("unknown command \(command); td has bench and ci")
+case "libc-symbols": exit(libcSymbols() ? 0 : 1)
+default: fail("unknown command \(command); td has bench, ci and libc-symbols")
 }

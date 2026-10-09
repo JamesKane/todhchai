@@ -238,9 +238,17 @@ None remain open; each is recorded under "Decided".
 7. ~~Component names~~: decided (see "Decided").
 8. ~~License~~: decided (see "Decided").
 9. ~~Hosted mode as a product~~: decided (see "Decided").
+10. ~~A C++ runtime for the full Swift runtime~~: decided (see "Decided").
 
 ## Decided
 
+- **C++ runtime for the full Swift runtime** (2026-10-09): LLVM's libc++,
+  libc++abi and libunwind, built with only what the Swift runtime needs, and
+  treated as toolchain like compiler-rt (principle 29). Found in M0h: the
+  runtime imports `std::string`, a hash table, `std::thread`, the C++ ABI
+  (`__cxa_guard_*`, `__cxa_demangle`, sized `operator delete`), 128-bit
+  division and the unwinder (`lib/libc/symbols.tsv`). Built for the
+  Todhchai target with the full Swift runtime (M6).
 - **Component names** (2026-10-09): only components novel enough to
   trademark get a name, in Irish: **Taisce** the file system (was BeFS-NG),
   **Loinnir** the GPU library (was Prism) and **Radharc** the compositor.
