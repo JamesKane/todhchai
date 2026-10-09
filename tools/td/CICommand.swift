@@ -21,6 +21,7 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("embedded", [["cmake", "--workflow", "--preset", "embedded"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
+  steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))
   for p in protocols {
     steps.append(("baseline \(p.file)", [["swift", "run", "idlc", "--baseline", p.baselines, p.file]]))
   }
@@ -42,4 +43,40 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
   }
   say(passed ? "td ci: passed" : "td ci: FAILED")
   return passed
+}
+
+/// The C ABI from outside Swift: libtodhchai.so, then the minimal program
+/// compiled in C, and in Zig and Odin where their compilers are installed
+/// (a missing one is reported, not failed: toolchains, principle 29).
+func cABISteps(bin: String) -> [[String]] {
+  makeDirectory(bin)
+  let lib = ".build/debug"
+  let rpath = "\(FileManager.default.currentDirectoryPath)/\(lib)"
+  var steps: [[String]] = [
+    ["swift", "build", "--product", "todhchai"],
+    ["cc", "-std=c11", "-Wall", "-Wextra", "-pedantic", "-Werror", "-Ilib/capi/c/include", "examples/minimal/minimal.c",
+     "-L\(lib)", "-ltodhchai", "-Wl,-rpath,\(rpath)", "-o", "\(bin)/minimal-c"],
+    ["c++", "-x", "c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-Ilib/capi/c/include", "-fsyntax-only",
+     "lib/capi/c/include/todhchai/todhchai.h"],
+  ]
+  if let zig = tool("zig") {
+    steps.append([zig, "build-exe", "--dep", "todhchai", "-Mroot=examples/minimal/minimal.zig",
+                  "-Mtodhchai=lib/capi/zig/todhchai.zig", "-lc", "-L\(lib)", "-ltodhchai", "-rpath", rpath,
+                  "-femit-bin=\(bin)/minimal-zig"])
+  } else {
+    say("     c-abi: zig isn't installed; the Zig bindings aren't compiled")
+  }
+  if let odin = tool("odin") ?? (FileManager.default.fileExists(atPath: "/opt/odin/odin") ? "/opt/odin/odin" : nil) {
+    steps.append([odin, "build", "examples/minimal/minimal.odin", "-file", "-out:\(bin)/minimal-odin",
+                  "-extra-linker-flags:-L\(rpath) -Wl,-rpath,\(rpath)"])
+  } else {
+    say("     c-abi: odin isn't installed; the Odin bindings aren't compiled")
+  }
+  return steps
+}
+
+/// A program on PATH, or nil.
+func tool(_ name: String) -> String? {
+  guard let path = capture(["sh", "-c", "command -v \(name)"]).map(trimmed), !path.isEmpty else { return nil }
+  return path
 }

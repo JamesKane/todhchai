@@ -71,6 +71,16 @@ public struct CPUSurface: ~Copyable {
   }
 }
 
+extension CPUSurface {
+  /// For the C ABI (lib/capi): a surface rebuilt from what `td_cpu_surface`
+  /// carries, to present.
+  package init(c window: WindowID, buffer: Int, pixels: UnsafeMutableRawBufferPointer, width: Int32, height: Int32,
+               stride: Int, age: UInt32) {
+    self.init(pixels: pixels, width: width, height: height, stride: stride, age: age, window: window, buffer: buffer)
+  }
+  package var bufferIndex: Int { buffer }
+}
+
 /// Everything windows need from the compositor, and every window.
 final class WindowSystem {
   let c: WaylandConnection

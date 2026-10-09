@@ -90,6 +90,21 @@ Loinnir shaders read their inputs through the root pointer
 (set 0: binding 0 `texture2D[]`, binding 1 a sampler). Don't name a GLSL
 variable `texture`: it hides the `texture()` function.
 
+## The C ABI
+
+`libtodhchai.so` (`swift build --product todhchai`) is the SDK's C ABI
+(sdk.md §12). The ABI is described in `lib/capi/gen/Todhchai.swift`, and
+`abigen` writes the C header and the Zig and Odin bindings from it, with
+layout assertions in each. After changing the description or
+`KeyUsage.swift`, regenerate and commit:
+
+    .build/debug/abigen lib/sdk/KeyUsage.swift lib/capi/c/include/todhchai/todhchai.h lib/capi/zig/todhchai.zig lib/capi/odin/todhchai/todhchai.odin
+
+`lib/capi/swift/CABI.swift` implements it with `@c`. Tests call through
+the C declarations (`import TDCABI`), not the Swift functions, which
+would be ambiguous. The minimal program is in `examples/minimal` in C,
+Zig and Odin. Odin is `/opt/odin/odin` on this machine.
+
 ## Audio
 
 The hosted SDK plays through PipeWire's native protocol, spoken directly

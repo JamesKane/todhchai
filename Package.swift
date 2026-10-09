@@ -18,6 +18,10 @@ let tier0: [SwiftSetting] = [
 
 let package = Package(
   name: "todhchai",
+  products: [
+    // libtodhchai.so: the C ABI (sdk.md §12), for C, Zig, Odin and the rest.
+    .library(name: "todhchai", type: .dynamic, targets: ["TodhchaiCABI"]),
+  ],
   dependencies: [
     // Toolchain, not third-party code (principle 29): the release matching
     // the Swift 6.4 compiler, for the @IPCProtocol macro and idlc.
@@ -84,6 +88,14 @@ let package = Package(
     .target(name: "TDVulkan", path: "lib/vulkan/c"),
     .target(name: "Vulkan", dependencies: ["TDVulkan"], path: "lib/vulkan/swift"),
     .testTarget(name: "VulkanTests", dependencies: ["Vulkan", "VulkanGen"], path: "tests/vulkan"),
+    // libtodhchai's C ABI (sdk.md §12): the description and abigen, which
+    // writes the C header and Zig and Odin bindings from it.
+    .target(name: "ABIGen", path: "lib/capi/gen"),
+    .executableTarget(name: "abigen", dependencies: ["ABIGen"], path: "tools/abigen"),
+    .target(name: "TDCABI", path: "lib/capi/c"),
+    .target(name: "TodhchaiCABI", dependencies: ["Todhchai", "TDCABI"], path: "lib/capi/swift"),
+    .testTarget(name: "CABITests", dependencies: ["ABIGen", "TodhchaiCABI", "TDCABI"], path: "tests/capi",
+                exclude: ["c"]),
     // Loinnir: the SDK's GPU library (sdk.md §5), on Vulkan.
     .target(name: "Loinnir", dependencies: ["Vulkan", "Todhchai"], path: "lib/loinnir"),
     .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir"),

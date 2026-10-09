@@ -167,3 +167,8 @@ public struct MixerRenderer: AudioRenderer {
     core.render(into: out, channels: 2)
   }
 }
+
+// For the C ABI (lib/capi).
+extension VoiceID {
+  package init(c raw: UInt32) { self.init(raw: raw) }
+}

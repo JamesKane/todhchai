@@ -84,3 +84,11 @@ public struct Events: RandomAccessCollection, Sendable {
   public var endIndex: Int { items.endIndex }
   public subscript(i: Int) -> Event { items[i] }
 }
+
+// For the C ABI (lib/capi), which carries these as plain numbers.
+extension WindowID {
+  package init(c index: UInt32, _ generation: UInt32) { self.init(index: index, generation: generation) }
+}
+extension TimerID {
+  package init(c raw: UInt64) { self.init(raw: raw) }
+}
