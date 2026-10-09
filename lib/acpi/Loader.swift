@@ -148,6 +148,27 @@ extension Namespace {
 
 struct Loader {
   let table: Int
+  /// Runs load-time code where it stands (A0c); without it, the code is
+  /// kept in `loadCode` (parsing alone).
+  var run: Runner? = nil
+
+  init(table: Int, run: Runner? = nil) {
+    self.table = table
+    self.run = run
+  }
+
+  /// Load-time code met: run it, or keep it.
+  func loadCode(_ code: Code, scope: Int, into ns: inout Namespace) {
+    guard let run else {
+      ns.addLoadCode(code, scope: scope)
+      return
+    }
+    do {
+      try run(&ns, code, scope)
+    } catch {
+      ns.note(.codeFailed(error), table: table, offset: code.start)
+    }
+  }
 
   /// Terms to `end` in `scope`.
   func termList(_ c: inout Cursor, end: Int, scope: Int, depth: Int, into ns: inout Namespace) throws(ACPIError) {
@@ -177,12 +198,12 @@ struct Loader {
       case 0x81, 0x86, 0x87: try fieldOp(&c, ext, scope: scope, depth: depth, into: &ns)
       default:
         try skipStatement(&c, scope: scope, depth: depth, ns: ns)
-        ns.addLoadCode(Code(table: table, start: start, end: c.at), scope: scope)
+        loadCode(Code(table: table, start: start, end: c.at), scope: scope, into: &ns)
       }
     default:
       // Code outside a method: If blocks, stores, calls. It runs at load.
       try skipStatement(&c, scope: scope, depth: depth, ns: ns)
-      ns.addLoadCode(Code(table: table, start: start, end: c.at), scope: scope)
+      loadCode(Code(table: table, start: start, end: c.at), scope: scope, into: &ns)
     }
   }
 

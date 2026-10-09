@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDACPI
+
 // AML for tests, built from its grammar (ACPI 6.5 §20.2): what an ASL
 // compiler would emit, so the synthetic tests need neither a compiler nor
 // third-party tables.
@@ -96,4 +98,41 @@ enum AML {
 
   /// A DSDT whose AML is `body`.
   static func dsdt(_ body: [UInt8], revision: UInt8 = 2) -> [UInt8] { table("DSDT", revision: revision, body) }
+}
+
+extension AML {
+  /// An opcode and its operands, in order.
+  static func op(_ code: UInt8, _ parts: [UInt8]...) -> [UInt8] { [code] + parts.flatMap { $0 } }
+  static func ext(_ code: UInt8, _ parts: [UInt8]...) -> [UInt8] { [0x5B, code] + parts.flatMap { $0 } }
+  static func local(_ i: Int) -> [UInt8] { [UInt8(0x60 + i)] }
+  static func arg(_ i: Int) -> [UInt8] { [UInt8(0x68 + i)] }
+  static let none: [UInt8] = [0x00]  // a Target of NullName
+  static let debug: [UInt8] = [0x5B, 0x31]
+
+  static func store(_ value: [UInt8], _ target: [UInt8]) -> [UInt8] { op(0x70, value, target) }
+  static func ifThen(_ predicate: [UInt8], _ body: [UInt8], else other: [UInt8]? = nil) -> [UInt8] {
+    [0xA0] + package(predicate + body) + (other.map { [0xA1] + package($0) } ?? [])
+  }
+  static func whileLoop(_ predicate: [UInt8], _ body: [UInt8]) -> [UInt8] { [0xA2] + package(predicate + body) }
+}
+
+/// A host that records what the AML asks of it.
+final class RecordingHost: ACPIHost {
+  var interfaces: [[UInt8]] = [Array("Windows 2015".utf8)]
+  var notifications: [(Int, UInt64)] = []
+  var debugged: [String] = []
+  var slept: UInt64 = 0
+  var ticks: UInt64 = 0
+  var fatals = 0
+
+  func supportsInterface(_ name: [UInt8]) -> Bool { interfaces.contains(name) }
+  func sleep(milliseconds: UInt64) { slept += milliseconds }
+  func stall(microseconds: UInt64) {}
+  func notify(_ node: Int, _ value: UInt64) { notifications.append((node, value)) }
+  func timer() -> UInt64 {
+    ticks += 10
+    return ticks
+  }
+  func debug(_ text: [UInt8]) { debugged.append(String(decoding: text, as: UTF8.self)) }
+  func fatal(type: UInt8, code: UInt32, argument: UInt64) { fatals += 1 }
 }

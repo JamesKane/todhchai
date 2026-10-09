@@ -77,6 +77,9 @@ public enum Object: Equatable, Sendable {
   case dataRegion(signature: Value, oemID: Value, oemTableID: Value)
   case field(Field)
   case alias(NamePath, scope: Int)
+  /// A buffer field (CreateField and its kin): its buffer and bits are
+  /// in the node's run-time data.
+  case bufferField
   /// Declared here, defined elsewhere (another table): its object type
   /// and, for a method, its argument count.
   case external(type: UInt8, args: Int)
@@ -122,15 +125,25 @@ public struct LoadProblem: Equatable, Sendable {
     case alreadyDefined
     /// A Scope or a path through a name that isn't there.
     case notFound
+    /// Load-time code that failed: the table loads without what it did.
+    case codeFailed(ACPIError)
   }
   public var kind: Kind
   public var table: Int
   public var offset: Int
 }
 
-/// The ACPI namespace (§5.3): every table's objects in one tree.
-public struct Namespace: Sendable {
+/// The ACPI namespace (§5.3): every table's objects in one tree, and
+/// their run-time values.
+public struct Namespace {
   public private(set) var nodes: [Node] = []
+  /// Each node's run-time object: a Name's value once first used and as
+  /// stores change it, a buffer field's bits, a mutex's or event's count.
+  var data: [Datum?] = []
+  /// Iterations one While may take before it's abandoned (`loopLimit`).
+  public var loopLimit = 1 << 20
+  /// Mutexes held, innermost last, for sync-level order (§19.6.87).
+  var heldMutexes: [(node: Int, syncLevel: Int, count: Int)] = []
   /// Each loaded table's bytes, which Code spans point into.
   public private(set) var tables: [[UInt8]] = []
   /// Code outside any method, in load order, with its scope: run at load
@@ -145,6 +158,7 @@ public struct Namespace: Sendable {
   public init(integerBits: Int = 64) {
     self.integerBits = integerBits
     nodes.append(Node(name: NameSeg.make("\\___"), parent: -1, object: .scope, table: -1))
+    data.append(nil)
     // The predefined names (§5.3.1, §5.7).
     for s: StaticString in ["_GPE", "_PR", "_SB", "_SI", "_TZ"] {
       _ = add(NameSeg.make(s), under: Self.root, .scope, table: -1)
@@ -179,6 +193,7 @@ public struct Namespace: Sendable {
   mutating func add(_ name: NameSeg, under parent: Int, _ object: Object, table: Int) -> Int {
     let n = nodes.count
     nodes.append(Node(name: name, parent: parent, object: object, table: table))
+    data.append(nil)
     if nodes[parent].lastChild >= 0 { nodes[nodes[parent].lastChild].next = n } else { nodes[parent].firstChild = n }
     nodes[parent].lastChild = n
     return n
@@ -187,6 +202,37 @@ public struct Namespace: Sendable {
   mutating func setObject(_ node: Int, _ object: Object, table: Int) {
     nodes[node].object = object
     nodes[node].table = table
+    data[node] = nil
+  }
+
+  /// Takes a node (and what's under it) out of the tree: a method's
+  /// temporary objects go when it returns (§19.6.85).
+  mutating func unlink(_ node: Int) {
+    let parent = nodes[node].parent
+    guard parent >= 0 else { return }
+    var prev = -1
+    var c = nodes[parent].firstChild
+    while c >= 0 && c != node {
+      prev = c
+      c = nodes[c].next
+    }
+    guard c == node else { return }
+    if prev >= 0 { nodes[prev].next = nodes[node].next } else { nodes[parent].firstChild = nodes[node].next }
+    if nodes[parent].lastChild == node { nodes[parent].lastChild = prev }
+    nodes[node].next = -1
+    nodes[node].parent = -2  // gone
+    data[node] = nil
+  }
+
+  /// Whether the node is still in the tree.
+  public func isLive(_ node: Int) -> Bool {
+    var n = node
+    while n != Self.root {
+      let p = nodes[n].parent
+      if p < 0 { return false }
+      n = p
+    }
+    return true
   }
 
   mutating func note(_ kind: LoadProblem.Kind, table: Int, offset: Int) {
@@ -277,27 +323,7 @@ public struct Namespace: Sendable {
     return lookup(bytes)
   }
 
-  public func lookup(_ text: [UInt8]) -> Int? {
-    var path = NamePath()
-    var rest = text[...]
-    if rest.first == 0x5C {
-      path.fromRoot = true
-      rest = rest.dropFirst()
-    }
-    while rest.first == 0x5E {
-      path.parents += 1
-      rest = rest.dropFirst()
-    }
-    if !rest.isEmpty {
-      for part in rest.split(separator: 0x2E, omittingEmptySubsequences: false) {
-        var b = Array(part)
-        guard b.count >= 1 && b.count <= 4 else { return nil }
-        while b.count < 4 { b.append(0x5F) }
-        path.segments.append(NameSeg(b))
-      }
-    }
-    return resolve(path, from: Self.root)
-  }
+  public func lookup(_ text: [UInt8]) -> Int? { lookupRelative(text, from: Self.root) }
 
   /// How many arguments a call to the node takes, if it's a method (or
   /// declared as one by External).

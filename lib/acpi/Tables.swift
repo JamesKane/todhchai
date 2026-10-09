@@ -16,6 +16,27 @@ public enum ACPIError: Error, Equatable, Sendable {
   case unknownOpcode(UInt16, at: UInt32)
   /// Terms nested deeper than any real table: taken as malformed.
   case tooDeep
+  // Run-time errors (A0c): each aborts the method, as §19.3.5.4 says.
+  /// A name that isn't in the namespace.
+  case notFound
+  /// An operand of the wrong type, or a conversion the rules forbid
+  /// (such as an empty string or buffer to an integer).
+  case typeMismatch
+  /// An uninitialized local, argument or element was read.
+  case uninitialized
+  case divideByZero
+  /// An index past the end of a package, buffer or string.
+  case outOfBounds
+  /// Methods called too deep (recursion without end).
+  case callTooDeep
+  /// A While that didn't finish within its limit.
+  case loopLimit
+  /// Break or Continue outside a While.
+  case misplacedBreak
+  /// Something the interpreter doesn't do yet (fields until A0d).
+  case unsupported
+  /// Acquire out of sync-level order, or Release of a mutex not held.
+  case mutexOrder
 }
 
 /// Little-endian reads from table bytes.
