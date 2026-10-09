@@ -79,3 +79,84 @@ import Testing
   #expect(throws: TaisceError.notFound) { try after.lookup(root, n("two")) }
   try after.check()
 }
+
+@Test func replayNeverPutsANodeOnFsyncedData() throws {
+  // Commit, free, then a group of metadata changes and new file data,
+  // fsynced, then a crash. Replay, which has blocks free that the run
+  // didn't (nothing is deferred after a mount), must not hand an earlier
+  // operation's node a block a later one's data is in.
+  for seed in 0..<40 {
+    var rng = SplitMix(state: UInt64(seed) &* 7919 &+ 1)
+    var fs = try newFS(blocks: 4096)
+    var files: [UInt64] = []
+    for i in 0..<12 {
+      let f = try fs.create(root, n("f\(i)"), .file, mode: 0o644, now: 2)
+      try fs.write(f, offset: 0, [UInt8](repeating: UInt8(i), count: 4096 * (1 + rng.below(6))), now: 2)
+      files.append(f)
+    }
+    try fs.sync()
+    var kept = Array(0..<12)
+    for i in stride(from: 0, to: 12, by: 2 + rng.below(3)) {
+      try fs.unlink(root, n("f\(i)"), now: 3)
+      kept.removeAll { $0 == i }
+    }
+    try fs.sync()  // their blocks are deferred through the next group
+    var expected: [(UInt64, [UInt8])] = []
+    for k in 0..<(4 + rng.below(8)) {
+      try fs.setAttribute(files[kept[rng.below(kept.count)]], n("user:k\(k)"), .int64(Int64(k)), now: 4)
+      let g = try fs.create(root, n("g\(k)"), .file, mode: 0o644, now: 4)
+      let data = [UInt8](repeating: UInt8(0x80 + k), count: 4096 * (1 + rng.below(4)))
+      try fs.write(g, offset: 0, data, now: 4)
+      expected.append((g, data))
+    }
+    try fs.fsync()
+    var after = try FileSystem.mount(fs.engine.store.volume.device)  // the crash
+    for (g, data) in expected {
+      #expect(try after.read(g, offset: 0, count: data.count) == data, "seed \(seed): fsynced data overwritten")
+    }
+    try after.check()
+  }
+}
+
+@Test func replayClaimsEveryLoggedBlockBeforeApplyingAny() throws {
+  var e = try newEngine()
+  try e.apply((0..<50).map { .insert(tree: 1, key: bigEndian($0), value: [1]) })
+  try e.commitGroup()
+  // Where tree 1's next node would go: the block replay will pick.
+  let near = e.root(1)!.root.block
+  let x = try e.store.volume.allocator.allocateContiguous(4, near: near)
+  // In the run, x is taken while the first operation copies its node, so
+  // the node goes elsewhere; then x is let go, and the second
+  // operation's file data gets it.
+  try e.apply([.insert(tree: 1, key: bigEndian(1000), value: [2])])
+  e.store.volume.allocator.free(x)  // fresh: available at once
+  let data = try e.store.volume.allocator.allocate(1, near: x.start)
+  #expect(data == [Extent(start: x.start, count: 1)])
+  try e.store.volume.device.write(x.start, [UInt8](repeating: 0xAB, count: 4096))
+  e.noteAllocated(data)
+  try e.apply([.insert(tree: 2, key: [1], value: [UInt8](repeating: 0, count: 8))])
+  try e.fsync()
+  // A crash, and replay: the first operation's node mustn't land on x.
+  var after = try Engine<MemoryDevice>.mount(e.store.volume.device)
+  #expect(try after.get(1, bigEndian(1000)) == [2])
+  #expect(try after.store.volume.device.read(x.start, count: 1) == [UInt8](repeating: 0xAB, count: 4096))
+  _ = try after.check(dataBlocks: 1)
+}
+
+@Test func aBlockFreedAndAllocatedAgainInOneRecordStaysInUse() throws {
+  var e = try newEngine()
+  try e.commitGroup()
+  let first = try e.store.volume.allocator.allocate(1)
+  e.noteAllocated(first)
+  try e.apply([.insert(tree: 2, key: [1], value: [1])])
+  e.store.volume.allocator.free(first[0])  // fresh: available again at once
+  e.noteFreed(first)
+  let again = try e.store.volume.allocator.allocate(1, near: first[0].start)
+  #expect(again == first)
+  e.noteAllocated(again)
+  try e.apply([.insert(tree: 2, key: [2], value: [2])])
+  try e.fsync()
+  var after = try Engine<MemoryDevice>.mount(e.store.volume.device)
+  #expect(after.store.volume.allocator.isUsed(first[0].start))
+  _ = try after.check(dataBlocks: 1)
+}

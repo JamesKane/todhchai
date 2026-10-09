@@ -299,22 +299,51 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
 
   /// Replays the intent records that build on the mounted superblock, in
   /// order, and commits them.
+  ///
+  /// Every logged allocation is claimed before any batch is replayed:
+  /// replay has blocks free that the run didn't (nothing is deferred after
+  /// a mount), so an earlier batch's new node could otherwise land on a
+  /// block a later batch's file data is in. A block a batch freed and a
+  /// later one allocated again stays claimed.
   mutating func replayIntentLog() throws(TaisceError) {
     let sb = store.volume.superblock
     let end = sb.layout.intentStart + sb.layout.intentBlocks
     var at = sb.layout.intentStart
     var seq: UInt64 = 0
+    var ops: [IntentOp] = []
     while let (record, blocks) = try IntentLog.read(&store.volume.device, at: at, end: end, txg: sb.txg, seq: seq) {
-      for op in record.ops {
-        for e in op.allocated { store.volume.allocator.claim(e) }
-        try apply(op.messages)
-        for e in op.freed { store.volume.allocator.free(e) }
-      }
+      ops += record.ops
       nextInode = max(nextInode, record.nextInode)
       at += blocks
       seq += 1
     }
-    if seq > 0 { try commitGroup() }
+    guard seq > 0 else { return }
+    // Each logged block, with the last batch that allocated it; sorted.
+    var lastAllocated: [(block: UInt64, op: Int)] = []
+    for (i, op) in ops.enumerated() {
+      for e in op.allocated {
+        store.volume.allocator.claim(e)
+        for b in e.start..<e.end { lastAllocated.append((b, i)) }
+      }
+    }
+    lastAllocated.sort { $0.block < $1.block || ($0.block == $1.block && $0.op < $1.op) }
+    func allocatedAfter(_ b: UInt64, _ i: Int) -> Bool {
+      var lo = 0, hi = lastAllocated.count
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if lastAllocated[mid].block <= b { lo = mid + 1 } else { hi = mid }
+      }
+      return lo > 0 && lastAllocated[lo - 1].block == b && lastAllocated[lo - 1].op > i
+    }
+    for (i, op) in ops.enumerated() {
+      try apply(op.messages)
+      for e in op.freed {
+        for b in e.start..<e.end where !allocatedAfter(b, i) {
+          store.volume.allocator.free(Extent(start: b, count: 1))
+        }
+      }
+    }
+    try commitGroup()
   }
 
   static func apply(_ delta: Delta, to value: inout [UInt8]) throws(TaisceError) {
