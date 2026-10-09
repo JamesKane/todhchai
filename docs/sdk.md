@@ -164,7 +164,9 @@ int main(void) {
     fail fast past it (F-102).
   - `present(..., at: Deadline?)` requests a target time.
   - Presentation also reports whether the frame went by direct scanout, an
-    overlay plane or composition, so an engine can see why it missed.
+    overlay plane or composition, so an engine can see why it missed, and
+    whether its times are measured at vblank or estimated (a firmware
+    framebuffer has no vblank interrupt; see [desktop.md](desktop.md) §1).
 - **Surfaces:**
   - `CPUSurface: ~Copyable` gives `pixels: MutableRawSpan` and `age` (buffer
     age, for partial redraw).

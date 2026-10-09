@@ -44,14 +44,14 @@ working toward user space.
 | Doc | Contents |
 |---|---|
 | [docs/principles.md](docs/principles.md) | 29 design principles, each tied to its source; §I (Swift first, no third-party code) overrides the rest |
-| [docs/architecture.md](docs/architecture.md) | Layers, Swift tiers, process tree, IPC, namespaces (bind, union, sealed), the Node protocol, memory, scheduling, drivers, graphics, storage, audio, input, packaging, compatibility, observability, security and keyring, hosted mode, remote export bridge, and the foundations we write with their specifications |
+| [docs/architecture.md](docs/architecture.md) | Layers, Swift tiers, process tree, IPC, namespaces (bind, union, sealed), the Node protocol, memory, scheduling and power, drivers, graphics, storage, audio, input, packaging, compatibility, observability, security and keyring, hosted mode, remote export bridge, and the foundations we write with their specifications |
 | [docs/sdk.md](docs/sdk.md) | SDK modules, loop and events, minimal programs in Swift and C, Prism GPU, audio, UI Kit, Game Kit, C ABI rules, tools, reference programs |
 | [docs/desktop.md](docs/desktop.md) | Compositor (nestable, plane-first, late latch, game mode), window management, shell apps and scripting, the router, replicants and translators, theme tokens and rendering budget |
 | [docs/filesystem.md](docs/filesystem.md) | BeFS-NG: staged features, on-disk layout, storage engine, snapshots as directories, attributes, query language v2, live queries, trade-offs |
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
-| [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M9 with exit tests, risks, open and decided questions |
+| [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M10 with exit tests, risks, open and decided questions |
 | [docs/next-steps.md](docs/next-steps.md) | Where the design stopped, how to re-sync with croi, which milestone to start, and what to re-verify |
-| [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, Handmade discussions, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P) |
+| [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, Handmade discussions, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P), and the hardware targets (the amd64 reference machine and the two arm64 boards, from AbyssBSD's bring-up) |
 
 The research notes tag each claim: `[V]` verified against a cited source,
 `[S]` secondary source, `[K]`/`[U]` background knowledge or unverified.

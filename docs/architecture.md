@@ -30,9 +30,9 @@ in [principles.md](principles.md), and the order of work is in
  │ in-process) + GPU lib "Prism"  │ (ports and the full Swift runtime only) │
  ├────────────────────────────────┴─────────────────────────────────────────┤
  │ System services (separate processes, mostly Embedded Swift)              │
- │  launcher · devmgr + driver hosts · gpu system driver · compositor       │
- │  input · audio · fs (BeFS-NG) · block · net · indexer · tracer           │
- │  keyring · router (plumber) · debugd · export bridge                     │
+ │  launcher · devmgr + driver hosts · gpu system driver · display · power  │
+ │  compositor · input · audio · fs (BeFS-NG) · block · net · indexer       │
+ │  tracer · keyring · router (plumber) · debugd · export bridge            │
  ├──────────────────────────────────────────────────────────────────────────┤
  │ IPC protocols (Swift-source IDL → Swift + C bindings) over channels,     │
  │ plus shared-memory rings with notification handles                       │
@@ -92,9 +92,11 @@ header why Swift couldn't do the job fast enough.
 UEFI ──► croi loader ──► croi kernel ──► userboot (from bootfs, via vDSO)
                                            └─► launcher   (holds root job, root resources)
                                                 ├─► devmgr ──► driver hosts (PCI, NVMe, xHCI, HDA, virtio, GPU, …)
+                                                ├─► power   (DVFS policy, thermal, device power, profiles)
                                                 ├─► block ──► fs (BeFS-NG volumes) ──► indexer
                                                 ├─► gpu system driver(s)
-                                                ├─► compositor  (display driver + Vulkan)
+                                                ├─► display driver(s)  (scanout, vblank, hotplug)
+                                                ├─► compositor  (over /svc/display + Vulkan)
                                                 ├─► input   (HID class, keymaps, IME host)
                                                 ├─► audio   (mixer, device graph)
                                                 ├─► tracer · debugd · net · keyring · router
@@ -112,6 +114,13 @@ UEFI ──► croi loader ──► croi kernel ──► userboot (from bootfs
 - A service crash is contained. The launcher restarts it according to its
   manifest. Clients see the channel close and reconnect through the SDK.
   Driver hosts and the GPU system driver are designed to be restartable.
+  That covers software faults. A driver that touches hardware in the wrong
+  state (a register block whose power domain is off, a GPU before its power
+  sequence) can hang the bus or reset the SoC, and no process boundary
+  helps; the arm64 boards do both
+  ([research/hardware-targets.md](research/hardware-targets.md)). Drivers
+  for such hardware encode the required order as types where they can
+  (a `PoweredBlock` that only exists after its power-on sequence).
 
 ## 4. IPC
 
@@ -254,7 +263,7 @@ interface apps program against.
 - **Sharing:** zero-copy everywhere means VMO handles plus a format descriptor
   plus a timeline counter (§10).
 
-## 8. Time and scheduling
+## 8. Time, scheduling and power
 
 - **Clock:** the vDSO reads the monotonic clock (TSC, CNTVCT or the RISC-V
   time CSR) with no syscall. A shared read-only page publishes the next vblank
@@ -279,12 +288,76 @@ interface apps program against.
 - **Isolation:** the foreground app can be given isolated cores, with no other
   threads, timers or interrupts routed to them (Switch-style reserved cores, in
   reverse).
+- **Core types:** every target machine mixes them (P/E cores on the
+  reference machine; three types on the Sky1). The scheduler places by
+  capacity, `throughput` packs onto one type, and `frame` and `realtime`
+  threads start on the fastest cores unless a power profile says otherwise.
+  The topology page publishes each core's type, capacity and frequency
+  domain.
+
+### Power
+
+Power management is split the way the rest of the system is: mechanism in
+croi, policy in a user-space **power** service, hardware access in drivers.
+The design comes from what AbyssBSD measured on the arm64 boards, and
+applies to the reference machine's C-states and P/E cores as well.
+
+- **CPU idle is croi's.** Entering and leaving a power-down state saves and
+  restores CPU state, and only the kernel can do that. croi reads the
+  states from ACPI (`_LPI` on arm64 with PSCI `CPU_SUSPEND`; `_CST` and
+  MWAIT hints on amd64) and picks one per CPU, bounded by the wake latency
+  that the deadline threads and real-time interrupts on that CPU allow
+  ([croi-requirements.md](croi-requirements.md) §3 item 11). On the Q8B,
+  deep idle cost dropped frames until vsync stopped being routed to sleeping
+  cores; that rule is built in, not discovered per board.
+- **CPU frequency** is the power service's policy over croi's mechanism.
+  ACPI CPPC (`_CPC`) where the firmware has it (the Sky1, modern x86 with
+  HWP), a SoC driver where it doesn't (the Q8B's EPSS). One policy per
+  frequency domain, never one for the whole machine. Admitted deadline
+  work sets a floor croi enforces
+  ([croi-requirements.md](croi-requirements.md) §3 item 12), so the policy can't starve
+  it. The power service also reads the utilization croi publishes rather
+  than sampling it.
+- **Thermal:** ACPI thermal zones (`_TMP`, `_PSV`, `_CRT`, `_PSL`) through
+  the AML interpreter where they work, SoC sensor drivers where they don't
+  (the Q8B's TSENS). Passive cooling lowers the frequency ceiling of the
+  domains a zone names. Critical temperature shuts down cleanly, and that
+  path is tested on each listed machine, not assumed.
+- **Device power:** a driver host asks the power service to bring its
+  device's power resources, clocks and resets up in order (ACPI `_PR0`,
+  `_ON`, SCMI power domains and clocks on the Sky1). Runtime suspend is the
+  driver's call, with an autosuspend delay so a GPU doesn't suspend between
+  frames (AbyssBSD measured that mistake). GPU and codec DVFS are the
+  driver's, by the same per-domain policy.
+- **Power profiles** (power-saver, balanced, performance) are one setting
+  the power service applies to idle depth, frequency policy and GPU
+  policy together, with hooks for drivers. It is a Node tree:
+  `echo balanced > /svc/power/profile`.
+- **What the system measures:** idle wakeups per second (already a release
+  number, principle 9), time per idle state per CPU, and missed frames by
+  cause, including "woke from deep idle".
 
 ## 9. Drivers
 
 - **devmgr** enumerates ACPI and PCI, matches drivers with **bind rules
   written as Swift predicates**, and starts **driver host** processes. A host
-  receives exactly the MMIO, IRQ, BTI and IO-port handles for its device.
+  receives exactly the MMIO, IRQ, BTI and IO-port handles for its device,
+  plus, on arm64, an SMC resource limited to the firmware calls its device
+  needs. Standard devices often appear as ACPI platform devices rather than
+  PCI functions on arm64 (the Sky1's ten xHCI hosts and its HDA controller),
+  so the class drivers attach either way.
+- **Board database (data, not code).** Firmware tables are sometimes wrong
+  for the board they ship on: the Q8B's DSDT describes Qualcomm's reference
+  design (applying its GPIO settings would drive USB-C pins), and lacks
+  devices that are present (its RTC). A board database keyed on SMBIOS and
+  SoC id adds, removes and corrects devices before matching. A quirk lives
+  there or in a driver, never in user configuration: AbyssBSD's rule that a
+  board-specific setting is a driver bug.
+- **SCMI.** On arm64 platforms whose firmware manages power and clocks over
+  Arm's SCMI (the Sky1), a small SCMI client service, written from Arm's
+  specification, serves power domains, clocks, performance domains and
+  sensors to the power service and drivers. The AML interpreter alone isn't
+  enough: the Sky1's AML clock methods answer NOT_FOUND for its GPU.
 - **ACPI:** devmgr uses our own AML interpreter, written from the ACPI
   specification (no ACPICA), for namespace evaluation, `_PRT` interrupt
   routing, power and thermal methods. It runs in user space, in its own
@@ -292,9 +365,25 @@ interface apps program against.
 - Drivers are ordinary tier 0 processes. They take interrupts from interrupt
   objects bound to a port, or through the IRQ-to-thread fast path for
   real-time devices. They do DMA through BTIs and IOMMU-pinned memory.
-- **First driver set:** PCIe/ECAM, NVMe, AHCI, xHCI plus USB HID, mass storage
-  and USB audio, HDA, virtio (blk, net, gpu, input, sound), the GOP
-  framebuffer, a PS/2 fallback, and an e1000e/igc-class NIC.
+- **First driver set**, for QEMU and the reference machine (i7-12700KF,
+  RX 6750 XT): PCIe/ECAM, NVMe, AHCI, xHCI plus USB HID, mass storage and
+  USB audio, HDA, virtio (blk, net, gpu, input, sound), the GOP framebuffer,
+  a PS/2 fallback, and the NIC on the reference motherboard (to be recorded;
+  an e1000e/igc-class part is the expected case). **USB CDC-NCM/ECM** is the
+  standard-class network fallback on any machine whose NIC has no
+  documentation.
+- **arm64 driver set**, after the reference machine works (see
+  [research/hardware-targets.md](research/hardware-targets.md)):
+  - both boards: GICv3/ITS and the timers in croi, PSCI, NVMe, xHCI, the
+    GOP framebuffer and the display takeover (§10);
+  - Orange Pi 6 Plus: SCMI over its mailbox and SMC, CPPC, ACPI thermal,
+    the SBSA watchdog, PL011, HDA as a platform device (ALC269), the CIX
+    timer for deep idle, SMMUv3; its RTL8126 NICs have no public datasheet;
+  - Radxa Dragon Q8B: the GENI UART, EPSS, TSENS, the two MMU-500s within
+    the hypervisor's rules, and starting the ADSP (its fan runs at full
+    speed until the ADSP's firmware does). Its audio, USB-C and NIC sit
+    behind Qualcomm firmware protocols and an undocumented chip, and come
+    last.
 - **HID class service:** a userspace service normalizes devices into one
   record per device class (keyboard, pointer, pen, gamepad). Gamepads use a
   controller database stored as data, so SDL's 50K-line HIDAPI layer is
@@ -304,6 +393,26 @@ interface apps program against.
 
 Full design: [desktop.md](desktop.md).
 
+- **Display is its own driver.** A display controller is a separate device
+  from the GPU on both arm64 boards (from different vendors on the Sky1),
+  and only partly the same device on AMD (DCN inside the GPU). So display
+  is its own service behind `/svc/display`: outputs, modes, planes,
+  vblank, hotplug and the display timeline. On AMD the GPU system driver
+  implements it; on an SoC a display driver host does. Either way the
+  compositor sees one protocol. Display drivers come in three tiers:
+  1. **Firmware framebuffer:** the GOP framebuffer the loader hands over.
+     Copy into it; the display timeline is synthesized from the timer at
+     the mode's refresh rate, and present feedback says the times are
+     estimates.
+  2. **Takeover:** keep the pipeline UEFI left running (its mode, link and
+     clocks) and drive only what flips need: the scanout address and
+     flush, and the vsync interrupt. That gives real vblank timestamps,
+     page flips and direct scanout with none of the PHY, link-training and
+     clock code. AbyssBSD's `msmfb` does this on the Q8B. Saving UEFI's
+     registers and restoring them when the compositor exits gives the
+     console back.
+  3. **Full:** mode setting, link training, hotplug of new outputs, planes,
+     color pipelines.
 - **GPU driver model (Magma-shaped).** Each app loads an in-process
   **Vulkan client driver**, our own. It is written in Embedded Swift and
   exports the Vulkan C ABI, so C and C++ engines can load it without the
@@ -328,9 +437,13 @@ Full design: [desktop.md](desktop.md).
   carries a game's swapchain image, a video frame, a compute result or a
   screenshot.
 - **Buffer negotiation:** a much smaller version of sysmem. Producers and
-  consumers state their constraints (formats, modifiers, alignment, contiguity)
-  and the allocator returns buffers that every party can use. Direct scanout
-  depends on this.
+  consumers state their constraints (formats, modifiers, alignment,
+  contiguity, **physical address limit**, coherency) and the allocator
+  returns buffers that every party can use. Direct scanout depends on this.
+  On the Q8B the display only reads contiguous memory below 4 GB, from a
+  pool reserved at boot. Formats include the video ones (NV12, P010, and
+  vendor-compressed layouts as modifiers) so a hardware codec can hand
+  frames to the display without a copy when one exists.
 - **Staged driver path.** Each stage is ours. The guest side of a VM
   protocol is written from that protocol's specification.
   1. **No Vulkan:** the GOP framebuffer and the compositor's CPU path. Apps
@@ -352,6 +465,15 @@ Full design: [desktop.md](desktop.md).
      behavior.
   5. **Intel** (from Intel's published PRMs).
   6. **NVIDIA**, last, largely by reverse engineering.
+
+  **arm64 GPUs.** Neither the Mali-G720 (Sky1) nor the Adreno 690 (Q8B) has
+  a published ISA, so each is a reverse-engineering project with its own
+  compiler back end, scheduled after AMD
+  ([roadmap.md](roadmap.md) M10). Until then the boards use display tiers
+  1–2 and CPU composition. The Sky1 gives the OS EL2, so Todhchai can also
+  run there in a KVM guest with the Venus client driver over the host's
+  Vulkan, which puts Vulkan apps on arm64 silicon long before a native
+  driver.
 - **Optional:** a CPU Vulkan implementation for CI and headless use. It is
   only worth writing if it doubles as a test oracle for the shader
   compiler.
@@ -381,7 +503,11 @@ Full design: [filesystem.md](filesystem.md).
 
 - The **audio** service owns devices and a **system mixer with a fixed
   period** (for example 128 frames at 48 kHz, about 2.7 ms). It runs on a
-  real-time thread and mixes from shared-memory rings.
+  real-time thread and mixes from shared-memory rings. The period is fixed
+  while the device runs, but chosen from the device's constraints: the
+  Q8B's DSP path takes only whole milliseconds (multiples of 48 frames at
+  48 kHz), and anything else buzzes at the block rate. Apps see the chosen
+  period in the stream contract.
 - App streams are pull (a callback on an SDK-created real-time thread that
   passed admission) or push (a write call). Each stream has a **contract**
   record: period, rate, end-to-end latency, the anchor between device clock
@@ -390,7 +516,9 @@ Full design: [filesystem.md](filesystem.md).
 - **Voices:** `Mixer` voices for one-shot and looping sounds. A beginner
   plays a sound in one call.
 - **Exclusive mode:** a granted DAW or game can map the device DMA ring
-  directly.
+  directly, where the device has one (HDA, USB audio). A device behind a
+  DSP (the Q8B) has no ring to hand out, and exclusive mode there means the
+  smallest period the DSP accepts.
 - The Media Kit adds BeOS-style node graphs with per-node latency accounting
   on the same rings.
 
@@ -514,6 +642,11 @@ and Metal compatibility are explicitly out of scope.
 - There is no ambient authority. Authority is handles and namespaces (§5).
 - Drivers, the file system, the compositor and the GPU system driver are each
   their own process. DMA goes through the IOMMU (BTI), which is core to croi.
+  **Exceptions are explicit.** Some DMA masters have no IOMMU in front of
+  them (the Sky1's video codec; GPUs that use their own MMU), and some
+  IOMMUs belong to firmware or a hypervisor (the Q8B's). A driver for such
+  a device gets a BTI with no IOMMU, its host is part of the trusted base,
+  and the hardware list says so for each machine.
 - **App sandbox:** by default an app sees `/data` (its own directory), files
   the user picked through the file chooser (which hands over a handle), and the
   basic SDK services. Anything more is a capability in its manifest that the

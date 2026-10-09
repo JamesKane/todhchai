@@ -124,8 +124,13 @@ that can be checked.
   own backend.
 
 ### M8: Bare metal (N + K)
-- Reference machine(s). VT-d or AMD-Vi, NVMe, xHCI with USB HID and audio,
-  HDA, and the NIC.
+- The reference machine: an i7-12700KF with a Radeon RX 6750 XT (RDNA 2),
+  the box AbyssBSD runs on. VT-d, NVMe, xHCI with USB HID and audio, HDA,
+  and the motherboard's NIC.
+- Power on the reference machine: croi's deadline-aware idle over `_CST`,
+  capacity-aware placement over the P- and E-cores, and the power service
+  with CPPC/HWP frequency policy, ACPI thermal (critical shutdown tested)
+  and power profiles ([architecture.md](architecture.md) §8).
 - GPU, with the F track's shader compiler as a prerequisite:
   1. our AMD client driver (SPIR-V to RDNA compiler, command encoding) over
      virtio-gpu native context in a VM, checked against the host's driver
@@ -138,21 +143,55 @@ that can be checked.
 - Game mode: direct scanout, tearing, VRR, overlay planes, HDR.
 - **Exit:** boot to the desktop on the reference machine and run the M7 games
   with direct scanout and VRR. Input-to-photon latency is measured and
-  published.
+  published. With the `balanced` profile, frame-pacing misses are no worse
+  than with deep idle off, and the idle desktop's wakeups per second are
+  published alongside.
 
 ### M9: Maturity
 - BeFS-NG S1 (CoW and checksums), then S2 (snapshots, compression,
   encryption, send/receive). Atomic system updates.
 - Wayland core+ server (ours, from the protocol XML). Intel GPU (from the
   PRMs). The indexer with translators. Media Kit node graphs.
-- Later still: NVIDIA (largely reverse engineered) and arm64 desktop
-  hardware. Wine with DXVK and vkd3d-proton is for those projects to port.
+- Later still: NVIDIA (largely reverse engineered). Wine with DXVK and
+  vkd3d-proton is for those projects to port. arm64 hardware is M10.
+
+### M10: arm64 boards (N + K)
+Starts once M8 works on the reference machine. The boards and what they
+need are in [research/hardware-targets.md](research/hardware-targets.md).
+- **Measure first.** The M1 hosted reference programs on each board's
+  stock Linux (both have working GPU drivers there), so frame pacing and
+  idle-wake latency on arm64 are known before native work starts.
+- **Orange Pi 6 Plus (CIX Sky1) first:**
+  - croi: the DBG2 console, GICv3/ITS (erratum 2941627 checked), the CIX
+    timer as the deep-idle wake timer, `_LPI` with SVE state, SMMUv3 with
+    RMRs, the SMC resource;
+  - the SCMI service, CPPC, ACPI thermal, the SBSA watchdog;
+  - NVMe, xHCI and HDA as ACPI platform devices; USB CDC-NCM for the
+    network until there is an RTL8126 driver;
+  - display tier 1 on the GOP framebuffer, then tier 2 if the Linlon
+    pipeline UEFI leaves can be taken over;
+  - optionally, Todhchai as a KVM guest on the board with Venus over the
+    host's Vulkan, if the host's panvk meets Prism's floor.
+- **Radxa Dragon Q8B second:** the GENI console, the MMIO wake timer, EPSS,
+  TSENS, the MMU-500s within the hypervisor's rules, starting the ADSP
+  (the fan), display tier 2 (the `msmfb` design). Audio, USB-C and the
+  TC956x NICs come last: each sits behind Qualcomm firmware protocols or an
+  undocumented chip.
+- **arm64 GPUs** (Mali CSF, then Adreno) are reverse-engineering projects
+  with their own compiler back ends, after the AMD driver is mature. They
+  are not part of M10's exit.
+- **Exit:** the M6 desktop session on each board with CPU composition: the
+  minimal and synth programs meet their M1 numbers, a missed flip is never
+  caused by deep idle, the critical-temperature shutdown is tested, and
+  the published hardware list names each board with its trusted
+  (IOMMU-less) devices.
 
 ## Dependency sketch
 
 ```
 M0 ─┬─► M1 (H) ───────────────────► M4 (SDK native backend)
-    └─► M2 (K) ─► M3 ─► M4 ─► M5 ─► M6 ─► M7 ─► M8 ─► M9
+    └─► M2 (K) ─► M3 ─► M4 ─► M5 ─► M6 ─► M7 ─► M8 ─┬─► M9
+                                                    └─► M10 (arm64 boards)
 
 Feeding in from the hosted and F tracks:
     BeFS-NG S0 (H) ─► M3      libc + ld (F) ─► M5
@@ -169,6 +208,7 @@ Feeding in from the hosted and F tracks:
 | **File system maturity** | Copy-on-write file systems take more than 5 years | Stage it (S0 is useful by itself), crash harness and query fuzzer from day one |
 | **Embedded Swift limits** | No library evolution; code size from specialization; concurrency runtime not prebuilt for croi triples | Stable boundary is IPC + C, never Swift ABI; keep tier 0 modules small; build the embedded concurrency runtime ourselves if needed |
 | **Scope** | A full desktop OS, with no third-party code to lean on | Hosted track, the F track, standard device classes, a short hardware list, and third parties porting their own software (SDL, WebGPU, Wine) onto our platform interfaces |
+| **arm64 boards** | No public ISA for either GPU; the Q8B's firmware routes power through Windows-only PEP and its peripherals through Qualcomm DSP protocols; a wrong register access resets either SoC with no dump | They follow working amd64 code. The Sky1 (SystemReady-style, SCMI) goes first. CPU composition and the display takeover tier carry the desktop without a GPU driver. AbyssBSD's notes record each hazard, so none is found twice |
 | **Real-time in Swift** | The `@_noLocks` checker has gaps (libm, class metadata, `&&`) | C trampoline for real-time callbacks; CI counts retains and locks |
 
 ## Open decisions
@@ -179,11 +219,8 @@ none blocks M0.
 1. **SDK GPU API:** Prism, a "No Graphics API"-style library over Vulkan 1.4
    (*recommended*), or `webgpu.h` as the NeoDarwin study chose. See
    [sdk.md](sdk.md) §5.
-2. **Desktop architecture priority:** amd64 first for the desktop, because
-   GPUs are available there; the kernel stays tri-arch (*recommended*). Or
-   carry all three arches through M6.
-3. **Reference hardware:** one AMD RDNA2/RDNA3 desktop plus QEMU `q35` and
-   `virt` (*recommended*). Add a Framework-class laptop later.
+2. ~~Desktop architecture priority~~: decided (see "Decided").
+3. ~~Reference hardware~~: decided (see "Decided").
 4. **App format:** an ELF with an appended archive plus attributes
    (*recommended*, single file) or a directory bundle.
 5. **Debug info format:** our own fast format, designed from what RDI shows
@@ -203,6 +240,13 @@ none blocks M0.
 
 ## Decided
 
+- **Desktop architecture priority** (2026-10-09): amd64 first. The kernel
+  stays tri-arch, and the arm64 boards follow once the amd64 code works
+  (M10).
+- **Reference hardware** (2026-10-09): an i7-12700KF with a Radeon RX 6750
+  XT, plus QEMU `q35` and `virt`. Then the Orange Pi 6 Plus and the Radxa
+  Dragon Q8B, the boards AbyssBSD brought up
+  ([research/hardware-targets.md](research/hardware-targets.md)).
 - **libc:** our own, clean-room from ISO C and POSIX (principle 29).
 - **GPU firmware:** part of the hardware. The user installs it from the
   vendor's files, and it is never in our tree.

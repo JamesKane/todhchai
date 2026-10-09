@@ -67,10 +67,23 @@ On every vblank, the compositor tries these in order:
 
 Before Vulkan is available (driver stage 1 in architecture §10), the
 compositor composites on the CPU into the GOP framebuffer, with the same
-protocol and the same damage tracking, and without effects.
+protocol and the same damage tracking, and without effects. This is also
+how the arm64 boards run for a long time, since their GPUs come after AMD.
+With a takeover display driver (display tier 2 in architecture §10) the CPU
+path still gets real page flips and vblank times, and a fullscreen CPU
+surface can be scanned out directly.
 
 The display driver advances a **display-timeline** kernel object from its
-vblank interrupt, stamped with the hardware time. The compositor's real-time
+vblank interrupt, stamped with the hardware time. On the bare firmware
+framebuffer there is no vblank interrupt; the driver advances the timeline
+from a timer at the mode's rate and marks it as synthesized, and that mark
+reaches clients in present feedback.
+
+The vblank interrupt is routed to a CPU that deep idle won't put out of
+reach, and the compositor's latch thread runs under a deadline profile, so
+croi keeps its CPU's wake latency inside the frame margin
+([croi-requirements.md](croi-requirements.md) §3 item 11). On the Q8B, vsync
+landing on a sleeping core cost frames until this was done by hand. The compositor's real-time
 thread waits on that object directly, with no message hops. Frame events to
 clients carry the next target and the measured present time of the previous
 frame (F-101).
