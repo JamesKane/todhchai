@@ -326,6 +326,11 @@ public struct Allocator: Sendable {
     }
   }
 
+  /// Every block of bitmap `region` is to be written at its next commit.
+  mutating func markDirty(region: Int) {
+    for i in dirty[region].indices { dirty[region][i] = true }
+  }
+
   /// The blocks of on-disk bitmap `region` (0 or 1) that changed since it
   /// was last written, as (index within the bitmap, contents); forgets that
   /// they changed for that region.

@@ -143,3 +143,43 @@ import Testing
   let opened = try Volume.open(FileDevice(path: path))
   #expect(opened.superblock == sb)
 }
+
+/// A device that keeps only the blocks written: big volumes for tests.
+struct SparseDevice: BlockDevice {
+  let blockSize = 4096
+  let blockCount: UInt64
+  var blocks: [UInt64: [UInt8]] = [:]
+
+  init(blocks: UInt64) { blockCount = blocks }
+
+  mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    guard block + UInt64(count) <= blockCount else { throw .outOfRange }
+    var out: [UInt8] = []
+    for b in block..<(block + UInt64(count)) { out += blocks[b] ?? [UInt8](repeating: 0, count: blockSize) }
+    return out
+  }
+
+  mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    guard bytes.count % blockSize == 0, block + UInt64(bytes.count / blockSize) <= blockCount else { throw .outOfRange }
+    for k in 0..<(bytes.count / blockSize) { blocks[block + UInt64(k)] = Array(bytes[(k * blockSize)..<((k + 1) * blockSize)]) }
+  }
+
+  mutating func flush() throws(TaisceError) {}
+}
+
+@Test func aBigVolumeRemountsAfterACommit() throws {
+  // Over 32,768 blocks: more than one bitmap block per region.
+  var e = try Engine.format(SparseDevice(blocks: 70_000), label: [], uuid: Array(1...16), now: 1)
+  #expect(e.store.volume.superblock.layout.bitmapBlocks == 3)
+  // A change in the second bitmap block, committed (to one region).
+  _ = try e.store.volume.allocator.allocate(1, near: 40_000)
+  try e.apply([.insert(tree: 1, key: [1], value: [1])])
+  try e.commitGroup()
+  // Remount and commit once more (to the other region, which last saw
+  // the volume two groups ago), then mount again.
+  var again = try Engine.mount(e.store.volume.device)
+  try again.apply([.insert(tree: 1, key: [2], value: [2])])
+  try again.commitGroup()
+  var third = try Engine.mount(again.store.volume.device)
+  #expect(try third.get(1, [2]) == [2])
+}

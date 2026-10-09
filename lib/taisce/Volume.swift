@@ -45,8 +45,12 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
     let superblock = try newestSuperblock(&device)
     let layout = superblock.layout
     let bitmap = try device.read(layout.bitmapStart(txg: superblock.txg), count: Int(layout.bitmapBlocks))
-    let allocator = try Allocator(blockCount: layout.blockCount, bitmap: bitmap)
+    var allocator = try Allocator(blockCount: layout.blockCount, bitmap: bitmap)
     guard allocator.checksum() == superblock.bitmapChecksum else { throw .corrupt(.bitmapChecksum) }
+    // The other region holds the bitmap of the group before this one, so
+    // the next commit, which writes it, writes all of it: its own changes
+    // alone would leave stale whatever this group changed.
+    allocator.markDirty(region: Int((superblock.txg + 1) % 2))
     return Volume(device: device, superblock: superblock, allocator: allocator)
   }
 
