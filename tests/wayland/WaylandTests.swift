@@ -5,6 +5,7 @@ import Glibc
 import Testing
 import Wayland
 import WaylandGen
+import XMLReader
 
 let root: String = {
   var parts = #filePath.split(separator: "/", omittingEmptySubsequences: false)

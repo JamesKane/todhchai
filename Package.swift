@@ -71,10 +71,19 @@ let package = Package(
 
     // Wayland, spoken directly (architecture §18): wlgen turns the protocol
     // XML in data/wayland into lib/wayland/generated; Wayland is the runtime.
-    .target(name: "WaylandGen", path: "lib/wayland/gen"),
+    .target(name: "XMLReader", path: "lib/xml"),
+    .target(name: "WaylandGen", dependencies: ["XMLReader"], path: "lib/wayland/gen"),
     .executableTarget(name: "wlgen", dependencies: ["WaylandGen"], path: "tools/wlgen"),
     .target(name: "Wayland", path: "lib/wayland", exclude: ["gen"], sources: ["runtime", "generated"]),
-    .testTarget(name: "WaylandTests", dependencies: ["Wayland", "WaylandGen"], path: "tests/wayland"),
+    .testTarget(name: "WaylandTests", dependencies: ["Wayland", "WaylandGen", "XMLReader"], path: "tests/wayland"),
+
+    // Vulkan: vkgen turns data/vulkan/vk.xml into a C header; Vulkan is
+    // the loader over the host's libvulkan.so.1.
+    .target(name: "VulkanGen", dependencies: ["XMLReader"], path: "lib/vulkan/gen"),
+    .executableTarget(name: "vkgen", dependencies: ["VulkanGen"], path: "tools/vkgen"),
+    .target(name: "TDVulkan", path: "lib/vulkan/c"),
+    .target(name: "Vulkan", dependencies: ["TDVulkan"], path: "lib/vulkan/swift"),
+    .testTarget(name: "VulkanTests", dependencies: ["Vulkan", "VulkanGen"], path: "tests/vulkan"),
 
     // PipeWire, spoken directly (docs/research/pipewire-protocol.md).
     .target(name: "PipeWire", dependencies: ["TDLinux"], path: "lib/pipewire"),

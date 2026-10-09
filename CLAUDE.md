@@ -66,6 +66,20 @@ regenerate and commit the output:
 Tests that open real windows run only with `TODHCHAI_LIVE_WINDOWS=1`;
 `td ci` doesn't set it, so ordinary runs never put windows on the desktop.
 
+## Vulkan
+
+The host's Vulkan loader is used through bindings we generate: `vkgen`
+reads `data/vulkan/vk.xml` (with its PROVENANCE.md) and writes a C header,
+so struct layouts are C's, plus a Swift command table. The selection
+(core 1.0–1.4 and the extensions Loinnir needs) is in
+`lib/vulkan/gen/Selection.swift`. After changing either, regenerate and
+commit:
+
+    .build/debug/vkgen lib/vulkan/c/include/td_vulkan.h lib/vulkan/swift/generated/Commands.swift data/vulkan/vk.xml
+
+A test checks every struct's size and field offsets against Khronos's
+header where the host has it.
+
 ## Audio
 
 The hosted SDK plays through PipeWire's native protocol, spoken directly

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// A small XML reader: enough for protocol definitions (elements,
+// A small XML reader: enough for protocol and API registries (elements,
 // attributes, the five predefined entities and character references,
 // comments, the XML declaration). Written from the XML 1.0 specification
 // (W3C, fifth edition); text content is kept but not interpreted further.
@@ -9,14 +9,39 @@ public struct XMLElement: Sendable {
   public var name: String
   public var attributes: [String: String]
   public var children: [XMLElement]
+  /// The element's own text, concatenated (child elements' text excluded).
   public var text: String
+  /// Text and child elements in document order: what mixed content such
+  /// as `const <type>char</type>* <name>p</name>` needs.
+  public var content: [XMLContent] = []
 
   public func attribute(_ name: String) -> String? { attributes[name] }
   public func elements(_ name: String) -> [XMLElement] { children.filter { $0.name == name } }
+  public func element(_ name: String) -> XMLElement? { children.first { $0.name == name } }
+
+  /// All the text inside, in order, through child elements, skipping any
+  /// element named in `skipping`.
+  public func innerText(skipping: Set<String> = []) -> String {
+    var out = ""
+    for c in content {
+      switch c {
+      case .text(let t): out += t
+      case .element(let e) where !skipping.contains(e.name): out += e.innerText(skipping: skipping)
+      case .element: break
+      }
+    }
+    return out
+  }
+}
+
+public indirect enum XMLContent: Sendable {
+  case text(String)
+  case element(XMLElement)
 }
 
 public struct XMLError: Error, CustomStringConvertible {
   public let description: String
+  public init(description: String) { self.description = description }
 }
 
 /// Parses `text` and returns its root element.
@@ -104,6 +129,11 @@ struct XMLParser {
     }
     // Content: text, comments, child elements, then the end tag.
     var text: [UInt8] = []
+    var run: [UInt8] = []  // text since the last child, for `content`
+    func flushRun(_ e: inout XMLElement, _ run: inout [UInt8], _ p: XMLParser) throws(XMLError) {
+      if !run.isEmpty { e.content.append(.text(try p.decodeEntities(run[...]))) }
+      run.removeAll()
+    }
     while true {
       guard i < s.count else { throw fail("missing </\(e.name)>") }
       if peek("</") {
@@ -113,6 +143,7 @@ struct XMLParser {
         skipSpace()
         guard i < s.count, s[i] == 0x3e else { throw fail("expected >") }
         i += 1
+        try flushRun(&e, &run, self)
         e.text = try decodeEntities(text[...])
         return e
       }
@@ -122,10 +153,18 @@ struct XMLParser {
         let start = i
         try skip(until: "]]>")
         text += s[start..<(i - 3)]
+        run += s[start..<(i - 3)]
         continue
       }
-      if s[i] == 0x3c { e.children.append(try element()); continue }
+      if s[i] == 0x3c {
+        try flushRun(&e, &run, self)
+        let child = try element()
+        e.children.append(child)
+        e.content.append(.element(child))
+        continue
+      }
       text.append(s[i])
+      run.append(s[i])
       i += 1
     }
   }

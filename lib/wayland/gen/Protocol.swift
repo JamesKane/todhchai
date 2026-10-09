@@ -3,6 +3,8 @@
 // A Wayland protocol definition, read from its XML (the format described in
 // the Wayland documentation, "Wire Format" and "Protocol XML").
 
+@_exported import XMLReader
+
 public struct ProtocolDefinition: Sendable {
   public var name: String
   public var interfaces: [Interface]
