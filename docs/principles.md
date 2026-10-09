@@ -69,8 +69,12 @@ Among the rest, when two principles conflict, the earlier one wins.
 9. **Performance numbers block releases.** Boot time, app cold start, idle
    wakeups, input-to-photon latency, frame-timing error, audio underruns, the
    termbench result, directory-listing speed and whole-OS build time (clean
-   and incremental, per component) are tracked in CI and gate releases. (HM
-   §3.20; ND S7 criteria; P9 `mk all` timing its own build.)
+   and incremental, per component) are tracked in CI and gate releases.
+   Each number is a budget enforced from the milestone that introduces it,
+   measured from the tracer, so a violation can be profiled with the tool
+   that found it ([performance.md](performance.md)). (HM §3.20; ND S7
+   criteria; P9 `mk all` timing its own build; NeoVectra's budgets, which
+   went unmeasured for five milestones.)
 
 10. **Line count is a budget.** Every system component publishes its size and
     dependency graph. The boot path has a line budget. Because every line in

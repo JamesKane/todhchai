@@ -21,7 +21,10 @@ the notes below marked *arm64 boards* come from there.
 
 ## 1. Path to the first user process
 
-Minimum viable user space is items 1 to 12. Zircon's equivalent is about
+Minimum viable user space is items 1 to 12, plus the trace and sampling
+core of item 18: Todhchai measures its performance budgets from the first
+user process ([performance.md](performance.md)), so the measuring can't
+wait for the drivers phase. Zircon's equivalent is about
 60–70K lines. The estimate for the essential subset in Swift is 15–25K lines,
 because the VM's eviction, compression and accounting can wait.
 
@@ -49,7 +52,7 @@ because the VM's eviction, compression and accounting can wait.
 | 15 | FIFO, **counter waitable at a value** (ext), stream, socket, clock, debuglog | Counters map one-to-one onto Vulkan timeline semaphores |
 | 16 | Pager | Page cache and mmap for BeFS-NG |
 | 17 | IOB or a simpler SPSC ring-VMO convention with futex doorbells | Standard shared-memory rings for input, audio, GPU submit and block I/O |
-| 18 | ktrace and sampler | Feeds the system tracer |
+| 18 | ktrace and sampler. **The core is needed with §1** (M2): per-CPU rings of fixed-size records written only by the kernel and read through a capability; categories for scheduling (with the waker), IPC (with flow ids from the channel and transaction id), IRQs, faults, futex waits and VMO commits; marks from user space; sampling on the tick everywhere and on PMU overflow where there is a PMU, with kernel and user frame-pointer stacks read by fault-safe copies; per-thread PMU counters. A disabled probe costs one load and one branch, an enabled event < 30 ns | Feeds the system tracer and `td bench`. Every budget in [performance.md](performance.md) is measured from it. NeoVectra's equivalent (its ADR-0049 and ADR-0050) is the model |
 | 19 | Debug syscalls: read/write thread state, exception channels, process memory access, start a process suspended, keep a crashed process frozen for post-mortem attach | `debugd` (architecture §16) |
 
 ## 3. Extensions for a low-latency game desktop (ext)

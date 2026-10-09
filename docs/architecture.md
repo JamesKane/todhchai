@@ -606,7 +606,12 @@ and Metal compatibility are explicitly out of scope.
 - **tracer:** a system-wide timeline built from croi ktrace, userspace trace
   points and GPU timestamps. It is always available and cheap to turn on. It
   records scheduling, IPC, wait reasons, frame and present events, and audio
-  callbacks, all as plain data.
+  callbacks, all as plain data. Flow ids join a request's spans across
+  processes, and the generated IPC code writes them, so every service is
+  traced with no code of its own. It samples stacks on the tick and on PMU
+  overflow, and a flight recorder keeps the last seconds for crashes and
+  missed deadlines. The performance budgets are measured from it, from M1
+  hosted and M3 native ([performance.md](performance.md)).
 - **Self-inspection:** each process can read its own thread, wait-reason,
   memory-map, handle and queue tables through `/svc/self`.
 - **debugd** exposes a stable, library-shaped debug protocol: attach, threads,

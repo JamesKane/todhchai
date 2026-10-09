@@ -31,6 +31,9 @@ that can be checked.
 - Repository layout, build (CMake/Ninja like croi for tier 0, SwiftPM for
   hosted tools), CI that runs the hosted reference programs and records
   clean and incremental build time per component.
+- `td bench` and the budget report: each budget's number and history per
+  machine, a failing run's trace kept ([performance.md](performance.md)).
+  Build times are the first budgets it judges.
 - The F track starts: its differential test harness against the host's
   libraries, and the first foundation (libc, written against the symbol
   lists the Swift runtime and FoundationEssentials need).
@@ -46,6 +49,8 @@ that can be checked.
 - The C ABI and generated headers. Zig and Odin bindings work.
 - Prism v0 on Linux Vulkan 1.4.
 - Reference programs: minimal, synth, game loop.
+- The SDK's `Trace` module and the hosted tracer, writing the record format
+  croi uses, so the programs' numbers below are read from traces.
 - **Exit:** minimal ≤ 13 calls; 0 idle wakeups; synth has 0 underruns at 128
   frames with a compiler-checked callback; game loop has p99 frame error
   ≤ 1 ms against present feedback (needs `VK_EXT_present_timing` or
@@ -54,23 +59,31 @@ that can be checked.
 ### M2: croi reaches user space (K)
 - croi requirements items 1–12: handoff v2, IRQs, clock, PMM, heap, threads,
   PI, the deadline scheduler, SMP, VMM phase A, handles, syscalls, vDSO, user
-  SIMD, channel/port/futex/timer, process/job, userboot.
+  SIMD, channel/port/futex/timer, process/job, userboot, and the core of
+  item 18 (kernel trace and sampling).
 - **Exit:** userboot starts a tier 0 Embedded Swift process from bootfs. It
   creates a channel pair, passes a VMO across, waits on a port with a
   deadline timer, and prints over debuglog, on all three arches in QEMU.
+  The kernel and IPC budgets ([performance.md](performance.md) §2) are
+  measured from croi's trace and met under KVM.
 
 ### M3: Native tier 0 (N)
 - `libsys` (the Embedded Swift runtime shims), the native IPC transport with
   transaction cancel, the launcher with manifests and namespaces (bind,
   union, sealed), and the Node protocol with its SDK helper, so every
   service has a `/svc/<name>/` tree from its first day.
+- The native tracer: flows in the generated IPC code and the ring library,
+  sampling with symbols, the flight recorder, and `td trace` (text,
+  summaries, comparing two traces). Every later milestone's budgets are
+  measured with it.
 - devmgr and driver hosts; our AML interpreter; PCI/ECAM; virtio blk, net,
   input, gpu-2d and sound; the GOP framebuffer.
 - The block service and **BeFS-NG S0**, which have been developed hosted in
   parallel: FUSE plus a crash harness on Linux.
 - **Exit:** boot to a framebuffer text console in QEMU. Mount a BeFS-NG S0
   volume on virtio-blk, write files with attributes, and get a live query
-  update for them.
+  update for them. M3's system budgets (boot to console, spawn to `main`,
+  a cached read, a live query, resident memory) are met in QEMU.
 
 ### M4: Native desktop v0 (N)
 - Compositor on the framebuffer with CPU composition. Input service with the
@@ -109,8 +122,9 @@ that can be checked.
 
 ### M7: Games and tools (N)
 - Game Kit, `CodeModule` hot reload, record and replay.
-- `debugd` (start suspended, post-mortem attach) and `td debug`, the tracer
-  and `td trace`, `td build`/`td bundle`.
+- `debugd` (start suspended, post-mortem attach) and `td debug`, the
+  tracer's timeline viewer and GPU track (over M3's tracer),
+  `td build`/`td bundle`.
 - The export bridge: remote debugging, tracing and file access from a dev
   box to a test machine.
 - Our own games and demos on Game Kit and Prism, which exercise the SDK the

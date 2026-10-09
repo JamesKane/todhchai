@@ -48,6 +48,7 @@ working toward user space.
 | [docs/sdk.md](docs/sdk.md) | SDK modules, loop and events, minimal programs in Swift and C, Prism GPU, audio, UI Kit, Game Kit, C ABI rules, tools, reference programs |
 | [docs/desktop.md](docs/desktop.md) | Compositor (nestable, plane-first, late latch, game mode), window management, shell apps and scripting, the router, replicants and translators, theme tokens and rendering budget |
 | [docs/filesystem.md](docs/filesystem.md) | BeFS-NG: staged features, on-disk layout, storage engine, snapshots as directories, attributes, query language v2, live queries, trade-offs |
+| [docs/performance.md](docs/performance.md) | Performance budgets with the milestone that enforces each, how they are measured from traces, what the profiling tools must show, and what happens when a budget is violated |
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
 | [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M10 with exit tests, risks, open and decided questions |
 | [docs/next-steps.md](docs/next-steps.md) | Where the design stopped, how to re-sync with croi, which milestone to start, and what to re-verify |
