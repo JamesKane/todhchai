@@ -129,8 +129,9 @@ func timers(_ events: Events) -> [TimerID] {
   #expect(normal.admission == .notRealtime)
   normal.join()
   let rt = try Thread.spawn(intent: .realtime(period: .milliseconds(5), budget: .milliseconds(1), deadline: .milliseconds(5))) {}
-  // Any of the three is a correct answer; which depends on the host's limits.
-  #expect([.deadline, .fixedPriority, .refused(.noRealtimePrivilege)].contains(rt.admission))
+  // Any of the four is a correct answer; which depends on the host's limits
+  // (and whether RealtimeKit runs).
+  #expect([.deadline, .fixedPriority, .fixedPriorityViaRealtimeKit, .refused(.noRealtimePrivilege)].contains(rt.admission))
   rt.join()
 }
 
