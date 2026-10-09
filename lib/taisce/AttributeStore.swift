@@ -20,6 +20,12 @@ extension FileSystem {
   public mutating func setAttribute(_ ino: UInt64, _ name: [UInt8], _ value: AttributeValue, now: UInt64)
     throws(TaisceError)
   {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.putAttribute(ino, name, value, now: now) }
+  }
+
+  mutating func putAttribute(_ ino: UInt64, _ name: [UInt8], _ value: AttributeValue, now: UInt64)
+    throws(TaisceError)
+  {
     let name = try FSKey.attributeName(name)
     var value = value
     switch value {
@@ -63,6 +69,10 @@ extension FileSystem {
   /// Removes an attribute; false if there was none.
   @discardableResult
   public mutating func removeAttribute(_ ino: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) -> Bool {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.deleteAttribute(ino, name, now: now) }
+  }
+
+  mutating func deleteAttribute(_ ino: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) -> Bool {
     let name = try FSKey.attributeName(name)
     var c = Changes()
     var node = try inode(ino, &c)
@@ -107,7 +117,9 @@ extension FileSystem {
     guard !indices.contains(where: { $0.name == name }) else { throw .exists }
     let tree = max(Self.firstDeclaredIndex, (indices.map { $0.tree }.max() ?? 0) + 1)
     let info = IndexInfo(name: name, kind: kind, collation: collation, building: true, tree: tree, cursor: 0)
-    try engine.apply([.insert(tree: Self.registry, key: name, value: info.encode())])
+    try reclaiming { (fs: inout Self) throws(TaisceError) in
+      try fs.engine.apply([.insert(tree: Self.registry, key: name, value: info.encode())])
+    }
     indices.append(info)
   }
 
@@ -116,6 +128,10 @@ extension FileSystem {
   /// building any more.
   @discardableResult
   public mutating func backfill(budget: Int) throws(TaisceError) -> Bool {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.backfillStep(budget: budget) }
+  }
+
+  mutating func backfillStep(budget: Int) throws(TaisceError) -> Bool {
     guard let i = indices.firstIndex(where: { $0.building }) else { return true }
     var index = indices[i]
     var c = Changes()
@@ -172,7 +188,9 @@ extension FileSystem {
   /// Drops journal records up to and including `seq`, once every consumer
   /// has seen them.
   public mutating func trimJournal(through seq: UInt64) throws(TaisceError) {
-    let old = try engine.scan(Self.journal, from: [], to: FSKey.u64(seq &+ 1))
-    try engine.apply(old.map { .delete(tree: Self.journal, key: $0.key) })
+    try reclaiming { (fs: inout Self) throws(TaisceError) in
+      let old = try fs.engine.scan(Self.journal, from: [], to: FSKey.u64(seq &+ 1))
+      try fs.engine.apply(old.map { .delete(tree: Self.journal, key: $0.key) })
+    }
   }
 }

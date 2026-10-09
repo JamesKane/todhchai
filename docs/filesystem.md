@@ -91,6 +91,15 @@ Volume FS tree   CoW B+tree, key = (inode_id: u64, kind: u8, sub_key)
   else can see. Only explicitly cloned extents carry refcounts. This is
   what gefs does, and it avoids a btrfs-style extent-ref tree being
   rewritten on every write.
+- **A freed block waits before reuse.** It stays held through the group that
+  freed it and deferred through the next, so a fallback to the previous
+  superblock never finds it reused. It is then retired until no reader's
+  snapshot can see it. So a full volume can have space that only commits
+  give back: an operation that runs out while freed blocks wait commits
+  twice, waits for readers, and runs again. Every operation either applies
+  whole or changes nothing, so the commit in between is safe. A reserve of
+  128 blocks is kept for commits alone, so a commit always has room for
+  the catalog nodes it copies.
 
 ## 4. Storage engine: a CoW B+tree, not a Bε-tree (yet)
 

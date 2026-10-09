@@ -80,6 +80,21 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   init(engine: consuming Engine<Device>) { self.engine = engine }
 
+  /// Runs an operation. If it runs out of space while freed blocks wait to
+  /// be reusable (held for the group, deferred, or in the readers' limbo),
+  /// makes them reusable and runs it again. An operation that fails
+  /// changes nothing (its batch rolls back, its new blocks are let go and
+  /// blocks it rewrote in place get their contents back), so it's safe to
+  /// commit between the two tries.
+  mutating func reclaiming<T>(_ operation: (inout Self) throws(TaisceError) -> T) throws(TaisceError) -> T {
+    do {
+      return try operation(&self)
+    } catch .noSpace where engine.reclaimable > 0 {
+      try engine.reclaim()
+      return try operation(&self)
+    }
+  }
+
   /// Makes everything so far durable, by committing the group.
   public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
 
@@ -93,6 +108,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Changes a node's permissions, owners or times; nil leaves one as is.
   public mutating func setAttributes(_ ino: UInt64, mode: UInt32? = nil, uid: UInt32? = nil, gid: UInt32? = nil,
                                      atime: UInt64? = nil, mtime: UInt64? = nil, now: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in
+      try fs.changeAttributes(ino, mode: mode, uid: uid, gid: gid, atime: atime, mtime: mtime, now: now)
+    }
+  }
+
+  mutating func changeAttributes(_ ino: UInt64, mode: UInt32?, uid: UInt32?, gid: UInt32?, atime: UInt64?,
+                                 mtime: UInt64?, now: UInt64) throws(TaisceError) {
     var c = Changes()
     var n = try inode(ino, &c)
     if let mode { n.mode = mode & 0o7777 }
@@ -134,7 +156,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
                                gid: UInt32 = 0, now: UInt64) throws(TaisceError) -> UInt64
   {
     guard type != .symlink else { throw .invalid }
-    return try make(dir, name, type, mode: mode, uid: uid, gid: gid, target: nil, now: now)
+    return try reclaiming { (fs: inout Self) throws(TaisceError) in
+      try fs.make(dir, name, type, mode: mode, uid: uid, gid: gid, target: nil, now: now)
+    }
   }
 
   /// A symbolic link to `target`.
@@ -142,7 +166,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
                                 now: UInt64) throws(TaisceError) -> UInt64
   {
     guard !target.isEmpty, target.count <= BTree.maxValue else { throw .invalid }
-    return try make(dir, name, .symlink, mode: 0o777, uid: uid, gid: gid, target: target, now: now)
+    return try reclaiming { (fs: inout Self) throws(TaisceError) in
+      try fs.make(dir, name, .symlink, mode: 0o777, uid: uid, gid: gid, target: target, now: now)
+    }
   }
 
   mutating func make(_ dir: UInt64, _ name: [UInt8], _ type: NodeType, mode: UInt32, uid: UInt32, gid: UInt32,
@@ -175,6 +201,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// Another name for a file.
   public mutating func link(_ ino: UInt64, _ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.addLink(ino, dir, name, now: now) }
+  }
+
+  mutating func addLink(_ ino: UInt64, _ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
     try Self.checkName(name)
     var c = Changes()
     var node = try inode(ino, &c)
@@ -197,6 +227,12 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Removes a file's or symlink's name; its last name frees it, or makes
   /// it an orphan while it's open.
   public mutating func unlink(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    let freeing = try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.removeName(dir, name, now: now) }
+    if let freeing { try destroy(freeing) }
+  }
+
+  /// Unlink's first batch; returns the node to free, if any.
+  mutating func removeName(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) -> UInt64? {
     var c = Changes()
     guard let e = try entry(dir, name, &c) else { throw .notFound }
     guard e.type != .directory else { throw .isDirectory }
@@ -208,11 +244,17 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     journal(&c, e.ino, parent: dir, .unlinked, name: name)
     journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
-    if freeing { try destroy(e.ino) }
+    return freeing ? e.ino : nil
   }
 
   /// Removes an empty directory.
   public mutating func rmdir(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) {
+    let freeing = try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.removeDirectory(dir, name, now: now) }
+    if let freeing { try destroy(freeing) }
+  }
+
+  /// Rmdir's first batch; returns the node to free, if any.
+  mutating func removeDirectory(_ dir: UInt64, _ name: [UInt8], now: UInt64) throws(TaisceError) -> UInt64? {
     var c = Changes()
     guard let e = try entry(dir, name, &c) else { throw .notFound }
     guard e.type == .directory else { throw .notDirectory }
@@ -226,7 +268,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     journal(&c, e.ino, parent: dir, .unlinked, name: name)
     journal(&c, dir, parent: parent.parent, .metadata)
     try applyChanges(c)
-    if freeing { try destroy(e.ino) }
+    return freeing ? e.ino : nil
   }
 
   /// Moves `fromName` in `fromDir` to `toName` in `toDir`, replacing what's
@@ -234,11 +276,21 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   public mutating func rename(_ fromDir: UInt64, _ fromName: [UInt8], _ toDir: UInt64, _ toName: [UInt8], now: UInt64)
     throws(TaisceError)
   {
+    let freeing = try reclaiming { (fs: inout Self) throws(TaisceError) in
+      try fs.move(fromDir, fromName, toDir, toName, now: now)
+    }
+    if let freeing { try destroy(freeing) }
+  }
+
+  /// Rename's first batch; returns the node it replaced, to free, if any.
+  mutating func move(_ fromDir: UInt64, _ fromName: [UInt8], _ toDir: UInt64, _ toName: [UInt8], now: UInt64)
+    throws(TaisceError) -> UInt64?
+  {
     try Self.checkName(toName)
     var c = Changes()
     guard let source = try entry(fromDir, fromName, &c) else { throw .notFound }
     guard try inode(toDir, &c).type == .directory else { throw .notDirectory }
-    if fromDir == toDir && fromName == toName { return }
+    if fromDir == toDir && fromName == toName { return nil }
     if source.type == .directory {
       // Not into itself or below it.
       var d = toDir
@@ -251,7 +303,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     }
     var freeing: UInt64? = nil
     if let target = try entry(toDir, toName, &c) {
-      if target.ino == source.ino { return }  // two names for one file: nothing to do
+      if target.ino == source.ino { return nil }  // two names for one file: nothing to do
       if source.type == .directory {
         guard target.type == .directory else { throw .notDirectory }
         guard try isEmpty(target.ino) else { throw .notEmpty }
@@ -289,13 +341,17 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     }
     journal(&c, source.ino, parent: toDir, .renamed, name: toName)
     try applyChanges(c)
-    if let freeing { try destroy(freeing) }
+    return freeing
   }
 
   // MARK: Data
 
   /// Writes `bytes` at `offset`, growing the file as needed.
   public mutating func write(_ ino: UInt64, offset: UInt64, _ bytes: [UInt8], now: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.writeData(ino, offset: offset, bytes, now: now) }
+  }
+
+  mutating func writeData(_ ino: UInt64, offset: UInt64, _ bytes: [UInt8], now: UInt64) throws(TaisceError) {
     var c = Changes()
     var node = try inode(ino, &c)
     guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
@@ -316,6 +372,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Sets a file's size: shrinking frees the blocks past it, growing reads
   /// as zeros.
   public mutating func truncate(_ ino: UInt64, size: UInt64, now: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.resize(ino, size: size, now: now) }
+  }
+
+  mutating func resize(_ ino: UInt64, size: UInt64, now: UInt64) throws(TaisceError) {
     var c = Changes()
     var node = try inode(ino, &c)
     guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
@@ -347,6 +407,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     } catch {
       for e in c.allocated { engine.store.volume.allocator.free(e) }  // fresh: available again at once
       engine.dropStaged()
+      for (block, bytes) in c.overwritten.reversed() {
+        try engine.store.volume.device.write(block, bytes)
+        cache(block, bytes)
+      }
       throw error
     }
     for e in freed { engine.store.volume.allocator.free(e) }
@@ -414,15 +478,20 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     }
     var hint = old.last.map { $0.physical + $0.count } ?? 0
     if first > 0, let prior = try mapping(ino, first - 1, &c) { hint = prior.1 + prior.2 }
-    let fresh: [Extent]
-    do {
-      fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
-    } catch .noSpace where engine.hasLimboBlocks {
-      engine.waitForReaders()  // back-pressure: readers give space back as they leave
-      fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
-    }
+    let fresh = try engine.store.volume.allocator.allocate(needed, near: hint)
     c.allocated += fresh
     engine.noteAllocated(fresh)
+    // Blocks rewritten in place: what they hold now, to put back if the
+    // batch fails (nothing committed or logged names them, but the
+    // group's own extents do, with these contents' checksums).
+    for i in target.indices where target[i] != 0 {
+      let block = target[i]
+      if let bytes = cached(block) {
+        c.overwritten.append((block, bytes))
+      } else {
+        c.overwritten.append((block, try engine.store.volume.device.read(block, count: 1)))
+      }
+    }
     var spare = fresh.flatMap { e in (e.start..<e.end).map { $0 } }[...]
     for i in target.indices where target[i] == 0 { target[i] = spare.removeFirst() }
     // The data, in runs of consecutive physical blocks.
@@ -751,6 +820,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// Frees a node with no links: its keys, its blocks, its orphan entry.
   mutating func destroy(_ ino: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.destroyNode(ino) }
+  }
+
+  mutating func destroyNode(_ ino: UInt64) throws(TaisceError) {
     var c = Changes()
     c.other.append(.delete(tree: Self.orphans, key: FSKey.u64(ino)))
     var freed: [Extent] = []
@@ -794,6 +867,9 @@ struct Changes {
   var other: [Message] = []
   /// Blocks allocated for this operation's data, to release if it fails.
   var allocated: [Extent] = []
+  /// Blocks its data rewrote in place, with what they held before, to put
+  /// back if it fails.
+  var overwritten: [(block: UInt64, bytes: [UInt8])] = []
 
   mutating func get<D>(_ key: [UInt8], _ engine: inout Engine<D>) throws(TaisceError) -> [UInt8]? {
     if let e = entries.last(where: { $0.key == key }) { return e.value }

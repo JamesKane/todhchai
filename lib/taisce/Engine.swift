@@ -234,6 +234,20 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// How many retirements wait in limbo (the readers' tests watch it).
   public var limboCount: Int { limbo.count }
 
+  /// Freed blocks not yet available again: commits (and readers) give
+  /// them back.
+  public var reclaimable: UInt64 { store.volume.allocator.waitingCount }
+
+  /// Makes every freed block available: a commit moves this group's frees
+  /// to deferred and the last group's to retired, a second retires those,
+  /// and the readers then let go of them all. What a writer does when it
+  /// runs out of space with `reclaimable` blocks waiting.
+  public mutating func reclaim() throws(TaisceError) {
+    try commitGroup()
+    try commitGroup()
+    waitForReaders()
+  }
+
   /// Whether blocks wait in limbo: space that readers will give back.
   public var hasLimboBlocks: Bool { limbo.contains { !$0.blocks.isEmpty } }
 
@@ -355,7 +369,13 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       written = try prepareCommit()
     }
     let sb = store.volume.superblock
-    guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode else {
+    // Nothing to commit only if nothing changed and no freed block waits on
+    // a commit: moving held and deferred blocks on without a new superblock
+    // would let a fallback to the previous one find them reused.
+    let a = store.volume.allocator
+    guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode
+      || a.heldCount > 0 || a.deferredCount > 0
+    else {
       retire(nil, store.volume.allocator.groupCommitted())
       pendingOps = []
       return
@@ -384,6 +404,8 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   mutating func prepareCommit() throws(TaisceError) -> [(block: UInt64, bytes: [UInt8])] {
     let savedTrees = trees, savedCatalog = catalog, savedDirty = store.dirty
     store.volume.allocator.beginBatch()
+    store.volume.allocator.reserveOpen = true  // the reserve is for this
+    defer { store.volume.allocator.reserveOpen = false }
     var written: [(block: UInt64, bytes: [UInt8])] = []
     do throws(TaisceError) {
       for i in trees.indices where trees[i].changed {

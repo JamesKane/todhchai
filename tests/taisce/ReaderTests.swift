@@ -145,10 +145,7 @@ func versioned(_ v: Int) -> [UInt8] { [UInt8](repeating: UInt8(truncatingIfNeede
         try fs.sync()
       }
     } catch .noSpace {
-      // Blocks freed in this group come back as it commits.
       full += 1
-      try fs.sync()
-      try fs.sync()
     }
   }
   run.done.store(true, ordering: .releasing)
@@ -156,7 +153,7 @@ func versioned(_ v: Int) -> [UInt8] { [UInt8](repeating: UInt8(truncatingIfNeede
   run.failures.withLock { for f in $0 { Issue.record(Comment(rawValue: f)) } }
   let reads = run.reads.load(ordering: .relaxed)
   #expect(reads > 1000, "the readers ran: \(reads)")
-  #expect(full < 100, "the volume was full \(full) times")
+  #expect(full == 0, "out of space \(full) times: the file system reclaims what's freed")
   try fs.sync()
   try fs.sync()
   #expect(fs.engine.limboCount == 0)

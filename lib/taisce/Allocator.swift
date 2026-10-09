@@ -46,6 +46,16 @@ public struct Allocator: Sendable {
   /// sizing uses).
   var dirty: [[Bool]]
   public private(set) var freeCount: UInt64
+  /// Free blocks not yet available, by why: held, deferred, retired.
+  public private(set) var heldCount: UInt64 = 0
+  public private(set) var deferredCount: UInt64 = 0
+  public private(set) var retiredCount: UInt64 = 0
+  /// Blocks kept back for commits: an ordinary allocation never takes the
+  /// last of them, so a commit (which copies catalog nodes) can always
+  /// run, and running out of space can always be answered by committing.
+  public let reserve: UInt64
+  /// While a commit prepares (`Engine.prepareCommit`): the reserve is open.
+  var reserveOpen = false
 
   static let bitsPerBitmapBlock = UInt64(Layout.blockSize * 8)
 
@@ -59,6 +69,7 @@ public struct Allocator: Sendable {
     fresh = words
     logged = words
     retired = words
+    reserve = Self.reserve(blockCount)
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     freeCount = blockCount
@@ -80,6 +91,7 @@ public struct Allocator: Sendable {
     fresh = held
     logged = held
     retired = held
+    reserve = Self.reserve(blockCount)
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
     let tail = blockCount % 64
@@ -87,6 +99,19 @@ public struct Allocator: Sendable {
     var used: UInt64 = 0
     for w in words { used += UInt64(w.nonzeroBitCount) }
     freeCount = blockCount - min(blockCount, used - (tail == 0 ? 0 : 64 - tail))
+  }
+
+  /// 128 blocks (32 nodes), or less on a tiny volume.
+  static func reserve(_ blockCount: UInt64) -> UInt64 { min(128, blockCount / 32) }
+
+  /// Freed blocks waiting to be available again: held, deferred or retired.
+  public var waitingCount: UInt64 { heldCount + deferredCount + retiredCount }
+
+  /// Blocks an allocation may take now: free and available, less the
+  /// reserve unless it's open.
+  public var availableCount: UInt64 {
+    let available = freeCount - min(freeCount, waitingCount)
+    return reserveOpen ? available : available - min(available, reserve)
   }
 
   public func isUsed(_ block: UInt64) -> Bool { words[Int(block / 64)] & (1 << (block % 64)) != 0 }
@@ -124,6 +149,9 @@ public struct Allocator: Sendable {
   /// state.
   @discardableResult
   public mutating func groupCommitted() -> [Extent] {
+    retiredCount += deferredCount
+    deferredCount = heldCount
+    heldCount = 0
     var out: [Extent] = []
     for i in held.indices {
       var bits = deferred[i]
@@ -171,6 +199,7 @@ public struct Allocator: Sendable {
     guard let s = saved else { return }
     saved = nil
     for w in s {
+      heldCount = heldCount + UInt64(w.held.nonzeroBitCount) - UInt64(held[w.index].nonzeroBitCount)
       words[w.index] = w.words
       held[w.index] = w.held
       fresh[w.index] = w.fresh
@@ -184,7 +213,11 @@ public struct Allocator: Sendable {
 
   /// Makes retired blocks available: no reader can see them any more.
   public mutating func release(retired e: Extent) {
-    for b in e.start..<e.end { retired[Int(b / 64)] &= ~(1 << (b % 64)) }
+    for b in e.start..<e.end {
+      let w = Int(b / 64), bit: UInt64 = 1 << (b % 64)
+      if retired[w] & bit != 0 { retiredCount -= 1 }
+      retired[w] &= ~bit
+    }
   }
 
   mutating func set(_ block: UInt64, used: Bool) {
@@ -210,7 +243,7 @@ public struct Allocator: Sendable {
   /// none are taken if there isn't room for all of them.
   public mutating func allocate(_ count: UInt64, near: UInt64 = 0) throws(TaisceError) -> [Extent] {
     guard count > 0 else { return [] }
-    guard count <= freeCount else { throw .noSpace }
+    guard count <= availableCount else { throw .noSpace }
     var out: [Extent] = []
     var needed = count
     var b = near < blockCount ? near : 0
@@ -238,7 +271,7 @@ public struct Allocator: Sendable {
       b = b + run == blockCount ? 0 : b + run
     }
     guard needed == 0 else {
-      // Held blocks made the free count promise too much: take nothing.
+      // The available count promised too much (it shouldn't): take nothing.
       for e in out { release(e) }
       throw .noSpace
     }
@@ -247,7 +280,7 @@ public struct Allocator: Sendable {
 
   /// `count` contiguous blocks (B+tree nodes, the log), or noSpace.
   public mutating func allocateContiguous(_ count: UInt64, near: UInt64 = 0) throws(TaisceError) -> Extent {
-    guard count > 0, count <= freeCount else { throw .noSpace }
+    guard count > 0, count <= availableCount else { throw .noSpace }
     var start = near < blockCount ? near : 0
     for _ in 0..<2 {  // from the hint to the end, then from the start
       var b = start
@@ -276,7 +309,12 @@ public struct Allocator: Sendable {
     for b in e.start..<e.end {
       set(b, used: false)
       let w = Int(b / 64), bit: UInt64 = 1 << (b % 64)
-      if fresh[w] & bit != 0 && logged[w] & bit == 0 { fresh[w] &= ~bit } else { held[w] |= bit }
+      if fresh[w] & bit != 0 && logged[w] & bit == 0 {
+        fresh[w] &= ~bit
+      } else if held[w] & bit == 0 {
+        held[w] |= bit
+        heldCount += 1
+      }
     }
   }
 
