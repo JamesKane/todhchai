@@ -108,7 +108,7 @@ func bench(_ options: BenchOptions) -> Bool {
   let (id, description) = machine()
   let historyPath = "bench/history/\(id).tsv"
   let history = parseHistory((try? String(contentsOfFile: historyPath, encoding: .utf8)) ?? "")
-  let judgements = results.map { judge($0.0, seconds: $0.1, history: history, rule: .buildTime) }
+  let judgements = results.map { judge($0.0, seconds: $0.1, history: history, rule: .for($0.0)) }
   let commit = commitID()
   let date = today()
   let text = report(judgements, machine: description, commit: commit, date: date)

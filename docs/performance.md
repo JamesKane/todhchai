@@ -77,7 +77,7 @@ question, recorded in the roadmap's decisions, not a silent change.
 | Kernel entry to the first desktop frame | < 1 s *(proposed)* | M8 | Hardware |
 | Idle desktop: wakeups over 60 s with nothing changing | 0 per second (principle 9) | M4 | QEMU, hardware |
 | Idle desktop: resident memory | < 256 MiB *(proposed)* | M6 | QEMU |
-| Clean and incremental build time, per component | Published; a regression over 10% fails *(proposed)* | M0 | Hosted |
+| Clean and incremental build time, per component | Published; a regression fails: over 10% and 0.25 s for incremental builds, over 20% and 2 s for clean builds (their noise is about ±6%) | M0 | Hosted |
 
 ### Apps and the desktop
 

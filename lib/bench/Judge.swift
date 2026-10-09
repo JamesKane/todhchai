@@ -13,7 +13,21 @@ public struct Rule: Sendable {
   /// How many recent recorded runs form the baseline (their median).
   public var window: Int
 
+  /// Incremental and no-change builds: a few seconds, steady to ±4%.
   public static let buildTime = Rule(tolerance: 0.10, floor: 0.25, window: 5)
+  /// Clean builds: steady only to about ±6% on a shared machine (15.9 to
+  /// 17.9 s measured for the same tree on 2026-10-09), so 10% fails on
+  /// noise. 20% still catches what matters, such as swift-syntax no
+  /// longer arriving prebuilt (more than double).
+  public static let cleanBuild = Rule(tolerance: 0.20, floor: 2.0, window: 5)
+
+  /// The rule for a measurement, by name.
+  public static func `for`(_ name: String) -> Rule {
+    name.hasPrefix("build.clean.") ? .cleanBuild : .buildTime
+  }
+
+  /// "+10%, 0.25 s"
+  public var summary: String { "+\(Int((tolerance * 100).rounded()))%, \(format(floor)) s" }
 }
 
 public enum Verdict: Equatable {
@@ -30,6 +44,7 @@ public struct Judgement: Equatable {
   public var seconds: Double
   public var baseline: Double?
   public var verdict: Verdict
+  public var rule: String
 
   /// The change from the baseline, as a fraction.
   public var change: Double? { baseline.map { $0 > 0 ? (seconds - $0) / $0 : 0 } }
@@ -37,10 +52,13 @@ public struct Judgement: Equatable {
 
 public func judge(_ name: String, seconds: Double, history: [Sample], rule: Rule) -> Judgement {
   let past = history.filter { $0.name == name }.suffix(rule.window).map(\.seconds)
-  guard !past.isEmpty else { return Judgement(name: name, seconds: seconds, baseline: nil, verdict: .new) }
+  guard !past.isEmpty else {
+    return Judgement(name: name, seconds: seconds, baseline: nil, verdict: .new, rule: rule.summary)
+  }
   let baseline = median(Array(past))
   let regressed = seconds > baseline * (1 + rule.tolerance) && seconds - baseline > rule.floor
-  return Judgement(name: name, seconds: seconds, baseline: baseline, verdict: regressed ? .regressed : .ok)
+  return Judgement(
+    name: name, seconds: seconds, baseline: baseline, verdict: regressed ? .regressed : .ok, rule: rule.summary)
 }
 
 /// The budget report, in Markdown.
@@ -48,12 +66,12 @@ public func report(_ judgements: [Judgement], machine: String, commit: String, d
   var out = """
     # Budget report
 
-    Machine `\(machine)`, commit `\(commit)`, \(date). Rule: a measurement fails if it is more
-    than 10% and more than 0.25 s slower than the median of the last 5 recorded runs on this
-    machine (docs/performance.md). Times are medians of this run's repeats, in seconds.
+    Machine `\(machine)`, commit `\(commit)`, \(date). A measurement fails if it is slower
+    than the median of the last 5 recorded runs on this machine by more than both parts of its
+    rule (docs/performance.md). Times are medians of this run's repeats, in seconds.
 
-    | Budget | This run | Baseline | Change | Verdict |
-    |---|---:|---:|---:|---|
+    | Budget | This run | Baseline | Change | Rule | Verdict |
+    |---|---:|---:|---:|---|---|
 
     """
   for j in judgements {
@@ -63,7 +81,7 @@ public func report(_ judgements: [Judgement], machine: String, commit: String, d
     case .ok: "ok"
     case .regressed: "**OVER**"
     }
-    out += "| `\(j.name)` | \(format(j.seconds)) | \(j.baseline.map(format) ?? "—") | \(change) | \(verdict) |\n"
+    out += "| `\(j.name)` | \(format(j.seconds)) | \(j.baseline.map(format) ?? "—") | \(change) | \(j.rule) | \(verdict) |\n"
   }
   return out
 }

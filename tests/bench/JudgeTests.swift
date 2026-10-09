@@ -28,6 +28,14 @@ func samples(_ name: String, _ seconds: [Double]) -> [Sample] {
   #expect(judge("b", seconds: 1.3, history: fast, rule: .buildTime).verdict == .regressed)
 }
 
+@Test func cleanBuildsHaveAWiderRule() {
+  #expect(Rule.for("build.clean.hosted").tolerance == 0.20)
+  #expect(Rule.for("build.incremental.IPC").tolerance == 0.10)
+  let history = samples("build.clean.hosted", [16.0])
+  #expect(judge("build.clean.hosted", seconds: 17.9, history: history, rule: .for("build.clean.hosted")).verdict == .ok)
+  #expect(judge("build.clean.hosted", seconds: 20, history: history, rule: .for("build.clean.hosted")).verdict == .regressed)
+}
+
 @Test func otherMeasurementsDontCount() {
   let history = samples("a", [1, 1, 1])
   #expect(judge("b", seconds: 5, history: history, rule: .buildTime).verdict == .new)
