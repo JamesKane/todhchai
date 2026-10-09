@@ -92,6 +92,16 @@ func s1ExitThroughAFuseMount() throws {
   #expect(run.reads.load(ordering: .relaxed) > 100)
   #expect(server.queue!.answered.load(ordering: .relaxed) > 0, "the reader threads answered requests")
 
+  // A listing, through readdir(3): the reader threads page through it.
+  var names: [String] = []
+  if let d = opendir(mnt) {
+    while let e = readdir(d) {
+      names.append(withUnsafeBytes(of: e.pointee.d_name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) })
+    }
+    closedir(d)
+  }
+  #expect(names.sorted() == [".", "..", ".taisce", "f0", "f1", "f2", "f3"])
+
   // fsync, then a crash: the image as it is now, before any group commit.
   #expect(overwrite("\(mnt)/promised", Array("fsynced through the intent log".utf8), fsync: false))
   let value = Array("int64:7".utf8)

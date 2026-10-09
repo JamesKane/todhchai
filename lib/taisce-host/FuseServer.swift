@@ -17,10 +17,17 @@
 // nothing to do, and a large transaction group commit a group.
 //
 // With reader threads (S1f, `startReaders`), those threads read every
-// request: they answer lookups, attributes, file reads, links and xattrs
-// through lock-free readers, and pass the rest to the thread in `serve`,
-// the only one that writes. An open file's handle is its inode number with
-// the top bit set, so a reader needs no shared handle table.
+// request: they answer lookups, attributes, file reads, directory
+// listings, links and xattrs through lock-free readers, and pass the rest
+// to the thread in `serve`, the only one that writes. No handle table is
+// shared: an open file's handle is its inode number with the top bit set,
+// and a directory needs none.
+//
+// A directory listing pages through the directory as it is at each
+// READDIR, not a copy taken at OPENDIR: an entry's offset is its name
+// hash (the cookie `list(after:)` continues from), and 1, 2 and 3 are
+// ".", ".." and, in the root, ".taisce". Names added or removed while a
+// program lists may or may not appear, as POSIX allows.
 
 import Glibc
 import Synchronization
@@ -256,7 +263,7 @@ public final class FuseServer<Device: BlockDevice> {
     case .open:
       guard try fs.stat(node).type == .file else { throw TaisceError.isDirectory }
       fs.opened(node)
-      return openReply(node | Self.fileHandle, flags: 0)
+      return Self.openReply(node | Self.fileHandle, flags: 0)
     case .create:
       r.skip(4)  // fuse_create_in: flags, then mode, umask, open_flags
       let mode = r.u32()
@@ -264,7 +271,7 @@ public final class FuseServer<Device: BlockDevice> {
       let ino = try fs.create(node, r.name(), .file, mode: mode, uid: request.uid, gid: request.gid, now: now)
       let entry = FuseEncode.entry(ino, try fs.stat(ino))
       fs.opened(ino)
-      return entry + openReply(ino | Self.fileHandle, flags: 0)
+      return entry + Self.openReply(ino | Self.fileHandle, flags: 0)
     case .read:  // with a file's handle, read-only (answered above)
       throw FuseErrno(9)  // EBADF
     case .write:
@@ -303,18 +310,8 @@ public final class FuseServer<Device: BlockDevice> {
       w.u32(4096)
       w.zeros(4 + 24)
       return w.bytes
-    case .opendir:
-      var entries: [(name: [UInt8], ino: UInt64, type: NodeType)] = [
-        (Array(".".utf8), node, .directory), (Array("..".utf8), try fs.stat(node).parent, .directory),
-      ]
-      for (e, _) in try fs.list(node) { entries.append((e.name, e.ino, e.type)) }
-      if node == FileSystem<Device>.root { entries.append((Self.controlName, Self.controlDirectory, .directory)) }
-      return openReply(add(.directory(entries)), flags: 0)
-    case .readdir:
-      return try readdir(&r)
-    case .releasedir:
-      handles[r.u64()] = nil
-      return []
+    case .opendir, .readdir, .releasedir:
+      throw FuseErrno(38)  // read-only, answered above
     case .setxattr:
       // Without FUSE_SETXATTR_EXT (not asked for), fuse_setxattr_in is its
       // 8-byte compatible form: size, flags.
@@ -342,7 +339,7 @@ public final class FuseServer<Device: BlockDevice> {
     guard request.node < controlDirectory else { return false }
     var r = request.body
     switch op {
-    case .getattr, .readlink, .getxattr, .listxattr: return true
+    case .getattr, .readlink, .getxattr, .listxattr, .opendir, .readdir, .releasedir: return true
     case .lookup: return !(request.node == FileSystem<Device>.root && r.name() == controlName)
     case .read: return r.u64() & fileHandle != 0
     default: return false
@@ -379,8 +376,56 @@ public final class FuseServer<Device: BlockDevice> {
       var names: [UInt8] = []
       for (n, _) in try fs.attributes(node) { names += Array("user.".utf8) + n + [0] }
       return try sized(names, size)
+    case .opendir:
+      guard try fs.stat(node).type == .directory else { throw TaisceError.notDirectory }
+      return openReply(0, flags: 0)
+    case .readdir:
+      _ = r.u64()  // the handle: none
+      let offset = r.u64(), size = Int(r.u32())
+      return try listing(node, from: offset, size: size, &fs)
+    case .releasedir:
+      return []
     default:
       throw FuseErrno(38)
+    }
+  }
+
+  /// A READDIR reply: `dir`'s entries after `offset`, as many as fit in
+  /// `size` bytes. Entries sharing a name hash share an offset, so they go
+  /// together or not at all.
+  static func listing<R: FileReading & ~Copyable>(_ dir: UInt64, from offset: UInt64, size: Int, _ fs: inout R) throws
+    -> [UInt8]
+  {
+    var out: [UInt8] = []
+    func fits(_ entries: [(name: [UInt8], ino: UInt64, type: NodeType)], _ off: UInt64) -> Bool {
+      let ds = entries.map { FuseEncode.dirent($0.ino, offset: off, type: $0.type, name: $0.name) }
+      guard out.count + ds.reduce(0, { $0 + $1.count }) <= size else { return false }
+      for d in ds { out += d }
+      return true
+    }
+    var special: [(name: [UInt8], ino: UInt64, type: NodeType)] = [
+      (Array(".".utf8), dir, .directory), (Array("..".utf8), try fs.stat(dir).parent, .directory),
+    ]
+    if dir == FileSystem<Device>.root { special.append((controlName, controlDirectory, .directory)) }
+    for (i, e) in special.enumerated() where offset <= UInt64(i) {
+      guard fits([e], UInt64(i + 1)) else { return out }
+    }
+    // Then the names, by hash: a page of buckets at a time.
+    var cookie: UInt64? = offset <= 3 ? nil : offset
+    while true {
+      let page = try fs.list(dir, after: cookie, limit: 64)
+      if page.isEmpty { return out }
+      var i = 0
+      while i < page.count {
+        var j = i + 1
+        while j < page.count, page[j].cookie == page[i].cookie { j += 1 }
+        let bucket = page[i..<j].map { (name: $0.entry.name, ino: $0.entry.ino, type: $0.entry.type) }
+        // Hashes up to 3 would collide with the specials' offsets (one
+        // chance in 2^62): they're given 4.
+        guard fits(bucket, max(page[i].cookie, 4)) else { return out }
+        cookie = page[i].cookie
+        i = j
+      }
     }
   }
 
@@ -407,7 +452,7 @@ public final class FuseServer<Device: BlockDevice> {
   }
 
   /// struct fuse_open_out.
-  func openReply(_ handle: UInt64, flags: UInt32) -> [UInt8] {
+  static func openReply(_ handle: UInt64, flags: UInt32) -> [UInt8] {
     var w = FuseWriter()
     w.u64(handle)
     w.u32(flags)
@@ -525,7 +570,7 @@ public final class FuseServer<Device: BlockDevice> {
         (Array(".".utf8), Self.controlDirectory, .directory), (Array("..".utf8), 1, .directory),
       ]
       for f in Self.controlFiles { entries.append((f.name, f.ino, .file)) }
-      return openReply(add(.directory(entries)), flags: 0)
+      return Self.openReply(add(.directory(entries)), flags: 0)
     case .readdir: return try readdir(&r)
     case .releasedir:
       handles[r.u64()] = nil
@@ -540,7 +585,7 @@ public final class FuseServer<Device: BlockDevice> {
       case Self.liveFile: .live(text: [], query: nil, pending: [])
       default: .index(text: [], output: nil)
       }
-      return openReply(add(h), flags: 1 << 0 | 1 << 2 | 1 << 4)  // DIRECT_IO, NONSEEKABLE, STREAM
+      return Self.openReply(add(h), flags: 1 << 0 | 1 << 2 | 1 << 4)  // DIRECT_IO, NONSEEKABLE, STREAM
     case .write:
       let handle = r.u64()
       r.skip(8)

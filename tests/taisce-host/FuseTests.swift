@@ -104,7 +104,7 @@ func server() throws -> FuseServer<MemoryDevice> {
   w = FuseWriter(); w.u32(0); w.u32(0)
   #expect(le(call(.getxattr, ino, w.bytes + Client.name("user.u:year")).body, 0, UInt32.self) == 10)  // the size alone
   #expect(call(.setxattr, ino, FuseWriter().bytes + [1, 0, 0, 0, 0, 0, 0, 0] + Client.name("trusted.x") + [1]).error == -95)
-  // READDIR: ".", "..", the file, and /.taisce.
+  // READDIR: ".", "..", /.taisce, then the names.
   let opened = call(.opendir, 1, [0, 0, 0, 0, 0, 0, 0, 0])
   let dh = le(opened.body, 0, UInt64.self)
   w = FuseWriter(); w.u64(dh); w.u64(0); w.u32(4096); w.u32(0); w.u64(0); w.u32(0); w.u32(0)
@@ -116,7 +116,7 @@ func server() throws -> FuseServer<MemoryDevice> {
     names.append(String(decoding: listing[(at + 24)..<(at + 24 + len)], as: UTF8.self))
     at += (24 + len + 7) / 8 * 8
   }
-  #expect(names == [".", "..", "a.txt", ".taisce"])
+  #expect(names == [".", "..", ".taisce", "a.txt"])
   try s.fs.check()
 }
 
@@ -186,7 +186,7 @@ func server() throws -> FuseServer<MemoryDevice> {
   _ = receive(1)
   // Rounds of requests in flight together: a write among reads and
   // attributes. Each read sees one write's bytes, whole.
-  var reads: [UInt64] = []
+  var reads: [UInt64] = [], listings: [UInt64] = []
   for round in 0..<200 {
     var batch: [UInt64] = []
     for k in 0..<8 {
@@ -197,6 +197,11 @@ func server() throws -> FuseServer<MemoryDevice> {
         w.u64(handle); w.u64(0); w.u32(1 << 20); w.u32(0); w.u64(0); w.u32(0); w.u32(0)
         send(c.request(.read, node: ino, w.bytes))
         reads.append(c.unique)
+      } else if k == 5 {
+        var w = FuseWriter()
+        w.u64(0); w.u64(0); w.u32(4096); w.u32(0); w.u64(0); w.u32(0); w.u32(0)
+        send(c.request(.readdir, node: 1, w.bytes))
+        listings.append(c.unique)
       } else {
         send(c.request(.getattr, node: ino, [UInt8](repeating: 0, count: 16)))
       }
@@ -210,6 +215,7 @@ func server() throws -> FuseServer<MemoryDevice> {
       if reads.contains(u) {
         #expect(r.body.count == 17_000 && r.body.allSatisfy { $0 == r.body[0] }, "a torn read")
       }
+      if listings.contains(u) { #expect(dirents(r.body).map { $0.name } == [".", "..", ".taisce", "f"]) }
     }
   }
   send(c.request(.release, node: ino, [UInt8](repeating: 0, count: 8)))
@@ -220,4 +226,49 @@ func server() throws -> FuseServer<MemoryDevice> {
   serving.join()
   close(sv[0])
   try s.fs.check()
+}
+
+/// Names and offsets from a READDIR reply.
+func dirents(_ listing: [UInt8]) -> [(name: String, offset: UInt64)] {
+  var out: [(name: String, offset: UInt64)] = []
+  var at = 0
+  while at + 24 <= listing.count {
+    let len = Int(le(listing, at + 16, UInt32.self))
+    out.append((String(decoding: listing[(at + 24)..<(at + 24 + len)], as: UTF8.self), le(listing, at + 8, UInt64.self)))
+    at += (24 + len + 7) / 8 * 8
+  }
+  return out
+}
+
+@Test func aBigDirectoryListsInPagesEachNameOnce() throws {
+  let s = try server()
+  var c = Client()
+  let dir = try s.fs.create(1, Array("big".utf8), .directory, mode: 0o755, now: 2)
+  for i in 0..<300 { _ = try s.fs.create(dir, Array("file-\(i)".utf8), .file, mode: 0o644, now: 2) }
+  func call(_ op: FuseOpcode, _ node: UInt64, _ body: [UInt8]) -> (error: Int32, body: [UInt8]) {
+    Client.parse(s.handle(c.request(op, node: node, body))[0])
+  }
+  #expect(call(.opendir, dir, [0, 0, 0, 0, 0, 0, 0, 0]).error == 0)
+  #expect(call(.opendir, 1, [0, 0, 0, 0, 0, 0, 0, 0]).error == 0)
+  var seen: [String] = []
+  var offset: UInt64 = 0
+  var pages = 0
+  while true {
+    var w = FuseWriter()
+    w.u64(0); w.u64(offset); w.u32(512); w.u32(0); w.u64(0); w.u32(0); w.u32(0)  // a small buffer: many pages
+    let reply = call(.readdir, dir, w.bytes)
+    #expect(reply.error == 0)
+    let page = dirents(reply.body)
+    if page.isEmpty { break }
+    seen += page.map { $0.name }
+    offset = page.last!.offset
+    pages += 1
+    if pages > 1000 { break }
+  }
+  #expect(pages > 10)
+  #expect(seen.count == 302 && Set(seen).count == 302)  // ".", "..", and 300 names, each once
+  #expect(Set(seen) == Set([".", ".."] + (0..<300).map { "file-\($0)" }))
+  // Not a directory: OPENDIR says so.
+  let f = try s.fs.lookup(dir, Array("file-0".utf8))
+  #expect(call(.opendir, f, [0, 0, 0, 0, 0, 0, 0, 0]).error == -20)  // ENOTDIR
 }
