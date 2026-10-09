@@ -106,6 +106,9 @@ let package = Package(
     // unoptimized BLAKE3 made the file system's tests several times slower.
     .target(name: "TDCrypto", path: "lib/crypto", swiftSettings: tier0 + [.unsafeFlags(["-O"])]),
     .testTarget(name: "CryptoTests", dependencies: ["TDCrypto"], path: "tests/crypto"),
+    // ACPI (docs/milestones/A0.md): tables and our AML interpreter, tier 0.
+    .target(name: "TDACPI", path: "lib/acpi", swiftSettings: tier0),
+    .testTarget(name: "ACPITests", dependencies: ["TDACPI"], path: "tests/acpi"),
     // Unicode (filesystem.md §6; the text stack later): NFC and case
     // folding from the UCD (data/unicode), tier 0.
     .target(name: "TDUnicode", path: "lib/unicode", swiftSettings: tier0),
@@ -157,7 +160,7 @@ let package = Package(
 
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", dependencies: ["TraceFormat", "TraceReader"], path: "lib/bench"),
-    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader", "ABIGen"], path: "tools/td"),
+    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader", "ABIGen", "TDACPI"], path: "tools/td"),
     .testTarget(name: "BenchTests", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tests/bench"),
 
     // Each milestone's exit test (docs/milestones/).

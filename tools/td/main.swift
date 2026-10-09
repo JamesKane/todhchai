@@ -16,6 +16,9 @@
 //       Compiles every GLSL shader to its committed .spv (ShadersCommand.swift).
 //   td trace record|print|summary|diff ...
 //       Records a program's trace, and reads traces (TraceCommand.swift).
+//   td acpi import [NAME] | fetch-qemu | list
+//       The corpus of firmware tables the AML interpreter is tested on, in
+//       .cache/acpi (ACPICommand.swift).
 //   td libc-symbols
 //       Lists what the toolchain's Swift runtime imports from the C and
 //       C++ runtimes, into lib/libc/symbols.tsv.
@@ -36,6 +39,7 @@ var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { fail("usage: td bench|ci|trace|libc-symbols [options]") }
 args.removeFirst()
 if command == "trace" { exit(traceCommand(args) ? 0 : 1) }
+if command == "acpi" { exit(acpiCommand(args) ? 0 : 1) }
 
 var options = BenchOptions()
 var runBench = true
@@ -65,5 +69,5 @@ case "bench": exit(bench(options) ? 0 : 1)
 case "ci": exit(ci(bench: runBench ? options : nil) ? 0 : 1)
 case "libc-symbols": exit(libcSymbols() ? 0 : 1)
 case "shaders": exit(shaders(check: args.contains("--check")) ? 0 : 1)
-default: fail("unknown command \(command); td has bench, ci, shaders, trace and libc-symbols")
+default: fail("unknown command \(command); td has bench, ci, shaders, trace, acpi and libc-symbols")
 }

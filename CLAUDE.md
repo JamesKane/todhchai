@@ -113,6 +113,20 @@ only with `TODHCHAI_LIVE_FUSE=1`; Taisce's budgets are in `td bench
 --programs` (S1's `fsync` and commit ones use an image under `.build`, so
 the host's disk).
 
+## ACPI
+
+`TDACPI` (`lib/acpi`, tier 0) reads firmware tables and is our AML
+interpreter, from ACPI 6.5 with no ACPICA (milestone A0,
+`docs/milestones/A0.md`). Real tables are kept out of the tree, in
+`.cache/acpi`:
+
+    sudo .build/debug/td acpi import     # this machine's tables, and Linux's device view
+    .build/debug/td acpi fetch-qemu      # QEMU's, at a pinned release
+    .build/debug/td acpi list
+
+Tests over the corpus skip when it's absent; synthetic AML comes from the
+tests' own encoder (`tests/acpi/AML.swift`).
+
 ## Crypto
 
 `TDCrypto` (`lib/crypto`, tier 0) is our cryptography, from published
