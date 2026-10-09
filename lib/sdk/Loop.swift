@@ -321,6 +321,8 @@ public struct Loop: ~Copyable {
     for (id, missed) in fired.reversed() {
       if id == deadlineTimer {
         deadlineFired = true
+      } else if keyRepeatFired(id) {
+        // a held key repeating: one keyDown however late, never a burst
       } else {
         append(.timer(id, missed: missed))
       }

@@ -39,7 +39,7 @@ public struct Readiness: OptionSet, Hashable, Sendable {
 }
 
 public struct Event: Sendable {
-  public enum Payload: Sendable {
+  public enum Payload: Sendable, Equatable {
     /// A timer's deadline came. `missed` counts repeats skipped because
     /// the loop was late.
     case timer(TimerID, missed: UInt64)
@@ -57,6 +57,13 @@ public struct Event: Sendable {
     case close
     /// Time to draw a window's next frame.
     case frame(Frame)
+    /// A key went down, or repeats while held.
+    case keyDown(Key)
+    case keyUp(Key)
+    /// The pointer entered, left, moved, or a button changed.
+    case pointer(Pointer)
+    /// The wheel or a touchpad scrolled.
+    case wheel(Wheel)
   }
 
   public var payload: Payload

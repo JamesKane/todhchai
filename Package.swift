@@ -79,7 +79,7 @@ let package = Package(
     // The SDK (sdk.md): the Swift overlay of libtodhchai, hosted on Linux.
     .target(name: "TDLinux", path: "lib/sdk/linux"),
     .target(name: "Todhchai", dependencies: ["Trace", "TDLinux", "Wayland"], path: "lib/sdk", exclude: ["linux"]),
-    .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai"], path: "tests/sdk"),
+    .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai", "Wayland"], path: "tests/sdk"),
 
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", path: "lib/bench"),

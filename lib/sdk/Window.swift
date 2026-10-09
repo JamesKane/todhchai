@@ -80,6 +80,13 @@ final class WindowSystem {
   let presentation: WpPresentation?
   let viewporter: WpViewporter?
   let fractional: WpFractionalScaleManagerV1?
+  let seat: WlSeat?
+  var keyboard: WlKeyboard?
+  var pointer: WlPointer?
+  var input = InputState()
+  var repeatTimer: TimerID?
+  var repeatKey: Key?
+  var repeatWindow: WindowID?
   var presentationClockMonotonic = true
   var windows: [UInt32: WindowState] = [:]  // by window index
   /// Windows owed a `.frame` now: requested before their surface had a
@@ -133,6 +140,8 @@ final class WindowSystem {
     presentation = bind(WpPresentation.self, max: 1)
     viewporter = bind(WpViewporter.self, max: 1)
     fractional = viewporter == nil ? nil : bind(WpFractionalScaleManagerV1.self, max: 1)
+    seat = bind(WlSeat.self, max: 9)
+    if let seat { input.pointerFrames = c.version(of: seat.id) >= 5 }
     try flush()
   }
 
@@ -376,6 +385,11 @@ extension Loop {
     switch e {
     case .xdgWmBase(let wm, .ping(let serial)):
       wm.pong(c, serial: serial)
+    case .wlSeat(let seat, .capabilities(let caps)):
+      if caps.contains(.keyboard), ws.keyboard == nil { ws.keyboard = seat.getKeyboard(c) }
+      if caps.contains(.pointer), ws.pointer == nil { ws.pointer = seat.getPointer(c) }
+    case .wlKeyboard, .wlPointer:
+      for output in ws.input.handle(e) { handleInput(output, ws) }
     case .wpPresentation(_, .clockId(let clock)):
       ws.presentationClockMonotonic = clock == UInt32(CLOCK_MONOTONIC)
     case .xdgToplevel(let t, .configure(let width, let height, let states)):
@@ -421,6 +435,41 @@ extension Loop {
     default:
       break
     }
+  }
+
+  /// The window a surface belongs to.
+  func windowID(_ ws: WindowSystem, _ surface: WlSurface?) -> WindowID? {
+    guard let surface else { return nil }
+    return ws.windows.values.first { $0.surface == surface }?.id
+  }
+
+  mutating func handleInput(_ output: InputState.Output, _ ws: WindowSystem) {
+    switch output {
+    case .event(let payload, let surface):
+      guard let id = windowID(ws, surface) else { return }  // input for no window of ours
+      append(payload, window: id)
+    case .startRepeat(let key, let delay, let interval):
+      if let t = ws.repeatTimer { cancel(t) }
+      var repeated = key
+      repeated.isRepeat = true
+      ws.repeatKey = repeated
+      ws.repeatWindow = windowID(ws, ws.input.keyboardFocus)
+      ws.repeatTimer = timer(at: .now + delay, repeating: interval)
+    case .stopRepeat:
+      if let t = ws.repeatTimer { cancel(t) }
+      ws.repeatTimer = nil
+      ws.repeatKey = nil
+    }
+  }
+
+  /// A key-repeat timer fired: true if `id` was it.
+  mutating func keyRepeatFired(_ id: TimerID) -> Bool {
+    guard let ws = windows, id == ws.repeatTimer, var key = ws.repeatKey, let window = ws.repeatWindow else {
+      return false
+    }
+    key.modifiers = ws.input.modifiers
+    append(.keyDown(key), window: window)
+    return true
   }
 
   mutating func emitConfigure(_ w: WindowState, serial: UInt64) {
