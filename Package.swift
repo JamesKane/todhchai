@@ -101,6 +101,9 @@ let package = Package(
     .target(name: "TodhchaiCABI", dependencies: ["Todhchai", "TDCABI"], path: "lib/capi/swift"),
     .testTarget(name: "CABITests", dependencies: ["ABIGen", "TodhchaiCABI", "TDCABI"], path: "tests/capi",
                 exclude: ["c"]),
+    // Cryptography, ours (architecture §17): BLAKE3 for now, tier 0.
+    .target(name: "TDCrypto", path: "lib/crypto", swiftSettings: tier0),
+    .testTarget(name: "CryptoTests", dependencies: ["TDCrypto"], path: "tests/crypto"),
     // Unicode (filesystem.md §6; the text stack later): NFC and case
     // folding from the UCD (data/unicode), tier 0.
     .target(name: "TDUnicode", path: "lib/unicode", swiftSettings: tier0),

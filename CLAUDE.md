@@ -109,6 +109,13 @@ int64:1993 FILE`. If a test leaves a dead mount, `fusermount3 -u -z
 MOUNTPOINT` clears it. The S0 exit test mounts for real and runs only with
 `TODHCHAI_LIVE_FUSE=1`; Taisce's budgets are in `td bench --programs`.
 
+## Crypto
+
+`TDCrypto` (`lib/crypto`, tier 0) is our cryptography, from published
+specifications (architecture §17). So far: BLAKE3, which Taisce checksums
+blocks with (first 128 bits). Test vectors are data with provenance
+(`data/blake3`); `tests/crypto` runs all of them.
+
 ## Unicode
 
 `TDUnicode` (`lib/unicode`, tier 0) gives NFC and NFD (UAX #15), full case

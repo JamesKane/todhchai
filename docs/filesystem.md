@@ -41,7 +41,7 @@ block is checksummed here.
 | Stage | Features | Why this order |
 |---|---|---|
 | **S0 "BFS-plus"** | B+tree directories, extents, typed attributes (stored inline, then overflow keys), declared indices with automatic back-fill, query language v2, live queries, **persistent change journal**, metadata journaling (write-ahead log), nanosecond times, 64-bit sizes | Gets the BeOS user experience (Tracker, People, Mail, queries) working early, on a design simple enough to finish |
-| **S1 "CoW"** | Copy-on-write for all metadata with an object map; a 128-bit checksum on every block stored in the parent pointer; transaction groups committed by superblock flip, with redundant header and footer copies; an intent log for fast `fsync`; lock-free readers with epoch-based reclamation | Crash consistency and integrity. The change journal, index format and transaction API stay the same |
+| **S1 "CoW"** | Copy-on-write for all metadata through physical block pointers; a 128-bit checksum (BLAKE3) on every block, stored in the parent pointer; transaction groups committed by superblock flip, with redundant header and footer copies; an intent log for fast `fsync`; lock-free readers with epoch-based reclamation | Crash consistency and integrity. The change journal, index format and transaction API stay the same |
 | **S2 "Volumes"** | Containers holding many volumes that share space; snapshots (deadlists for reclamation) shown as dated directories; reflink clones for files and directories; zstd and LZ4 compression per extent (our implementations, from RFC 8878 and the LZ4 frame format); per-volume encryption (our AES-XTS, from FIPS 197 and IEEE 1619); incremental send and receive | Atomic system updates and backups. Gets the user-owned-machine story right |
 | **S3 "Scale"** | Per-CPU allocation groups; multi-queue NVMe; batched TRIM; placement hints; parallel metadata commit | Performance on large NVMe arrays |
 
@@ -54,9 +54,12 @@ usable and is not thrown away, because S1 replaces only the commit layer.
 
 ```
 Container superblock ring (N copies, checksummed; highest valid TXG wins)
- ├─ Object map        CoW B+tree  oid → {paddr, csum, txg}        (APFS-style indirection)
  ├─ Space manager     per-allocation-group free-extent trees + per-CPU reservations
- └─ Volume table      vol_id → {volume root oid, keybag, snapshot tree root}
+ └─ Volume table      vol_id → {volume root pointer, keybag, snapshot tree root}
+
+ Every pointer to a node is physical: {paddr, BLAKE3-128 of the node, birth txg}
+ (ZFS and gefs style; decided in S1, docs/milestones/S1.md). There is no object
+ map: moving a node rewrites its path to the root.
 
 Volume FS tree   CoW B+tree, key = (inode_id: u64, kind: u8, sub_key)
    INODE   (ino, 0)                → mode, uid, times(ns), size, flags, inline attrs (≤ ~256 B total)
@@ -121,8 +124,8 @@ index-leaf writes dominate.
   atomically as one sorted batch. Designing S0's API this way lets the
   storage engine change later without touching callers.
 - The checksum stored in the parent pointer, widened from gefs's 64-bit
-  MetroHash to BLAKE3 or xxh3-128 (our implementations, from their
-  specifications), because encryption and dedupe in S2 want a stronger
+  MetroHash to BLAKE3 truncated to 128 bits (ours, from its specification;
+  decided in S1), because encryption and dedupe in S2 want a stronger
   hash.
 - Epoch-based reclamation so readers take no locks, with back-pressure when
   reclaimed blocks pile up.
