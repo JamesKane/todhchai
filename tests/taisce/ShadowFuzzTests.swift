@@ -60,6 +60,9 @@ struct Fuzzer: ~Copyable {
   var now: UInt64 = 10
   var steps = 0
   var crashes = 0
+  /// The last operations, to print with the first failure.
+  var recent: [String] = []
+  var reported = false
 
   init(seed: UInt64) throws {
     rng = SplitMix(state: seed)
@@ -82,6 +85,8 @@ struct Fuzzer: ~Copyable {
   /// Runs `op` on the file system and expects `expected` (nil: success).
   mutating func expect(_ expected: TaisceError?, _ what: String, _ op: (inout FileSystem<MemoryDevice>) throws -> Void)
   {
+    recent.append("\(steps): \(what)")
+    if recent.count > 25 { recent.removeFirst() }
     do {
       try op(&fs)
       #expect(expected == nil, "step \(steps): \(what) succeeded, the model says \(String(describing: expected))")
@@ -176,9 +181,11 @@ struct Fuzzer: ~Copyable {
       }
     case 70..<76:  // open or close
       if let f = pick(model.files()), rng.below(2) == 0 {
+        recent.append("\(steps): open \(f)")
         fs.opened(f)
         model.open[f, default: 0] += 1
       } else if let f = pick(model.open.keys.sorted()) {
+        recent.append("\(steps): close \(f)")
         try fs.closed(f)
         model.open[f]! -= 1
         if model.open[f] == 0 {
@@ -208,6 +215,7 @@ struct Fuzzer: ~Copyable {
         model.nodes[ino]!.attributes[nm] = v
       }
     case 87..<95:
+      recent.append("\(steps): sync")
       try fs.sync()
       synced = model
     default:  // crash, after the last sync
@@ -269,6 +277,7 @@ struct Fuzzer: ~Copyable {
   /// holds file data written since the last sync, in blocks no committed
   /// metadata points at, and the mount must not see any of it.
   mutating func crash() throws {
+    recent.append("\(steps): crash")
     crashes += 1
     fs = try FileSystem.mount(fs.engine.store.volume.device)
     model = synced.afterCrash()
@@ -289,7 +298,13 @@ struct Fuzzer: ~Copyable {
         if ino != 1 { #expect(n.parent == m.parent, "step \(steps): \(ino)'s parent") }
       case .file:
         #expect(n.size == UInt64(m.data.count), "step \(steps): file \(ino) is \(n.size) bytes, model \(m.data.count)")
-        #expect(try fs.read(ino, offset: 0, count: m.data.count + 10) == m.data, "step \(steps): file \(ino)'s bytes differ")
+        let got = try fs.read(ino, offset: 0, count: m.data.count + 10)
+        if got != m.data && !reported {
+          reported = true
+          let at = (0..<min(got.count, m.data.count)).first { got[$0] != m.data[$0] } ?? min(got.count, m.data.count)
+          Issue.record("step \(steps): file \(ino)'s bytes differ from byte \(at) (size \(m.data.count)); recent:\n\(recent.joined(separator: "\n"))")
+          for r in recent { print("RECENT \(r)") }
+        }
       case .symlink:
         #expect(try fs.readlink(ino) == m.target)
       }

@@ -1,17 +1,25 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-/// A B+tree over byte-string keys in byte order, with byte-string values
-/// (filesystem.md §3–4). Its nodes live in a Store; the tree itself is
-/// just its root. The file system tree, the index forest and the change
-/// journal are each one, with keys encoded so byte order is their order.
+/// A copy-on-write B+tree over byte-string keys in byte order, with
+/// byte-string values (filesystem.md §3–4). Its nodes live in a Store; the
+/// tree itself is a pointer to its root. The file system tree, the index
+/// forest and the change journal are each one, with keys encoded so byte
+/// order is their order.
 ///
 /// Nodes split and merge by encoded size: a node holds what fits in 16 KiB,
 /// and one under a quarter full borrows from or merges with a sibling.
+///
+/// Copy-on-write (S1): changing a node gives it a new block unless this
+/// group already did, so every change returns its node's pointer, and the
+/// parent takes it, up to the root. `write` then writes the group's nodes
+/// bottom-up, each parent recording its children's checksums.
 public struct BTree: Equatable, Sendable {
-  /// The root node's block, or 0 for an empty tree.
-  public var root: UInt64
+  /// The root, or `.null` for an empty tree.
+  public var root: NodePointer
 
-  public init(root: UInt64 = 0) { self.root = root }
+  public init(root: NodePointer = .null) { self.root = root }
+
+  public var isEmpty: Bool { root.isNull }
 
   public static let maxKey = 1024
   public static let maxValue = 3072
@@ -20,28 +28,28 @@ public struct BTree: Equatable, Sendable {
   // MARK: Reading
 
   public func get<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> [UInt8]? {
-    guard root != 0 else { return nil }
-    var block = root
+    guard !root.isNull else { return nil }
+    var p = root
     while true {
-      let n = try store.node(block)
+      let n = try store.node(p)
       if n.isLeaf {
         let i = n.lowerBound(key)
         return i < n.keys.count && n.keys[i] == key ? n.values[i] : nil
       }
-      block = n.children[n.childIndex(key)]
+      p = n.children[n.childIndex(key)]
     }
   }
 
   /// The last entry whose key is at most `key`.
   public func floor<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> (key: [UInt8], value: [UInt8])? {
-    guard root != 0 else { return nil }
+    guard !root.isNull else { return nil }
     return try floor(root, key, &store)
   }
 
-  func floor<D>(_ block: UInt64, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError)
+  func floor<D>(_ p: NodePointer, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError)
     -> (key: [UInt8], value: [UInt8])?
   {
-    let n = try store.node(block)
+    let n = try store.node(p)
     if n.isLeaf {
       let i = n.childIndex(key) - 1  // the number of keys ≤ key, less one
       return i >= 0 ? (n.keys[i], n.values[i]) : nil
@@ -60,15 +68,15 @@ public struct BTree: Equatable, Sendable {
     throws(TaisceError) -> [(key: [UInt8], value: [UInt8])]
   {
     var out: [(key: [UInt8], value: [UInt8])] = []
-    guard root != 0, limit > 0 else { return out }
+    guard !root.isNull, limit > 0 else { return out }
     try collect(root, from, to, limit, &out, &store)
     return out
   }
 
   /// Visits the subtree in order, from the child covering `from`.
-  func collect<D>(_ block: UInt64, _ from: [UInt8], _ to: [UInt8]?, _ limit: Int,
+  func collect<D>(_ p: NodePointer, _ from: [UInt8], _ to: [UInt8]?, _ limit: Int,
                   _ out: inout [(key: [UInt8], value: [UInt8])], _ store: inout Store<D>) throws(TaisceError) {
-    let n = try store.node(block)
+    let n = try store.node(p)
     if n.isLeaf {
       var i = n.lowerBound(from)
       while i < n.keys.count, out.count < limit {
@@ -92,31 +100,34 @@ public struct BTree: Equatable, Sendable {
   /// Sets `key` to `value`, replacing what was there.
   public mutating func insert<D>(_ key: [UInt8], _ value: [UInt8], _ store: inout Store<D>) throws(TaisceError) {
     guard key.count <= Self.maxKey, value.count <= Self.maxValue else { throw .tooLarge }
-    guard root != 0 else {
+    guard !root.isNull else {
       var leaf = Node(level: 0)
       leaf.keys = [key]
       leaf.values = [value]
-      root = try store.allocateNode(near: store.volume.superblock.layout.dataStart)
-      store.put(root, leaf)
+      let block = try store.allocateNode(near: store.volume.superblock.layout.dataStart)
+      store.put(block, leaf)
+      root = .fresh(block)
       return
     }
-    if let (separator, right) = try insert(root, key, value, &store) {
+    let (updated, split) = try insert(root, key, value, &store)
+    root = updated
+    if let (separator, right) = split {
       let old = try store.node(root)
       var top = Node(level: old.level + 1)
       top.keys = [separator]
       top.children = [root, right]
-      let block = try store.allocateNode(near: root)
+      let block = try store.allocateNode(near: root.block)
       store.put(block, top)
-      root = block
+      root = .fresh(block)
     }
   }
 
-  /// Inserts into the subtree at `block`; if it split, the separator and
-  /// the new right node.
-  func insert<D>(_ block: UInt64, _ key: [UInt8], _ value: [UInt8], _ store: inout Store<D>)
-    throws(TaisceError) -> (separator: [UInt8], right: UInt64)?
+  /// Inserts into the subtree `p` points at: its new pointer, and if it
+  /// split, the separator and the new right node.
+  func insert<D>(_ p: NodePointer, _ key: [UInt8], _ value: [UInt8], _ store: inout Store<D>)
+    throws(TaisceError) -> (NodePointer, (separator: [UInt8], right: NodePointer)?)
   {
-    var n = try store.node(block)
+    var n = try store.node(p)
     if n.isLeaf {
       let i = n.lowerBound(key)
       if i < n.keys.count && n.keys[i] == key {
@@ -127,19 +138,19 @@ public struct BTree: Equatable, Sendable {
       }
     } else {
       let c = n.childIndex(key)
-      guard let (separator, right) = try insert(n.children[c], key, value, &store) else { return nil }
-      n.keys.insert(separator, at: c)
-      n.children.insert(right, at: c + 1)
+      let (child, split) = try insert(n.children[c], key, value, &store)
+      n.children[c] = child
+      if let (separator, right) = split {
+        n.keys.insert(separator, at: c)
+        n.children.insert(right, at: c + 1)
+      }
     }
-    guard n.size > Node.bytes else {
-      store.put(block, n)
-      return nil
-    }
+    guard n.size > Node.bytes else { return (.fresh(try store.update(p.block, n)), nil) }
     let (left, separator, right) = split(n)
-    let rightBlock = try store.allocateNode(near: block)
-    store.put(block, left)
+    let leftBlock = try store.update(p.block, left)
+    let rightBlock = try store.allocateNode(near: leftBlock)
     store.put(rightBlock, right)
-    return (separator, rightBlock)
+    return (.fresh(leftBlock), (separator, .fresh(rightBlock)))
   }
 
   /// Splits an overfull node near the middle of its bytes.
@@ -176,45 +187,47 @@ public struct BTree: Equatable, Sendable {
   /// Removes `key`; false if it wasn't there.
   @discardableResult
   public mutating func delete<D>(_ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> Bool {
-    guard root != 0 else { return false }
-    let found = try delete(root, key, &store)
+    guard !root.isNull else { return false }
+    let (found, updated) = try delete(root, key, &store)
+    guard found else { return false }
+    root = updated
     // Shrink from the top: an empty leaf root empties the tree, and an
     // internal root with one child hands over to it.
     let r = try store.node(root)
     if r.keys.isEmpty {
-      store.freeNode(root)
-      root = r.isLeaf ? 0 : r.children[0]
-    }
-    return found
-  }
-
-  /// Deletes from the subtree at `block`, rebalancing children that fall
-  /// under a quarter full. Whether the key was there.
-  func delete<D>(_ block: UInt64, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> Bool {
-    var n = try store.node(block)
-    if n.isLeaf {
-      let i = n.lowerBound(key)
-      guard i < n.keys.count, n.keys[i] == key else { return false }
-      n.keys.remove(at: i)
-      n.values.remove(at: i)
-      store.put(block, n)
-      return true
-    }
-    let c = n.childIndex(key)
-    guard try delete(n.children[c], key, &store) else { return false }
-    let child = try store.node(n.children[c])
-    if child.size < Self.minFill && n.children.count > 1 {
-      try rebalance(&n, c, &store)
-      store.put(block, n)
+      store.freeNode(root.block)
+      root = r.isLeaf ? .null : r.children[0]
     }
     return true
+  }
+
+  /// Deletes from the subtree `p` points at, rebalancing children that fall
+  /// under a quarter full. Whether the key was there, and the subtree's
+  /// pointer (unchanged if it wasn't).
+  func delete<D>(_ p: NodePointer, _ key: [UInt8], _ store: inout Store<D>) throws(TaisceError) -> (Bool, NodePointer) {
+    var n = try store.node(p)
+    if n.isLeaf {
+      let i = n.lowerBound(key)
+      guard i < n.keys.count, n.keys[i] == key else { return (false, p) }
+      n.keys.remove(at: i)
+      n.values.remove(at: i)
+      return (true, .fresh(try store.update(p.block, n)))
+    }
+    let c = n.childIndex(key)
+    let (found, child) = try delete(n.children[c], key, &store)
+    guard found else { return (false, p) }
+    n.children[c] = child
+    if try store.node(child).size < Self.minFill && n.children.count > 1 {
+      try rebalance(&n, c, &store)
+    }
+    return (true, .fresh(try store.update(p.block, n)))
   }
 
   /// Merges child `c` with a sibling, or shares entries with it.
   func rebalance<D>(_ parent: inout Node, _ c: Int, _ store: inout Store<D>) throws(TaisceError) {
     let l = c + 1 < parent.children.count ? c : c - 1  // the pair (l, l + 1)
-    let leftBlock = parent.children[l], rightBlock = parent.children[l + 1]
-    let left = try store.node(leftBlock), right = try store.node(rightBlock)
+    let leftPointer = parent.children[l], rightPointer = parent.children[l + 1]
+    let left = try store.node(leftPointer), right = try store.node(rightPointer)
     // Everything in one node, in order (an internal pair pulls the separator down).
     var all = Node(level: left.level)
     all.keys = left.keys
@@ -225,16 +238,41 @@ public struct BTree: Equatable, Sendable {
     all.values += right.values
     all.children += right.children
     if all.size <= Node.bytes {
-      store.put(leftBlock, all)
-      store.freeNode(rightBlock)
+      parent.children[l] = .fresh(try store.update(leftPointer.block, all))
+      store.freeNode(rightPointer.block)
       parent.keys.remove(at: l)
       parent.children.remove(at: l + 1)
     } else {
       let (newLeft, separator, newRight) = split(all)
-      store.put(leftBlock, newLeft)
-      store.put(rightBlock, newRight)
+      parent.children[l] = .fresh(try store.update(leftPointer.block, newLeft))
+      parent.children[l + 1] = .fresh(try store.update(rightPointer.block, newRight))
       parent.keys[l] = separator
     }
+  }
+
+  // MARK: Writing
+
+  /// Writes this group's nodes bottom-up, appending (block, bytes) to
+  /// `out`: each parent takes its children's new checksums, and the root
+  /// pointer gets its own. Untouched subtrees aren't visited: a node needs
+  /// writing exactly when its block was allocated in this group.
+  public mutating func write<D>(_ store: inout Store<D>, txg: UInt64, _ out: inout [(block: UInt64, bytes: [UInt8])])
+    throws(TaisceError)
+  {
+    root = try write(root, txg, &store, &out)
+  }
+
+  func write<D>(_ p: NodePointer, _ txg: UInt64, _ store: inout Store<D>,
+                _ out: inout [(block: UInt64, bytes: [UInt8])]) throws(TaisceError) -> NodePointer {
+    guard !p.isNull, store.volume.allocator.isFresh(p.block) else { return p }
+    var n = try store.node(p)
+    if !n.isLeaf {
+      for i in n.children.indices { n.children[i] = try write(n.children[i], txg, &store, &out) }
+      store.put(p.block, n)
+    }
+    let bytes = n.encode()
+    out.append((p.block, bytes))
+    return NodePointer(block: p.block, checksum: Checksum(of: bytes), birth: txg)
   }
 
   // MARK: Checking
@@ -245,23 +283,28 @@ public struct BTree: Equatable, Sendable {
     public var depth = 0
   }
 
-  /// Checks every invariant: order, bounds, even depth, fill, and that
-  /// every node's blocks are allocated. For tests and fsck.
+  /// Checks every invariant: order, bounds, even depth, fill, that every
+  /// node's blocks are allocated, and that every written node has the
+  /// checksum its parent records. For tests and fsck.
   public func check<D>(_ store: inout Store<D>) throws(TaisceError) -> Stats {
     var stats = Stats()
-    guard root != 0 else { return stats }
+    guard !root.isNull else { return stats }
     var leafDepth: Int? = nil
     try check(root, lower: nil, upper: nil, depth: 1, isRoot: true, &leafDepth, &stats, &store)
     stats.depth = leafDepth ?? 0
     return stats
   }
 
-  func check<D>(_ block: UInt64, lower: [UInt8]?, upper: [UInt8]?, depth: Int, isRoot: Bool, _ leafDepth: inout Int?,
+  func check<D>(_ p: NodePointer, lower: [UInt8]?, upper: [UInt8]?, depth: Int, isRoot: Bool, _ leafDepth: inout Int?,
                 _ stats: inout Stats, _ store: inout Store<D>) throws(TaisceError) {
-    for b in block..<(block + UInt64(Layout.nodeBlocks)) where !store.volume.allocator.isUsed(b) {
+    for b in p.block..<(p.block + UInt64(Layout.nodeBlocks)) where !store.volume.allocator.isUsed(b) {
       throw .corrupt(.tree(.blockNotAllocated))
     }
-    let n = try store.node(block)
+    let n = try store.node(p)
+    // A written node (not changed in this group) must match its pointer.
+    if !store.volume.allocator.isFresh(p.block), Checksum(of: n.encode()) != p.checksum {
+      throw .corrupt(.checksum(p.block))
+    }
     stats.nodes += 1
     guard n.size <= Node.bytes else { throw .corrupt(.tree(.overfull)) }
     if !isRoot && n.size < Self.minFill && n.keys.count > 1 {

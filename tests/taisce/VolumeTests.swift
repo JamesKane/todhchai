@@ -28,7 +28,7 @@ import Testing
 @Test func aSuperblockRoundTripsAndRejectsDamage() throws {
   var s = Superblock(layout: try Layout(blockCount: 10_000), uuid: Array(1...16), label: Array("home".utf8),
                      createdNs: 42)
-  s.catalogRoot = 777
+  s.catalogRoot = NodePointer(block: 777, checksum: Checksum(a: 1, b: 2), birth: 3)
   s.generation = 9
   var block = s.encode()
   #expect(try Superblock.decode(block) == s)
@@ -72,14 +72,15 @@ import Testing
 @Test func aTornSuperblockWriteFallsBackToTheOtherCopy() throws {
   var v = try Volume.format(MemoryDevice(blocks: 4096), label: [], uuid: Array(1...16), now: 0)
   let before = v.superblock
-  try v.commit { $0.catalogRoot = 1234 }
-  #expect(try Volume.open(v.device).superblock.catalogRoot == 1234)
+  let pointer = NodePointer(block: 1234, checksum: Checksum(a: 5, b: 6), birth: 7)
+  try v.commit { $0.catalogRoot = pointer }
+  #expect(try Volume.open(v.device).superblock.catalogRoot == pointer)
   // Tear the newest copy: the previous generation is what mounts.
   var damaged = v.device
   try damaged.write(v.superblock.slot, [UInt8](repeating: 0xAB, count: 4096))
   let opened = try Volume.open(damaged)
   #expect(opened.superblock.generation == before.generation)
-  #expect(opened.superblock.catalogRoot == 0)
+  #expect(opened.superblock.catalogRoot == .null)
 }
 
 @Test func aCommitIsOrderedByBarriers() throws {

@@ -45,6 +45,8 @@ public enum Corruption: Equatable, Sendable {
   case superblockLayout
   case bitmapSize
   case node
+  /// A block whose bytes don't have the checksum its pointer records.
+  case checksum(UInt64)
   case catalog
   case inode
   case directory

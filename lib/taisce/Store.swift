@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 /// The volume, and the B+tree nodes in memory: a direct-mapped cache of
-/// clean nodes, and the nodes changed since the last `writeDirty`, kept
-/// until they're written (S0c logs them first). Every tree on the volume
-/// shares one store.
+/// clean nodes (each checked against its pointer's checksum when read), and
+/// the nodes changed in this transaction group, until the commit writes
+/// them. Every tree on the volume shares one store.
+///
+/// Copy-on-write (S1): a committed node is never changed where it is.
+/// `update` gives it a new block (unless it was allocated in this group,
+/// which nothing committed points at) and holds the old one until the
+/// commit.
 public struct Store<Device: BlockDevice>: ~Copyable {
   public var volume: Volume<Device>
   var cache: [CachedNode?]
@@ -31,15 +36,33 @@ public struct Store<Device: BlockDevice>: ~Copyable {
     return (lo < dirty.count && dirty[lo].block == block, lo)
   }
 
-  /// The node at `block`.
-  public mutating func node(_ block: UInt64) throws(TaisceError) -> Node {
+  /// The node `pointer` points at. Read from the device, its bytes must
+  /// have the pointer's checksum (`.corrupt(.checksum)` otherwise).
+  public mutating func node(_ pointer: NodePointer) throws(TaisceError) -> Node {
+    let block = pointer.block
     let d = dirtyIndex(block)
     if d.found { return dirty[d.at].node }
     let s = slot(block)
     if let c = cache[s], c.block == block { return c.node }
-    let node = try Node.decode(volume.device.read(block, count: Layout.nodeBlocks))
+    let bytes = try volume.device.read(block, count: Layout.nodeBlocks)
+    guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(block)) }
+    let node = try Node.decode(bytes)
     cache[s] = CachedNode(block: block, node: node)
     return node
+  }
+
+  /// Gives `node` a block for this group: `block` itself if it was
+  /// allocated in this group, else a new one (the old is held until the
+  /// commit). Returns the block it's now at.
+  public mutating func update(_ block: UInt64, _ node: Node) throws(TaisceError) -> UInt64 {
+    if volume.allocator.isFresh(block) {
+      put(block, node)
+      return block
+    }
+    let moved = try allocateNode(near: block)
+    put(moved, node)
+    freeNode(block)
+    return moved
   }
 
   /// Replaces the node at `block`, in memory until `writeDirty`.
@@ -64,17 +87,11 @@ public struct Store<Device: BlockDevice>: ~Copyable {
     volume.allocator.free(Extent(start: block, count: UInt64(Layout.nodeBlocks)))
   }
 
-  /// The changed nodes, as (block, encoded), in block order.
-  public var dirtyNodes: [(block: UInt64, bytes: [UInt8])] { dirty.map { ($0.block, $0.node.encode()) } }
-
   public var dirtyCount: Int { dirty.count }
 
-  /// Writes the changed nodes in place and keeps them as clean.
-  public mutating func writeDirty() throws(TaisceError) {
-    for d in dirty {
-      try volume.device.write(d.block, d.node.encode())
-      cache[slot(d.block)] = d
-    }
+  /// After a commit wrote the changed nodes: keeps them as clean.
+  public mutating func written() {
+    for d in dirty { cache[slot(d.block)] = d }
     dirty = []
   }
 }

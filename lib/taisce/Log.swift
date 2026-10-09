@@ -9,9 +9,10 @@
 /// A record is a header block and the blocks it carries:
 ///
 ///     header  magic "TLog" u32, flags u16 (1: the group's last record),
-///             count u16, epoch u64, seq u64, txg u64, catalog root u64,
-///             next inode u64, CRC-32C u32 (of the header with this field
-///             zero, then the blocks), then `count` target block numbers
+///             count u16, epoch u64, seq u64, txg u64, next inode u64,
+///             CRC-32C u32 (of the header with this field zero, then the
+///             blocks), the catalog's root pointer (32 bytes, at 64), then
+///             `count` target block numbers (from 96)
 ///     blocks  `count` blocks, each to be written at its target
 ///
 /// The log is used from its start; when the next group won't fit before its
@@ -20,7 +21,7 @@
 /// valid they look.
 public enum Log {
   static let magic: UInt32 = 0x676F_4C54  // "TLog"
-  static let headerFields = 64
+  static let headerFields = 96
   /// Blocks one record can carry.
   public static let maxBlocks = (Layout.blockSize - headerFields) / 8
 
@@ -29,7 +30,7 @@ public enum Log {
     public var epoch: UInt64
     public var seq: UInt64
     public var txg: UInt64
-    public var catalogRoot: UInt64
+    public var catalogRoot: NodePointer
     public var nextInode: UInt64
     public var targets: [UInt64]
     public var blocks: [UInt8]  // targets.count blocks
@@ -43,8 +44,8 @@ public enum Log {
       h.put(epoch, at: 8)
       h.put(seq, at: 16)
       h.put(txg, at: 24)
-      h.put(catalogRoot, at: 32)
       h.put(nextInode, at: 40)
+      catalogRoot.put(into: &h, at: 64)
       for (i, t) in targets.enumerated() { h.put(t, at: Log.headerFields + 8 * i) }
       let whole = h + blocks
       var out = whole
@@ -70,7 +71,7 @@ public enum Log {
     guard CRC32C.checksum(h + blocks) == stored else { return nil }
     return Record(
       last: h.get(UInt16.self, at: 4) & 1 != 0, epoch: epoch, seq: seq, txg: h.get(UInt64.self, at: 24),
-      catalogRoot: h.get(UInt64.self, at: 32), nextInode: h.get(UInt64.self, at: 40),
+      catalogRoot: NodePointer.get(h, at: 64), nextInode: h.get(UInt64.self, at: 40),
       targets: (0..<count).map { h.get(UInt64.self, at: headerFields + 8 * $0) }, blocks: blocks)
   }
 

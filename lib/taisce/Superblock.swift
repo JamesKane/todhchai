@@ -36,16 +36,15 @@ public struct Layout: Equatable, Sendable {
 /// copy intact, and the newest valid copy wins at mount.
 public struct Superblock: Equatable, Sendable {
   public static let magic: UInt64 = 0x0000_6563_7369_6154  // "Taisce\0\0", little-endian
-  public static let version: UInt32 = 0  // S0
+  public static let version: UInt32 = 1  // S1: checksummed copy-on-write trees
 
   public var layout: Layout
   public var generation: UInt64
   public var uuid: [UInt8]  // 16 bytes
   public var label: [UInt8]  // UTF-8, at most 64 bytes
   public var createdNs: UInt64
-  /// The root of the catalog, the tree of every tree's root (a block
-  /// number), or 0 when empty.
-  public var catalogRoot: UInt64
+  /// The catalog's root: the tree of every tree's root pointer.
+  public var catalogRoot: NodePointer
   public var nextInode: UInt64
   /// The log's epoch: only records written in it are replayed. Each
   /// checkpoint starts a new one, at the start of the log.
@@ -57,7 +56,7 @@ public struct Superblock: Equatable, Sendable {
     self.uuid = uuid
     self.label = Array(label.prefix(64))
     self.createdNs = createdNs
-    catalogRoot = 0
+    catalogRoot = .null
     nextInode = 2  // 1 is the root directory
     logEpoch = 1
   }
@@ -79,12 +78,12 @@ public struct Superblock: Equatable, Sendable {
     b.put(layout.dataStart, at: 64)
     b.put(UInt32(Layout.nodeBlocks), at: 72)
     b.put(createdNs, at: 80)
-    b.put(catalogRoot, at: 88)
-    b.put(nextInode, at: 96)
-    b.put(logEpoch, at: 104)
-    b.put(bytes: uuid, at: 128)
-    b.put(UInt8(label.count), at: 144)
-    b.put(bytes: label, at: 145)
+    catalogRoot.put(into: &b, at: 88)  // to 120
+    b.put(nextInode, at: 120)
+    b.put(logEpoch, at: 128)
+    b.put(bytes: uuid, at: 144)
+    b.put(UInt8(label.count), at: 160)
+    b.put(bytes: label, at: 161)
     b.put(CRC32C.checksum(b, 0..<Self.checksumOffset), at: Self.checksumOffset)
     return b
   }
@@ -105,13 +104,13 @@ public struct Superblock: Equatable, Sendable {
     guard layout.logStart == 2, layout.bitmapStart == layout.logStart + layout.logBlocks,
       layout.dataStart == layout.bitmapStart + layout.bitmapBlocks, layout.dataStart < layout.blockCount
     else { throw .corrupt(.superblockLayout) }
-    let labelCount = min(Int(b[144]), 64)
-    var s = Superblock(layout: layout, uuid: b.get(bytes: 16, at: 128), label: b.get(bytes: labelCount, at: 145),
+    let labelCount = min(Int(b[160]), 64)
+    var s = Superblock(layout: layout, uuid: b.get(bytes: 16, at: 144), label: b.get(bytes: labelCount, at: 161),
                        createdNs: b.get(UInt64.self, at: 80))
     s.generation = b.get(UInt64.self, at: 16)
-    s.catalogRoot = b.get(UInt64.self, at: 88)
-    s.nextInode = b.get(UInt64.self, at: 96)
-    s.logEpoch = b.get(UInt64.self, at: 104)
+    s.catalogRoot = NodePointer.get(b, at: 88)
+    s.nextInode = b.get(UInt64.self, at: 120)
+    s.logEpoch = b.get(UInt64.self, at: 128)
     return s
   }
 

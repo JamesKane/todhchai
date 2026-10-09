@@ -22,6 +22,19 @@ struct SplitMix {
 
 func bigEndian(_ v: UInt64) -> [UInt8] { (0..<8).map { UInt8(truncatingIfNeeded: v >> (56 - 8 * $0)) } }
 
+/// Commits the tree's group as the engine would (without the log): its nodes
+/// written bottom-up with their checksums, then the superblock pointing at
+/// the root. Later changes copy on write.
+func commit(_ tree: inout BTree, _ store: inout Store<MemoryDevice>, txg: UInt64) throws {
+  var written: [(block: UInt64, bytes: [UInt8])] = []
+  try tree.write(&store, txg: txg, &written)
+  for (block, bytes) in written { try store.volume.device.write(block, bytes) }
+  store.written()
+  let root = tree.root
+  try store.volume.commit { $0.catalogRoot = root }
+  store.volume.allocator.groupCommitted()
+}
+
 func newStore(blocks: UInt64 = 65_536, cacheNodes: Int = 512) throws -> Store<MemoryDevice> {
   Store(try Volume.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0), cacheNodes: cacheNodes)
 }
@@ -82,11 +95,12 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
       .sorted { $0.lexicographicallyPrecedes($1) }
     #expect(scanned.map(\.key) == expected)
     #expect(scanned.allSatisfy { model[$0.key] == $0.value })
+    // Committed each round, so the next round copies on write.
+    try commit(&tree, &store, txg: UInt64(round + 1))
+    #expect(try tree.check(&store).entries == model.count)
   }
 
-  // Written and reopened, the tree is the same.
-  try store.writeDirty()
-  try store.volume.commit { $0.catalogRoot = tree.root }
+  // Reopened, the tree is the same, every node's checksum verified on read.
   var reopened = Store(try Volume.open(store.volume.device))
   let again = BTree(root: reopened.volume.superblock.catalogRoot)
   #expect(try again.check(&reopened).entries == model.count)
@@ -94,7 +108,7 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
 
   // Emptied, every node's blocks come back.
   for key in model.keys { try tree.delete(key, &store) }
-  #expect(tree.root == 0)
+  #expect(tree.isEmpty)
   #expect(store.volume.allocator.freeCount == freeAtStart)
 }
 
@@ -120,8 +134,8 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   let root = try store.node(tree.root)
 
   // Keys out of order in a leaf.
-  let leafBlock = root.children[0]
-  let leaf = try store.node(leafBlock)
+  let leafBlock = root.children[0].block
+  let leaf = try store.node(root.children[0])
   var swapped = leaf
   swapped.keys.swapAt(0, 1)
   store.put(leafBlock, swapped)
@@ -140,6 +154,38 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   #expect(throws: TaisceError.corrupt(.tree(.blockNotAllocated))) { try tree.check(&store) }
   _ = try store.volume.allocator.allocateContiguous(1, near: leafBlock)
   #expect(try tree.check(&store).entries == 3000)
+
+  // Committed, then a flipped bit on disk: read back, it's reported, never used.
+  try commit(&tree, &store, txg: 1)
+  let committed = try store.node(tree.root)
+  var image = store.volume.device
+  var block = try image.read(committed.children[1].block, count: 1)
+  block[100] ^= 0x10
+  try image.write(committed.children[1].block, block)
+  var fresh = Store(try Volume.open(image))
+  #expect(throws: TaisceError.corrupt(.checksum(committed.children[1].block))) { try tree.check(&fresh) }
+  #expect(throws: TaisceError.corrupt(.checksum(committed.children[1].block))) {
+    try tree.scan(from: [], &fresh)
+  }
+}
+
+@Test func changingACommittedTreeCopiesOnWrite() throws {
+  var store = try newStore()
+  var tree = BTree()
+  for k in 0..<2000 { try tree.insert(bigEndian(UInt64(k)), [UInt8](repeating: 1, count: 100), &store) }
+  try commit(&tree, &store, txg: 1)
+  let before = tree.root
+  let image = store.volume.device  // as committed
+  // One change rewrites the path from its leaf to the root at new blocks.
+  try tree.insert(bigEndian(5), [9], &store)
+  #expect(tree.root.block != before.block)
+  try commit(&tree, &store, txg: 2)
+  #expect(tree.root.birth == 2 && before.birth == 1)
+  // The old tree is untouched on disk: through the old root, the old value.
+  var old = Store(try Volume.open(image))
+  #expect(try BTree(root: before).get(bigEndian(5), &old) == [UInt8](repeating: 1, count: 100))
+  #expect(try tree.get(bigEndian(5), &store) == [9])
+  #expect(try tree.check(&store).entries == 2000)
 }
 
 @Test func floorFindsTheLastKeyAtOrBelow() throws {

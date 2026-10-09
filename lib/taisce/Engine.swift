@@ -41,6 +41,11 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   var logAt: UInt64
   var logSeq: UInt64 = 0
   public private(set) var txg: UInt64 = 1
+  /// The catalog root and next inode as of the last commit: what a
+  /// checkpoint may record (never the group being committed, whose nodes
+  /// aren't on disk yet).
+  var committedCatalog: NodePointer
+  var committedNextInode: UInt64
   /// File data was written since the last commit: it needs a barrier before
   /// the log (ordered data, as ext4's default mode).
   public var dataWritten = false
@@ -66,10 +71,12 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let sb = self.store.volume.superblock
     catalog = BTree(root: sb.catalogRoot)
     nextInode = sb.nextInode
+    committedCatalog = sb.catalogRoot
+    committedNextInode = sb.nextInode
     logAt = sb.layout.logStart
     for (key, value) in try catalog.scan(from: [], &self.store) {
-      guard key.count == 8, value.count == 8 else { throw .corrupt(.catalog) }
-      trees.append((Self.bigEndianID(key), BTree(root: value.get(UInt64.self, at: 0)), false))
+      guard key.count == 8, value.count == NodePointer.size else { throw .corrupt(.catalog) }
+      trees.append((Self.bigEndianID(key), BTree(root: NodePointer.get(value, at: 0)), false))
     }
   }
 
@@ -86,7 +93,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   }
 
   /// The IDs of every tree with entries.
-  public var treeIDs: [UInt64] { trees.filter { $0.tree.root != 0 }.map { $0.id } }
+  public var treeIDs: [UInt64] { trees.filter { !$0.tree.isEmpty }.map { $0.id } }
 
   // MARK: Reading
 
@@ -183,24 +190,26 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// Blocks the next commit will log (an estimate: the catalog may add a few).
   public var pendingBlocks: Int { store.dirtyCount * Layout.nodeBlocks }
 
-  /// Makes every applied transaction durable: the group's changed blocks go
-  /// to the log, a barrier commits them, and they're written in place.
+  /// Makes every applied transaction durable. Each changed tree is written
+  /// bottom-up (its nodes taking new checksums), its root pointer goes into
+  /// the catalog, and the catalog is written last; the group's blocks then
+  /// go to the log, a barrier commits them, and they're written in place.
   public mutating func commitGroup() throws(TaisceError) {
-    // Record changed roots in the catalog (which may change its own root).
+    var written: [(block: UInt64, bytes: [UInt8])] = []
     for i in trees.indices where trees[i].changed {
+      try trees[i].tree.write(&store, txg: txg, &written)
       let key = Self.idKey(trees[i].id)
-      if trees[i].tree.root == 0 {
+      if trees[i].tree.isEmpty {
         try catalog.delete(key, &store)
       } else {
-        var v = [UInt8](repeating: 0, count: 8)
-        v.put(trees[i].tree.root, at: 0)
-        try catalog.insert(key, v, &store)
+        try catalog.insert(key, trees[i].tree.root.encode(), &store)
       }
       trees[i].changed = false
     }
+    try catalog.write(&store, txg: txg, &written)
     var targets: [UInt64] = []
     var blocks: [UInt8] = []
-    for (block, bytes) in store.dirtyNodes {
+    for (block, bytes) in written {
       for i in 0..<Layout.nodeBlocks { targets.append(block + UInt64(i)) }
       blocks += bytes
     }
@@ -219,7 +228,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let logBlocks = UInt64(records + targets.count)
     let end = layout.logStart + layout.logBlocks
     guard logBlocks <= layout.logBlocks else { throw .tooLarge }
-    if logAt + logBlocks > end { try checkpoint() }
+    if logAt + logBlocks > end { try checkpoint() }  // can't happen now: each group starts an empty log
     var image: [UInt8] = []
     for r in 0..<records {
       let range = (r * Log.maxBlocks)..<min(targets.count, (r + 1) * Log.maxBlocks)
@@ -239,17 +248,26 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     store.volume.allocator.groupCommitted()
     logAt += logBlocks
     // In place; durable by the next checkpoint's barrier.
-    try store.writeDirty()
+    for (block, bytes) in written { try store.volume.device.write(block, bytes) }
+    store.written()
     for (i, target) in targets.enumerated() where target >= layout.bitmapStart && target < layout.dataStart {
       let start = i * Layout.blockSize
       try store.volume.device.write(target, Array(blocks[start..<(start + Layout.blockSize)]))
     }
+    committedCatalog = catalog.root
+    committedNextInode = nextInode
+    // Checkpoint every group, so replay never reaches past the newest one.
+    // Otherwise an older group's node image could be replayed over a block
+    // that copy-on-write freed and a later group gave to file data, which
+    // isn't logged (ext4 needs revoke records for this). S1c removes the
+    // log: a superblock flip commits instead.
+    try checkpoint()
     txg += 1
   }
 
   /// Makes the in-place writes durable and starts the log over.
   mutating func checkpoint() throws(TaisceError) {
-    let root = catalog.root, inode = nextInode
+    let root = committedCatalog, inode = committedNextInode
     try store.volume.commit { sb in
       sb.catalogRoot = root
       sb.nextInode = inode
