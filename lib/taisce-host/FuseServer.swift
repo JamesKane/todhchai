@@ -25,9 +25,9 @@
 //
 // A directory listing pages through the directory as it is at each
 // READDIR, not a copy taken at OPENDIR: an entry's offset is its name
-// hash (the cookie `list(after:)` continues from), and 1, 2 and 3 are
-// ".", ".." and, in the root, ".taisce". Names added or removed while a
-// program lists may or may not appear, as POSIX allows.
+// hash halved (the kernel's offsets are signed, so 63 bits), at least 4;
+// 1, 2 and 3 are ".", ".." and, in the root, ".taisce". Names added or
+// removed while a program lists may or may not appear, as POSIX allows.
 
 import Glibc
 import Synchronization
@@ -410,20 +410,28 @@ public final class FuseServer<Device: BlockDevice> {
     for (i, e) in special.enumerated() where offset <= UInt64(i) {
       guard fits([e], UInt64(i + 1)) else { return out }
     }
-    // Then the names, by hash: a page of buckets at a time.
-    var cookie: UInt64? = offset <= 3 ? nil : offset
+    // Then the names, by hash. Two hashes share an offset (h / 2), so the
+    // entries with one offset go out together or not at all, and a page
+    // resumes after both hashes of the last offset it took.
+    var cookie: UInt64? = offset <= 3 ? nil : offset << 1 | 1
+    func offsetOf(_ hash: UInt64) -> UInt64 { max(hash >> 1, 4) }
     while true {
       let page = try fs.list(dir, after: cookie, limit: 64)
       if page.isEmpty { return out }
+      // A page holds 64 buckets unless it's the last; its final offset's
+      // entries may go on in the next, so they wait for it then.
+      var buckets = 1
+      for k in 1..<page.count where page[k].cookie != page[k - 1].cookie { buckets += 1 }
+      let complete = buckets < 64
       var i = 0
       while i < page.count {
+        let off = offsetOf(page[i].cookie)
         var j = i + 1
-        while j < page.count, page[j].cookie == page[i].cookie { j += 1 }
-        let bucket = page[i..<j].map { (name: $0.entry.name, ino: $0.entry.ino, type: $0.entry.type) }
-        // Hashes up to 3 would collide with the specials' offsets (one
-        // chance in 2^62): they're given 4.
-        guard fits(bucket, max(page[i].cookie, 4)) else { return out }
-        cookie = page[i].cookie
+        while j < page.count, offsetOf(page[j].cookie) == off { j += 1 }
+        if j == page.count && !complete && i > 0 { break }
+        let group = page[i..<j].map { (name: $0.entry.name, ino: $0.entry.ino, type: $0.entry.type) }
+        guard fits(group, off) else { return out }
+        cookie = off == 4 ? max(page[j - 1].cookie, 9) : off << 1 | 1
         i = j
       }
     }

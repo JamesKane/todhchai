@@ -261,6 +261,7 @@ func dirents(_ listing: [UInt8]) -> [(name: String, offset: UInt64)] {
     let page = dirents(reply.body)
     if page.isEmpty { break }
     seen += page.map { $0.name }
+    #expect(page.allSatisfy { $0.offset < 1 << 63 }, "a directory offset the kernel reads as negative")
     offset = page.last!.offset
     pages += 1
     if pages > 1000 { break }
