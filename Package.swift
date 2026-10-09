@@ -102,7 +102,9 @@ let package = Package(
     .testTarget(name: "CABITests", dependencies: ["ABIGen", "TodhchaiCABI", "TDCABI"], path: "tests/capi",
                 exclude: ["c"]),
     // Cryptography, ours (architecture §17): BLAKE3 for now, tier 0.
-    .target(name: "TDCrypto", path: "lib/crypto", swiftSettings: tier0),
+    // Optimized even in debug builds: every Taisce block is hashed, and an
+    // unoptimized BLAKE3 made the file system's tests several times slower.
+    .target(name: "TDCrypto", path: "lib/crypto", swiftSettings: tier0 + [.unsafeFlags(["-O"])]),
     .testTarget(name: "CryptoTests", dependencies: ["TDCrypto"], path: "tests/crypto"),
     // Unicode (filesystem.md §6; the text stack later): NFC and case
     // folding from the UCD (data/unicode), tier 0.

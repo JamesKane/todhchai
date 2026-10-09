@@ -95,3 +95,21 @@ let root = FileSystem<MemoryDevice>.root
   #expect(throws: TaisceError.notFound) { try fs.stat(f) }
   try fs.check()
 }
+
+@Test func largeFilesSplitIntoCappedExtents() throws {
+  var fs = try newFS()
+  let f = try fs.create(root, n("big"), .file, mode: 0o644, now: 2)
+  var rng = SplitMix(state: 3)
+  let data = (0..<(1 << 20)).map { _ in UInt8(truncatingIfNeeded: rng.next()) }  // 256 blocks
+  try fs.write(f, offset: 0, data, now: 3)
+  try fs.sync()
+  #expect(try fs.read(f, offset: 0, count: data.count) == data)
+  // Each extent holds at most 128 blocks' checksums, so a value fits a node.
+  let extents = try fs.engine.scan(1, from: [UInt8](repeating: 0, count: 7) + [UInt8(f), 3],
+                                   to: [UInt8](repeating: 0, count: 7) + [UInt8(f), 4])
+  #expect(extents.count >= 2)
+  #expect(extents.allSatisfy { $0.value.count <= 16 + 16 * 128 })
+  var again = try FileSystem.mount(fs.engine.store.volume.device)
+  #expect(try again.read(f, offset: 500_000, count: 70_000) == Array(data[500_000..<570_000]))
+  try again.check()
+}

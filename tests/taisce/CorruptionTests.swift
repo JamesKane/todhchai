@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// S1: a flipped bit in metadata is detected, never silently used. A volume
-// with real content gets thousands of random bit flips, one per fresh copy
-// of the image, in every kind of metadata block: superblock copies, both
-// bitmaps, and every node. Each copy must fail to mount, fail its check, or
-// come up exactly as it was (a flip in a redundant or unused copy). (File
-// data joins these in S1d.)
+// S1: a flipped bit anywhere is detected, never silently used. A volume
+// with real content gets hundreds of random bit flips, one per fresh copy
+// of the image, in every kind of block it uses: superblock copies, both
+// bitmaps, every node, and file data. Each copy must fail to mount, fail
+// its check (the scrub reads every block), or come up exactly as it was
+// (a flip in a redundant or unused copy).
 
 import Taisce
 import Testing
@@ -35,15 +35,20 @@ func corruptionWorkload() throws -> MemoryDevice {
 /// Everything the trees hold.
 func everything(_ fs: inout FileSystem<MemoryDevice>) throws -> [UInt64: [[UInt8]: [UInt8]]] { try contents(&fs.engine) }
 
-@Test func flippedMetadataBitsAreDetectedNeverUsed() throws {
+@Test func flippedBitsAreDetectedNeverUsed() throws {
   let image = try corruptionWorkload()
   var clean = try FileSystem.mount(image)
   let expected = try everything(&clean)
   try clean.check()
   let layout = clean.engine.store.volume.superblock.layout
-  // Every metadata block: the rings, both bitmaps, every node.
+  // Every block in use: the rings, both bitmaps, every node, all file data.
   var targets = Array(0..<layout.dataStart) + Array(layout.dataEnd..<layout.blockCount)
+  let metadata = targets.count + (try clean.engine.nodeBlocks().count)
   targets += try clean.engine.nodeBlocks()
+  for b in layout.dataStart..<layout.dataEnd where clean.engine.store.volume.allocator.isUsed(b) && !targets.contains(b) {
+    targets.append(b)  // file data
+  }
+  #expect(targets.count > metadata + 100, "the workload has file data")
   #expect(targets.count > 60)
   var rng = SplitMix(state: 5)
   var detected = 0, harmless = 0
@@ -66,7 +71,7 @@ func everything(_ fs: inout FileSystem<MemoryDevice>) throws -> [UInt64: [[UInt8
     }
   }
   // Both kinds happened, and nothing else did.
-  #expect(detected > 200 && harmless > 20, "detected \(detected), harmless \(harmless)")
+  #expect(detected > 200 && harmless > 3, "detected \(detected), harmless \(harmless)")
 }
 
 @Test func freedBlocksSurviveFallingBackPastADamagedSuperblock() throws {
@@ -91,4 +96,35 @@ func everything(_ fs: inout FileSystem<MemoryDevice>) throws -> [UInt64: [[UInt8
   #expect(back.engine.store.volume.superblock.txg == t2.txg - 1)
   try back.check()
   #expect(try back.read(f, offset: 0, count: 200_000) == first)
+}
+
+@Test func aDamagedFileBlockFailsItsReadAndNothingElse() throws {
+  var fs = try FileSystem.format(MemoryDevice(blocks: 2048), label: [], uuid: Array(1...16), now: 1)
+  let a = try fs.create(1, Array("a".utf8), .file, mode: 0o644, now: 2)
+  let b = try fs.create(1, Array("b".utf8), .file, mode: 0o644, now: 2)
+  var rng = SplitMix(state: 9)  // not periodic, so each block's contents are its own
+  let bytes = (0..<20_000).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
+  try fs.write(a, offset: 0, bytes, now: 3)
+  let other = bytes.map { $0 ^ 0xFF }  // so a search for a's block can't find b's
+  try fs.write(b, offset: 0, other, now: 3)
+  try fs.sync()
+  // Which block holds a's third block? Flip a bit in it.
+  var image = fs.engine.store.volume.device
+  var hit: UInt64 = 0
+  for block in UInt64(0)..<2048 {
+    let content = try image.read(block, count: 1)
+    if content == Array(bytes[8192..<12288]) {
+      hit = block
+      break
+    }
+  }
+  #expect(hit != 0)
+  var content = try image.read(hit, count: 1)
+  content[123] ^= 0x04
+  try image.write(hit, content)
+  var damaged = try FileSystem.mount(image)
+  #expect(throws: TaisceError.corrupt(.checksum(hit))) { try damaged.read(a, offset: 0, count: 20_000) }
+  #expect(try damaged.read(a, offset: 0, count: 8192) == Array(bytes[..<8192]))  // the blocks before it are fine
+  #expect(try damaged.read(b, offset: 0, count: 20_000) == other)
+  #expect(throws: TaisceError.corrupt(.checksum(hit))) { try damaged.check() }  // the scrub finds it too
 }

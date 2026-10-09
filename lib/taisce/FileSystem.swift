@@ -15,6 +15,16 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// Nodes open now, with how often: one unlinked while open becomes an
   /// orphan, freed at its last close or at the next mount.
   var openCounts: [(ino: UInt64, count: Int)] = []
+  /// File blocks in memory: each verified against its checksum when read,
+  /// or written here, so a cached read doesn't hash again (the page cache's
+  /// job). Direct-mapped by physical block; every data write updates it.
+  /// The scrub (`check`) still reads the device.
+  var dataCache = [CachedBlock?](repeating: nil, count: 4096)  // 16 MiB
+
+  struct CachedBlock {
+    var block: UInt64
+    var bytes: [UInt8]
+  }
   /// Every declared index, from the registry.
   public internal(set) var indices: [IndexInfo] = []
   /// The next change-journal sequence number.
@@ -421,13 +431,12 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   /// The extents overlapping file blocks `first..<end`, in order, as the
   /// engine has them with `c`'s pending changes on top.
   mutating func extents(_ ino: UInt64, _ first: UInt64, _ end: UInt64, _ c: inout Changes) throws(TaisceError)
-    -> [(start: UInt64, physical: UInt64, count: UInt64)]
+    -> [FileExtent]
   {
-    var found: [(start: UInt64, physical: UInt64, count: UInt64)] = []
+    var found: [FileExtent] = []
     func add(_ key: [UInt8], _ value: [UInt8]) throws(TaisceError) {
       guard key.count == 17, FSKey.readU64(key, at: 0) == ino, key[8] == FSKey.extent else { return }
-      guard value.count == 16 else { throw .corrupt(.extent) }
-      found.append((FSKey.readU64(key, at: 9), value.get(UInt64.self, at: 0), value.get(UInt64.self, at: 8)))
+      found.append(try FileExtent.decode(start: FSKey.readU64(key, at: 9), value))
     }
     if let (key, value) = try engine.floor(Self.tree, FSKey.make(ino, FSKey.extent, FSKey.u64(first))) {
       try add(key, value)
@@ -457,7 +466,24 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     for e in try extents(ino, first, first + UInt64(count), &c) {
       let lo = max(e.start, first), hi = min(e.start + e.count, first + UInt64(count))
       guard lo < hi else { continue }
-      let bytes = try engine.store.volume.device.read(e.physical + (lo - e.start), count: Int(hi - lo))
+      let physical = e.physical + (lo - e.start)
+      let n = Int(hi - lo)
+      if (0..<n).allSatisfy({ cached(physical + UInt64($0)) != nil }) {
+        for k in 0..<n {
+          let at = Int(lo - first + UInt64(k)) * Self.blockSize
+          data.replaceSubrange(at..<(at + Self.blockSize), with: cached(physical + UInt64(k))!)
+        }
+        continue
+      }
+      let bytes = try engine.store.volume.device.read(physical, count: n)
+      // Every block must have the checksum its extent records (S1).
+      for k in 0..<n {
+        let block = Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])
+        guard Checksum(of: block) == e.checksums[Int(lo - e.start) + k] else {
+          throw .corrupt(.checksum(physical + UInt64(k)))
+        }
+        cache(physical + UInt64(k), block)
+      }
       data.replaceSubrange(Int(lo - first) * Self.blockSize..<Int(hi - first) * Self.blockSize, with: bytes)
     }
     return data
@@ -496,16 +522,22 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       var j = i + 1
       while j < target.count, target[j] == target[j - 1] + 1 { j += 1 }
       try engine.store.volume.device.write(target[i], Array(data[(i * Self.blockSize)..<(j * Self.blockSize)]))
+      for k in i..<j { cache(target[k], Array(data[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])) }
       i = j
     }
     engine.dataWritten = true
-    // The mapping: what's kept of old extents outside the range, then the new runs.
+    // The mapping: what's kept of old extents outside the range (with their
+    // checksums), then the new runs, each block's checksum from its data.
     var freed: [Extent] = []
     for e in old {
       c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
-      if e.start < first { c.setExtent(ino, e.start, e.physical, first - e.start) }
+      if e.start < first {
+        c.setExtent(ino, e.start, e.physical, Array(e.checksums[..<Int(first - e.start)]))
+      }
       let end = first + count, eEnd = e.start + e.count
-      if eEnd > end { c.setExtent(ino, end, e.physical + (end - e.start), eEnd - end) }
+      if eEnd > end {
+        c.setExtent(ino, end, e.physical + (end - e.start), Array(e.checksums[Int(end - e.start)...]))
+      }
       // Its blocks inside the range that weren't kept in place.
       let lo = max(e.start, first), hi = min(eEnd, end)
       var b = lo
@@ -515,11 +547,12 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
         b += 1
       }
     }
+    let sums = (0..<target.count).map { Checksum(of: Array(data[($0 * Self.blockSize)..<(($0 + 1) * Self.blockSize)])) }
     i = 0
     while i < target.count {
       var j = i + 1
-      while j < target.count, target[j] == target[j - 1] + 1 { j += 1 }
-      c.setExtent(ino, first + UInt64(i), target[i], UInt64(j - i))
+      while j < target.count, j - i < FileExtent.maxBlocks, target[j] == target[j - 1] + 1 { j += 1 }
+      c.setExtent(ino, first + UInt64(i), target[i], Array(sums[i..<j]))
       i = j
     }
     return freed
@@ -532,13 +565,22 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     for e in try extents(ino, first, UInt64.max, &c) {
       c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
       if e.start < first {
-        c.setExtent(ino, e.start, e.physical, first - e.start)
+        c.setExtent(ino, e.start, e.physical, Array(e.checksums[..<Int(first - e.start)]))
         freed.append(Extent(start: e.physical + (first - e.start), count: e.count - (first - e.start)))
       } else {
         freed.append(Extent(start: e.physical, count: e.count))
       }
     }
     return freed
+  }
+
+  func cached(_ block: UInt64) -> [UInt8]? {
+    guard let c = dataCache[Int(block % UInt64(dataCache.count))], c.block == block else { return nil }
+    return c.bytes
+  }
+
+  mutating func cache(_ block: UInt64, _ bytes: [UInt8]) {
+    dataCache[Int(block % UInt64(dataCache.count))] = CachedBlock(block: block, bytes: bytes)
   }
 
   // MARK: Checking
@@ -552,13 +594,16 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
     var entries: [(dir: UInt64, entry: DirectoryEntry)] = []
     var extents: [(ino: UInt64, start: UInt64, physical: UInt64, count: UInt64)] = []
     var backlinks: [[UInt8]] = []
+    var extentSums: [FileExtent] = []
     for (key, value) in try engine.scan(Self.tree, from: []) {
       let ino = FSKey.readU64(key, at: 0)
       switch key[8] {
       case FSKey.inode: inodes.append((ino, try Inode.decode(value), 0, 0))
       case FSKey.dirent: for e in try Bucket.decode(value) { entries.append((ino, e)) }
       case FSKey.extent:
-        extents.append((ino, FSKey.readU64(key, at: 9), value.get(UInt64.self, at: 0), value.get(UInt64.self, at: 8)))
+        let e = try FileExtent.decode(start: FSKey.readU64(key, at: 9), value)
+        extents.append((ino, e.start, e.physical, e.count))
+        extentSums.append(e)
       case FSKey.name:
         backlinks.append(key)
       default: break
@@ -619,6 +664,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
         throw .corrupt(.fileSystem(.sharedBlock))
       }
       data += e.count
+    }
+    // The scrub: every data block read and checked against its extent.
+    for e in extentSums {
+      let bytes = try engine.store.volume.device.read(e.physical, count: Int(e.count))
+      for k in 0..<Int(e.count) where Checksum(of: Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])) != e.checksums[k] {
+        throw .corrupt(.checksum(e.physical + UInt64(k)))
+      }
     }
     _ = try engine.check(dataBlocks: data)
     try checkIndices(inodes.map { ($0.ino, $0.node) }, entries)
@@ -779,7 +831,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
       case FSKey.attribute:
         let name = Array(key[9...])
         if let v = try attribute(ino, name) { indexChange(ino, name, old: v, new: nil, &c) }
-      case FSKey.extent where value.count == 16:
+      case FSKey.extent where value.count >= 16:
         freed.append(Extent(start: value.get(UInt64.self, at: 0), count: value.get(UInt64.self, at: 8)))
       default: break
       }
@@ -815,11 +867,9 @@ struct Changes {
   mutating func set(_ key: [UInt8], _ value: [UInt8]) { entries.append((key, value)) }
   mutating func delete(_ key: [UInt8]) { entries.append((key, nil)) }
 
-  mutating func setExtent(_ ino: UInt64, _ start: UInt64, _ physical: UInt64, _ count: UInt64) {
-    var v = [UInt8](repeating: 0, count: 16)
-    v.put(physical, at: 0)
-    v.put(count, at: 8)
-    set(FSKey.make(ino, FSKey.extent, FSKey.u64(start)), v)
+  mutating func setExtent(_ ino: UInt64, _ start: UInt64, _ physical: UInt64, _ checksums: [Checksum]) {
+    set(FSKey.make(ino, FSKey.extent, FSKey.u64(start)),
+        FileExtent(start: start, physical: physical, checksums: checksums).encode())
   }
 
   /// The batch: the last change to each key, in the order made.
@@ -830,4 +880,38 @@ struct Changes {
   }
 
   func orphanMessages(_ tree: UInt64) -> [Message] { orphans.map { .insert(tree: tree, key: FSKey.u64($0), value: []) } }
+}
+
+/// A run of a file's blocks (filesystem.md §3, EXTENT): where it is, and
+/// each block's BLAKE3-128 (S1), checked on every read. On disk: physical
+/// start u64, count u64, then the checksums, 16 bytes each.
+struct FileExtent {
+  var start: UInt64  // the first file block
+  var physical: UInt64
+  var checksums: [Checksum]
+
+  var count: UInt64 { UInt64(checksums.count) }
+
+  /// At most this many blocks an extent (512 KiB), so its value fits a node.
+  static let maxBlocks = 128
+
+  func encode() -> [UInt8] {
+    var v = [UInt8](repeating: 0, count: 16 + 16 * checksums.count)
+    v.put(physical, at: 0)
+    v.put(count, at: 8)
+    for (i, c) in checksums.enumerated() {
+      v.put(c.a, at: 16 + 16 * i)
+      v.put(c.b, at: 24 + 16 * i)
+    }
+    return v
+  }
+
+  static func decode(start: UInt64, _ v: [UInt8]) throws(TaisceError) -> FileExtent {
+    guard v.count >= 16 else { throw .corrupt(.extent) }
+    let count = Int(v.get(UInt64.self, at: 8))
+    guard count > 0, count <= maxBlocks, v.count == 16 + 16 * count else { throw .corrupt(.extent) }
+    return FileExtent(start: start, physical: v.get(UInt64.self, at: 0), checksums: (0..<count).map {
+      Checksum(a: v.get(UInt64.self, at: 16 + 16 * $0), b: v.get(UInt64.self, at: 24 + 16 * $0))
+    })
+  }
 }

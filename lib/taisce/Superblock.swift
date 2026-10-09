@@ -45,7 +45,7 @@ public struct Layout: Equatable, Sendable {
 /// valid wins at mount. That write is the commit.
 public struct Superblock: Equatable, Sendable {
   public static let magic: UInt64 = 0x0000_6563_7369_6154  // "Taisce\0\0", little-endian
-  public static let version: UInt32 = 2  // S1: superblock flip, no metadata log
+  public static let version: UInt32 = 3  // S1: superblock flip, no metadata log; data checksums
 
   public var layout: Layout
   /// The transaction group this superblock commits.
