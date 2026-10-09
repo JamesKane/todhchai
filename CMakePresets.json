@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 29, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "embedded",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/embedded.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+  "buildPresets": [{ "name": "embedded", "configurePreset": "embedded" }],
+  "testPresets": [
+    { "name": "embedded", "configurePreset": "embedded", "output": { "outputOnFailure": true } }
+  ],
+  "workflowPresets": [
+    {
+      "name": "embedded",
+      "steps": [
+        { "type": "configure", "name": "embedded" },
+        { "type": "build", "name": "embedded" },
+        { "type": "test", "name": "embedded" }
+      ]
+    }
+  ]
+}
