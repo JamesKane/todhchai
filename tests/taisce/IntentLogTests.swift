@@ -176,3 +176,22 @@ import Testing
   var after = try Engine<MemoryDevice>.mount(e.store.volume.device)
   _ = try after.check()
 }
+
+@Test func aReplayThatChangesNothingStillRetiresItsRecords() throws {
+  var e = try newEngine()
+  try e.commitGroup()
+  // Session 1: two records that change nothing (deletes of a key that
+  // isn't there), then a crash.
+  for _ in 0..<2 {
+    try e.apply([.delete(tree: 1, key: [7])])
+    try e.fsync()
+  }
+  // Session 2 replays them (nothing changes), inserts the key, logs that
+  // as its own first record, and crashes.
+  var second = try Engine<MemoryDevice>.mount(e.store.volume.device)
+  try second.apply([.insert(tree: 1, key: [7], value: [1])])
+  try second.fsync()
+  // Session 1's second record, behind session 2's first, mustn't replay.
+  var third = try Engine<MemoryDevice>.mount(second.store.volume.device)
+  #expect(try third.get(1, [7]) == [1])
+}

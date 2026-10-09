@@ -353,7 +353,8 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
         }
       }
     }
-    try commitGroup()
+    // Even if the records changed nothing: only a new txg retires them.
+    try commitGroup(always: true)
   }
 
   static func apply(_ delta: Delta, to value: inout [UInt8]) throws(TaisceError) {
@@ -397,7 +398,11 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// written last; then the volume writes the bitmap, a barrier, the
   /// superblock naming the catalog's root, and a barrier. File data written
   /// for the group is made durable by that first barrier too.
-  public mutating func commitGroup() throws(TaisceError) {
+  public mutating func commitGroup() throws(TaisceError) { try commitGroup(always: false) }
+
+  /// `always`: write a superblock even if nothing changed (after replay,
+  /// so the new txg leaves the intent records behind).
+  mutating func commitGroup(always: Bool) throws(TaisceError) {
     guard !stopped else { throw .readOnly }
     let written: [(block: UInt64, bytes: [UInt8])]
     do {
@@ -413,7 +418,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     // a commit: moving held and deferred blocks on without a new superblock
     // would let a fallback to the previous one find them reused.
     let a = store.volume.allocator
-    guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode
+    guard always || !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode
       || a.heldCount > 0 || a.deferredCount > 0
     else {
       retire(nil, store.volume.allocator.groupCommitted())
