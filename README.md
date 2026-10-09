@@ -11,7 +11,8 @@ is to be the OS the Handmade crowd keeps asking for:
 - the desktop is built on Vulkan with a retro-future cyberpunk look and never
   makes a game wait for its effects.
 
-Status: **design.** No code yet. croi boots on amd64, arm64 and rv64 and is
+Status: **design.** No code yet. To resume, start with
+[docs/next-steps.md](docs/next-steps.md). croi boots on amd64, arm64 and rv64 and is
 working toward user space.
 
 ## Goals
@@ -49,6 +50,7 @@ working toward user space.
 | [docs/filesystem.md](docs/filesystem.md) | BeFS-NG: staged features, on-disk layout, storage engine, snapshots as directories, attributes, query language v2, live queries, trade-offs |
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
 | [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M9 with exit tests, risks, open and decided questions |
+| [docs/next-steps.md](docs/next-steps.md) | Where the design stopped, how to re-sync with croi, which milestone to start, and what to re-verify |
 | [docs/research/](docs/research/) | Source research: NeoDarwin digest, croi assessment, Handmade discussions, BeFS/BeOS/compositor/Swift systems research, 9front desktop and system studies (rio, devdraw, plumber, acme, /proc, gefs, factotum, namespaces, exportfs, 9P) |
 
 The research notes tag each claim: `[V]` verified against a cited source,
