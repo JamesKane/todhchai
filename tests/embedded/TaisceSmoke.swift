@@ -21,6 +21,12 @@ import Taisce
         check(opened.superblock.layout == v.superblock.layout, "open after a crash")
       }
       check(try Volume.open(r.device.base).allocator.freeCount == r.allocator.freeCount, "free space persists")
+      var store = Store(try Volume.format(MemoryDevice(blocks: 4096), label: [], uuid: [UInt8](repeating: 1, count: 16), now: 0))
+      var tree = BTree()
+      for k in 0..<2000 { try tree.insert([UInt8(k >> 8), UInt8(k & 0xff)], [UInt8](repeating: 9, count: 100), &store) }
+      for k in stride(from: 0, to: 2000, by: 2) { try tree.delete([UInt8(k >> 8), UInt8(k & 0xff)], &store) }
+      check(try tree.check(&store).entries == 1000, "b+tree")
+      check(try tree.get([0, 1], &store) != nil && tree.get([0, 2], &store) == nil, "b+tree lookups")
     } catch {
       check(false, "a Taisce call threw")
     }

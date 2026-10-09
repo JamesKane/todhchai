@@ -18,9 +18,24 @@ public enum TaisceError: Error, Equatable, Sendable {
   case noSpace
   /// On-disk structures disagree (what was found is the case's name).
   case corrupt(Corruption)
+  /// A key or value larger than a node allows (BTree.maxKey, maxValue).
+  case tooLarge
 }
 
 public enum Corruption: Equatable, Sendable {
   case superblockLayout
   case bitmapSize
+  case node
+  /// A tree breaks an invariant (BTree.check says which).
+  case tree(TreeFault)
+}
+
+public enum TreeFault: Equatable, Sendable {
+  case keysOutOfOrder
+  case keyOutsideItsBounds
+  case uneven  // leaves at different depths
+  case underfull
+  case overfull
+  case childCount
+  case blockNotAllocated
 }
