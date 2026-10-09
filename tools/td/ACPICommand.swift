@@ -7,7 +7,9 @@
 //
 //   td acpi import [NAME]
 //       This machine's tables, from /sys/firmware/acpi/tables (root only:
-//       run it with sudo, and the files are given back to you), and Linux's
+//       run it with sudo, and the files are given back to you), with the
+//       SSDTs firmware loaded at run time (dynamic/, kept as dynamic-NAME),
+//       and Linux's
 //       view of its namespace from /sys/bus/acpi/devices, the oracle the
 //       interpreter's enumeration is checked against. NAME: the host name.
 //   td acpi fetch-qemu
@@ -77,6 +79,11 @@ func acpiImport(name: String) -> Bool {
       return false
     }
     tables.append((table, bytes))
+  }
+  // SSDTs the firmware's methods loaded at run time (Load, LoadTable):
+  // Linux's device view includes what they define.
+  for table in ((try? FileManager.default.contentsOfDirectory(atPath: "\(source)/dynamic")) ?? []).sorted() {
+    if let bytes = readFile("\(source)/dynamic/\(table)") { tables.append(("dynamic-\(table)", bytes)) }
   }
   makeDirectory(acpiCorpus)
   makeDirectory(target)

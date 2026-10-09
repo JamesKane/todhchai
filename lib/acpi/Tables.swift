@@ -10,6 +10,12 @@ public enum ACPIError: Error, Equatable, Sendable {
   case badChecksum
   /// The table set has no table with this signature.
   case missingTable
+  /// AML that doesn't follow the grammar, at this offset in its table.
+  case malformed(UInt32)
+  /// An opcode ACPI 6.5 doesn't define (0x5Bxx for extended ones).
+  case unknownOpcode(UInt16, at: UInt32)
+  /// Terms nested deeper than any real table: taken as malformed.
+  case tooDeep
 }
 
 /// Little-endian reads from table bytes.
