@@ -13,7 +13,10 @@ function(todhchai_tier0 target)
 endfunction()
 
 # Each tier 0 library: its sources, built as Embedded Swift.
-add_library(IPCWire STATIC lib/ipc/wire/Alignment.swift)
+add_library(IPCWire STATIC
+  lib/ipc/wire/Alignment.swift lib/ipc/wire/Control.swift lib/ipc/wire/Decoder.swift
+  lib/ipc/wire/Encoder.swift lib/ipc/wire/Errors.swift lib/ipc/wire/Header.swift
+  lib/ipc/wire/Limits.swift lib/ipc/wire/Ordinal.swift)
 set_target_properties(IPCWire PROPERTIES Swift_MODULE_NAME IPCWire)
 target_include_directories(IPCWire INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(IPCWire)

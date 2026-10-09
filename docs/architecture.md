@@ -159,7 +159,8 @@ protocol Surface {
 - The **wire format** follows FIDL's proven rules: little-endian, 8-byte
   alignment, handles in a side array, a transaction id plus a 64-bit hashed
   method ordinal, and epitaphs (a final status sent before a channel closes).
-  The encoding rules are the contract, not Swift layout.
+  The encoding rules are the contract, not Swift layout, and they are
+  written down in [wire-format.md](wire-format.md).
 - **Cancellation** is part of the wire format: a client can cancel an
   in-flight transaction by id, and the server must answer either the
   original request or the cancel, never both and never neither. This is
