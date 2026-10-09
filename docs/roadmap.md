@@ -235,8 +235,12 @@ These need the project owner's call. None blocks M0.
 4. ~~App format~~: decided (see "Decided").
 5. ~~Debug info format~~: decided (see "Decided").
 6. ~~Hosted backend~~: decided (see "Decided").
-7. **Component names.** Working names are descriptive ("compositor",
-   "BeFS-NG", "Prism"). Irish names would match croi and Todhchai.
+7. **Component names.** Only components novel enough to trademark get a
+   name: the file system (working name BeFS-NG), the GPU library (Prism)
+   and the compositor. Everything else keeps a descriptive name. Irish
+   names would match croi and Todhchai.
+   Candidates, checked against Ó Dónaill, tearma.ie and existing software,
+   are in [research/irish-names.md](research/irish-names.md).
 8. ~~License~~: decided (see "Decided").
 9. ~~Hosted mode as a product~~: decided (see "Decided").
 
