@@ -22,6 +22,8 @@ int td_linux_sched_fifo(int priority);
 // SCHED_BATCH (throughput) or SCHED_IDLE (background); 0 or an errno.
 int td_linux_sched_batch(void);
 int td_linux_sched_idle(void);
+// An anonymous file for shared memory (memfd_create, close-on-exec).
+int td_linux_memfd(const char *name);
 // The calling thread's name (at most 15 bytes are kept).
 void td_linux_set_thread_name(const char *name);
 

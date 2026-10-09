@@ -92,6 +92,8 @@ public struct Loop: ~Copyable {
   var buffer: [Event] = []
   var ready = [epoll_event](repeating: epoll_event(), count: 32)
   var armedFor: UInt64 = 0  // the timerfd's current expiry, in ns; 0 if disarmed
+  var windows: WindowSystem?
+  var waylandWatch: WatchID?
 
   /// How many times `wait` has returned from the kernel: the number the
   /// idle-wakeup budget counts.
@@ -211,18 +213,37 @@ public struct Loop: ~Copyable {
     defer { if let oneShot { cancel(oneShot) } }
     buffer.removeAll(keepingCapacity: true)
     collect(blocking: true, deadlineTimer: oneShot)
+    framesLast()
     return Events(items: buffer)
+  }
+
+  /// Moves `.frame` events to the end of the batch, renumbering `seq`, so
+  /// an app that draws on a frame has already seen every configure that
+  /// arrived with it, and never draws for a stale configuration.
+  mutating func framesLast() {
+    guard buffer.count > 1, let first = buffer.first?.seq else { return }
+    var others: [Event] = [], frames: [Event] = []
+    for e in buffer {
+      if case .frame = e.payload { frames.append(e) } else { others.append(e) }
+    }
+    guard !frames.isEmpty, !others.isEmpty else { return }
+    buffer = others + frames
+    for i in buffer.indices { buffer[i].seq = first + UInt64(i) }
   }
 
   /// Returns what has already happened, without blocking.
   public mutating func poll() -> Events {
     buffer.removeAll(keepingCapacity: true)
     collect(blocking: false, deadlineTimer: nil)
+    framesLast()
     return Events(items: buffer)
   }
 
   mutating func collect(blocking: Bool, deadlineTimer: TimerID?) {
+    // Frames owed right now mean there's something to report: don't block.
+    let blocking = blocking && !emitImmediateFrames()
     while true {
+      if let windows { try? windows.flush() }
       let start = Trace.now()
       let n = epoll_wait(epoll, &ready, Int32(ready.count), blocking ? -1 : 0)
       if n < 0 && errno == EINTR { continue }
@@ -235,6 +256,8 @@ public struct Loop: ~Copyable {
         switch event.data.u64 {
         case Self.eventToken: drainShared()
         case Self.timerToken: fireTimers(deadlineTimer: deadlineTimer)
+        case let token where token - 2 == waylandWatch?.raw:
+          dispatchWayland()
         case let token:
           var readiness: Readiness = []
           let e = event.events
@@ -254,9 +277,9 @@ public struct Loop: ~Copyable {
 
   var deadlineFired = false
 
-  mutating func append(_ payload: Event.Payload) {
+  mutating func append(_ payload: Event.Payload, window: WindowID = .none) {
     seq += 1
-    buffer.append(Event(payload: payload, window: .none, time: .now, seq: seq))
+    buffer.append(Event(payload: payload, window: window, time: .now, seq: seq))
   }
 
   mutating func drainShared() {

@@ -69,9 +69,16 @@ let package = Package(
     .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader"], path: "tests/trace"),
     .executableTarget(name: "trace-cost", dependencies: ["Trace"], path: "tools/trace-cost"),
 
+    // Wayland, spoken directly (architecture §18): wlgen turns the protocol
+    // XML in data/wayland into lib/wayland/generated; Wayland is the runtime.
+    .target(name: "WaylandGen", path: "lib/wayland/gen"),
+    .executableTarget(name: "wlgen", dependencies: ["WaylandGen"], path: "tools/wlgen"),
+    .target(name: "Wayland", path: "lib/wayland", exclude: ["gen"], sources: ["runtime", "generated"]),
+    .testTarget(name: "WaylandTests", dependencies: ["Wayland", "WaylandGen"], path: "tests/wayland"),
+
     // The SDK (sdk.md): the Swift overlay of libtodhchai, hosted on Linux.
     .target(name: "TDLinux", path: "lib/sdk/linux"),
-    .target(name: "Todhchai", dependencies: ["Trace", "TDLinux"], path: "lib/sdk", exclude: ["linux"]),
+    .target(name: "Todhchai", dependencies: ["Trace", "TDLinux", "Wayland"], path: "lib/sdk", exclude: ["linux"]),
     .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai"], path: "tests/sdk"),
 
     // td: the developer tool (bench, ci); Bench is its testable core.

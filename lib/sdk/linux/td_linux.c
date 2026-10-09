@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -40,6 +41,8 @@ static int set_policy(int policy, int priority) {
 int td_linux_sched_fifo(int priority) { return set_policy(SCHED_FIFO, priority); }
 int td_linux_sched_batch(void) { return set_policy(SCHED_BATCH, 0); }
 int td_linux_sched_idle(void) { return set_policy(SCHED_IDLE, 0); }
+
+int td_linux_memfd(const char *name) { return memfd_create(name, MFD_CLOEXEC); }
 
 void td_linux_set_thread_name(const char *name) {
   char short_name[16];

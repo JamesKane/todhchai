@@ -51,6 +51,12 @@ public struct Event: Sendable {
     case wake
     /// The process was asked to stop (SIGINT, SIGTERM).
     case quit
+    /// A window's size, scale or state changed; draw for this `configSeq`.
+    case configure(Configure)
+    /// The user asked to close a window.
+    case close
+    /// Time to draw a window's next frame.
+    case frame(Frame)
   }
 
   public var payload: Payload
@@ -62,7 +68,9 @@ public struct Event: Sendable {
 }
 
 /// The events one `wait` returned: valid until the next one. Holding them
-/// longer is safe but makes the next wait copy its buffer.
+/// longer is safe but makes the next wait copy its buffer. Within a batch,
+/// `.frame` events come last, so a frame is drawn for the newest
+/// configuration.
 public struct Events: RandomAccessCollection, Sendable {
   let items: [Event]
   public var startIndex: Int { items.startIndex }
