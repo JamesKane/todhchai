@@ -1,52 +1,80 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-/// A Taisce volume on a device: its superblock and free space. Later steps
-/// hang the tree, the log and the journal off it.
+/// A Taisce volume on a device: its superblock and free space (S1).
+///
+/// A transaction group commits by superblock flip: everything it changed is
+/// written to blocks nothing committed points at (copy-on-write), then a
+/// barrier, then its superblock, to its ring slot and to the footer, then a
+/// barrier. Mount takes the newest valid superblock; there's no log to
+/// replay.
 public struct Volume<Device: BlockDevice>: ~Copyable {
   public var device: Device
   public private(set) var superblock: Superblock
   public var allocator: Allocator
 
   /// Makes a new, empty volume on `device`.
-  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
-                            logBlocks: UInt64? = nil) throws(TaisceError) -> Volume {
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
+    throws(TaisceError) -> Volume
+  {
     guard device.blockSize == Layout.blockSize else { throw .outOfRange }
-    let layout = try Layout(blockCount: device.blockCount, logBlocks: logBlocks)
-    var allocator = Allocator(blockCount: layout.blockCount, reserved: layout.dataStart)
-    // An empty log and bitmap, then both superblock copies.
+    let layout = try Layout(blockCount: device.blockCount)
+    var allocator = Allocator(blockCount: layout.blockCount, reserved: layout.dataStart, reservedTail: Layout.ringSlots)
+    // No stale superblock from an earlier volume may survive in either ring.
     let zero = [UInt8](repeating: 0, count: Layout.blockSize)
-    for b in layout.logStart..<layout.dataStart { try device.write(b, zero) }
-    for (index, bytes) in allocator.dirtyBlocks() { try device.write(layout.bitmapStart + index, bytes) }
+    for slot in 0..<Layout.ringSlots {
+      try device.write(slot, zero)
+      try device.write(layout.dataEnd + slot, zero)
+    }
+    // Both bitmaps, then the first superblock.
+    let bitmap = allocator.allBlocks()
+    for txg: UInt64 in 0..<2 {
+      for (index, bytes) in bitmap { try device.write(layout.bitmapStart(txg: txg) + index, bytes) }
+    }
     try device.flush()
-    // Both copies, each where its generation says, as every commit does.
     var superblock = Superblock(layout: layout, uuid: uuid, label: label, createdNs: now)
-    try device.write(superblock.slot, superblock.encode())
-    superblock.generation += 1
-    try device.write(superblock.slot, superblock.encode())
+    superblock.bitmapChecksum = allocator.checksum()
+    try device.write(layout.headSlot(txg: superblock.txg), superblock.encode())
+    try device.write(layout.footerSlot(txg: superblock.txg), superblock.encode())
     try device.flush()
     return Volume(device: device, superblock: superblock, allocator: allocator)
   }
 
-  /// Opens the volume on `device`: the newest valid superblock wins.
+  /// Opens the volume on `device`: the newest valid superblock wins, and its
+  /// group's bitmap is the free space.
   public static func open(_ device: consuming Device) throws(TaisceError) -> Volume {
     let superblock = try newestSuperblock(&device)
     let layout = superblock.layout
-    let bitmap = try device.read(layout.bitmapStart, count: Int(layout.bitmapBlocks))
+    let bitmap = try device.read(layout.bitmapStart(txg: superblock.txg), count: Int(layout.bitmapBlocks))
     let allocator = try Allocator(blockCount: layout.blockCount, bitmap: bitmap)
+    guard allocator.checksum() == superblock.bitmapChecksum else { throw .corrupt(.bitmapChecksum) }
     return Volume(device: device, superblock: superblock, allocator: allocator)
   }
 
-  /// The newest valid superblock copy on `device`.
+  /// The newest valid superblock among the head ring and the footer ring.
   public static func newestSuperblock(_ device: inout Device) throws(TaisceError) -> Superblock {
-    guard device.blockSize == Layout.blockSize, device.blockCount >= 2 else { throw .notAVolume }
+    guard device.blockSize == Layout.blockSize, device.blockCount > 2 * Layout.ringSlots else { throw .notAVolume }
     var newest: Superblock?
-    for b: UInt64 in 0..<2 {
-      guard let s = try Superblock.decode(device.read(b, count: 1)) else { continue }
-      if newest.map({ s.generation > $0.generation }) ?? true { newest = s }
+    func consider(_ block: UInt64) throws(TaisceError) {
+      guard let s = try Superblock.decode(device.read(block, count: 1)) else { return }
+      if newest.map({ s.txg > $0.txg }) ?? true { newest = s }
+    }
+    for slot in 0..<Layout.ringSlots {
+      try consider(slot)
+      try consider(device.blockCount - Layout.ringSlots + slot)
     }
     guard let superblock = newest else { throw .notAVolume }
-    guard superblock.layout.blockCount <= device.blockCount else { throw .corrupt(.superblockLayout) }
+    guard superblock.layout.blockCount == device.blockCount else { throw .corrupt(.superblockLayout) }
     return superblock
+  }
+
+  /// How many of this group's superblock copies (head, footer) are intact.
+  public mutating func intactCopies() throws(TaisceError) -> Int {
+    let layout = superblock.layout
+    var intact = 0
+    for block in [layout.headSlot(txg: superblock.txg), layout.footerSlot(txg: superblock.txg)] {
+      if let s = try? Superblock.decode(device.read(block, count: 1)), s == superblock { intact += 1 }
+    }
+    return intact
   }
 
   init(device: consuming Device, superblock: Superblock, allocator: Allocator) {
@@ -55,16 +83,25 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
     self.allocator = allocator
   }
 
-  /// Writes the changed bitmap blocks and a new superblock generation,
-  /// with a barrier between: the superblock never names state that isn't
-  /// on disk yet. The engine (Engine.swift) checkpoints through this; its
-  /// bitmap changes have already gone through the log.
+  /// Commits the next transaction group: its bitmap, a barrier, its
+  /// superblock (ring slot and footer), a barrier. Whatever else the group
+  /// changed must already be written (to blocks nothing committed points
+  /// at); this barrier makes it durable before the superblock names it.
   public mutating func commit(_ update: (inout Superblock) -> Void = { _ in }) throws(TaisceError) {
-    for (index, bytes) in allocator.dirtyBlocks() { try device.write(superblock.layout.bitmapStart + index, bytes) }
+    var next = superblock
+    update(&next)
+    next.txg = superblock.txg + 1
+    next.bitmapChecksum = allocator.checksum()
+    let layout = next.layout
+    for (index, bytes) in allocator.dirtyBlocks(region: Int(next.txg % 2)) {
+      try device.write(layout.bitmapStart(txg: next.txg) + index, bytes)
+    }
     try device.flush()
-    update(&superblock)
-    superblock.generation += 1
-    try device.write(superblock.slot, superblock.encode())
+    let block = next.encode()
+    try device.write(layout.headSlot(txg: next.txg), block)
+    try device.write(layout.footerSlot(txg: next.txg), block)
     try device.flush()
+    superblock = next
+    allocator.groupCommitted()
   }
 }

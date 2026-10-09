@@ -44,6 +44,8 @@ public enum TaisceError: Error, Equatable, Sendable {
 public enum Corruption: Equatable, Sendable {
   case superblockLayout
   case bitmapSize
+  /// The bitmap a superblock names doesn't have the checksum it records.
+  case bitmapChecksum
   case node
   /// A block whose bytes don't have the checksum its pointer records.
   case checksum(UInt64)

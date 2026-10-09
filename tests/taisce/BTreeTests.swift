@@ -32,7 +32,6 @@ func commit(_ tree: inout BTree, _ store: inout Store<MemoryDevice>, txg: UInt64
   store.written()
   let root = tree.root
   try store.volume.commit { $0.catalogRoot = root }
-  store.volume.allocator.groupCommitted()
 }
 
 func newStore(blocks: UInt64 = 65_536, cacheNodes: Int = 512) throws -> Store<MemoryDevice> {

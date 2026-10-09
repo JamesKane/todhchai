@@ -38,32 +38,25 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// the catalog at the next commit.
   var trees: [(id: UInt64, tree: BTree, changed: Bool)] = []
   var catalog: BTree
-  var logAt: UInt64
-  var logSeq: UInt64 = 0
-  public private(set) var txg: UInt64 = 1
-  /// The catalog root and next inode as of the last commit: what a
-  /// checkpoint may record (never the group being committed, whose nodes
-  /// aren't on disk yet).
-  var committedCatalog: NodePointer
-  var committedNextInode: UInt64
+  /// The transaction group being built: one past the last committed.
+  public private(set) var txg: UInt64
   /// File data was written since the last commit: it needs a barrier before
   /// the log (ordered data, as ext4's default mode).
   public var dataWritten = false
   public var nextInode: UInt64
 
   /// A new volume on `device`.
-  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
-                            logBlocks: UInt64? = nil) throws(TaisceError) -> Engine {
-    let volume = try Volume.format(device, label: label, uuid: uuid, now: now, logBlocks: logBlocks)
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
+    throws(TaisceError) -> Engine
+  {
+    let volume = try Volume.format(device, label: label, uuid: uuid, now: now)
     return try mount(volume.device)
   }
 
-  /// Mounts the volume on `device`, replaying its log.
+  /// Mounts the volume on `device`: its newest valid superblock is the
+  /// state (there's nothing to replay).
   public static func mount(_ device: consuming Device) throws(TaisceError) -> Engine {
-    var d = device
-    try Log.replay(&d)
-    let volume = try Volume.open(d)
-    return try Engine(Store(volume))
+    try Engine(Store(try Volume.open(device)))
   }
 
   init(_ store: consuming Store<Device>) throws(TaisceError) {
@@ -71,9 +64,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let sb = self.store.volume.superblock
     catalog = BTree(root: sb.catalogRoot)
     nextInode = sb.nextInode
-    committedCatalog = sb.catalogRoot
-    committedNextInode = sb.nextInode
-    logAt = sb.layout.logStart
+    txg = sb.txg + 1
     for (key, value) in try catalog.scan(from: [], &self.store) {
       guard key.count == 8, value.count == NodePointer.size else { throw .corrupt(.catalog) }
       trees.append((Self.bigEndianID(key), BTree(root: NodePointer.get(value, at: 0)), false))
@@ -187,13 +178,15 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
 
   // MARK: Committing
 
-  /// Blocks the next commit will log (an estimate: the catalog may add a few).
+  /// Blocks the next commit will write (an estimate: the catalog may add a few).
   public var pendingBlocks: Int { store.dirtyCount * Layout.nodeBlocks }
 
-  /// Makes every applied transaction durable. Each changed tree is written
-  /// bottom-up (its nodes taking new checksums), its root pointer goes into
-  /// the catalog, and the catalog is written last; the group's blocks then
-  /// go to the log, a barrier commits them, and they're written in place.
+  /// Makes every applied transaction durable, by superblock flip. Each
+  /// changed tree is written bottom-up to its new blocks (its nodes taking
+  /// checksums), its root pointer goes into the catalog, and the catalog is
+  /// written last; then the volume writes the bitmap, a barrier, the
+  /// superblock naming the catalog's root, and a barrier. File data written
+  /// for the group is made durable by that first barrier too.
   public mutating func commitGroup() throws(TaisceError) {
     var written: [(block: UInt64, bytes: [UInt8])] = []
     for i in trees.indices where trees[i].changed {
@@ -207,74 +200,28 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       trees[i].changed = false
     }
     try catalog.write(&store, txg: txg, &written)
-    var targets: [UInt64] = []
-    var blocks: [UInt8] = []
-    for (block, bytes) in written {
-      for i in 0..<Layout.nodeBlocks { targets.append(block + UInt64(i)) }
-      blocks += bytes
-    }
-    let layout = store.volume.superblock.layout
-    for (index, bytes) in store.volume.allocator.dirtyBlocks() {
-      targets.append(layout.bitmapStart + index)
-      blocks += bytes
-    }
-    guard !targets.isEmpty || catalog.root != store.volume.superblock.catalogRoot else {
+    let sb = store.volume.superblock
+    guard !written.isEmpty || dataWritten || catalog.root != sb.catalogRoot || nextInode != sb.nextInode else {
       store.volume.allocator.groupCommitted()
       return
     }
-
-    // The records: as many as the blocks need, at least one.
-    let records = max(1, (targets.count + Log.maxBlocks - 1) / Log.maxBlocks)
-    let logBlocks = UInt64(records + targets.count)
-    let end = layout.logStart + layout.logBlocks
-    guard logBlocks <= layout.logBlocks else { throw .tooLarge }
-    if logAt + logBlocks > end { try checkpoint() }  // can't happen now: each group starts an empty log
-    var image: [UInt8] = []
-    for r in 0..<records {
-      let range = (r * Log.maxBlocks)..<min(targets.count, (r + 1) * Log.maxBlocks)
-      let record = Log.Record(
-        last: r == records - 1, epoch: store.volume.superblock.logEpoch, seq: logSeq, txg: txg,
-        catalogRoot: catalog.root, nextInode: nextInode, targets: Array(targets[range]),
-        blocks: Array(blocks[(range.lowerBound * Layout.blockSize)..<(range.upperBound * Layout.blockSize)]))
-      image += record.encode()
-      logSeq += 1
-    }
-    // File data written for this group reaches the disk before the
-    // metadata that points at it.
-    if dataWritten { try store.volume.device.flush() }
-    try store.volume.device.write(logAt, image)
-    try store.volume.device.flush()  // the commit point
-    dataWritten = false
-    store.volume.allocator.groupCommitted()
-    logAt += logBlocks
-    // In place; durable by the next checkpoint's barrier.
     for (block, bytes) in written { try store.volume.device.write(block, bytes) }
     store.written()
-    for (i, target) in targets.enumerated() where target >= layout.bitmapStart && target < layout.dataStart {
-      let start = i * Layout.blockSize
-      try store.volume.device.write(target, Array(blocks[start..<(start + Layout.blockSize)]))
-    }
-    committedCatalog = catalog.root
-    committedNextInode = nextInode
-    // Checkpoint every group, so replay never reaches past the newest one.
-    // Otherwise an older group's node image could be replayed over a block
-    // that copy-on-write freed and a later group gave to file data, which
-    // isn't logged (ext4 needs revoke records for this). S1c removes the
-    // log: a superblock flip commits instead.
-    try checkpoint()
-    txg += 1
-  }
-
-  /// Makes the in-place writes durable and starts the log over.
-  mutating func checkpoint() throws(TaisceError) {
-    let root = committedCatalog, inode = committedNextInode
+    let root = catalog.root, inode = nextInode
     try store.volume.commit { sb in
       sb.catalogRoot = root
       sb.nextInode = inode
-      sb.logEpoch += 1
     }
-    logAt = store.volume.superblock.layout.logStart
-    logSeq = 0
+    dataWritten = false
+    txg = store.volume.superblock.txg + 1
+  }
+
+  /// Every block metadata lives in: each node's four blocks, in every tree
+  /// and the catalog (scrub reads them all; the corruption tests flip them).
+  public mutating func nodeBlocks() throws(TaisceError) -> [UInt64] {
+    var firsts = try catalog.nodeBlocks(&store)
+    for t in trees { firsts += try t.tree.nodeBlocks(&store) }
+    return firsts.flatMap { b in (0..<UInt64(Layout.nodeBlocks)).map { b + $0 } }
   }
 
   /// Every tree's invariants, and that the blocks in use are exactly the
@@ -289,7 +236,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     }
     let a = store.volume.allocator
     let used = a.blockCount - a.freeCount
-    guard used == store.volume.superblock.layout.dataStart + UInt64(nodes * Layout.nodeBlocks) + dataBlocks else {
+    guard used == store.volume.superblock.layout.reserved + UInt64(nodes * Layout.nodeBlocks) + dataBlocks else {
       throw .corrupt(.leakedBlocks)
     }
     return (entries, nodes)

@@ -5,8 +5,8 @@
 import Taisce
 import Testing
 
-func newEngine(blocks: UInt64 = 4096, logBlocks: UInt64? = nil) throws -> Engine<MemoryDevice> {
-  try Engine.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0, logBlocks: logBlocks)
+func newEngine(blocks: UInt64 = 4096) throws -> Engine<MemoryDevice> {
+  try Engine.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0)
 }
 
 /// Every tree's contents.
@@ -63,8 +63,8 @@ func contents<D>(_ e: inout Engine<D>) throws -> [UInt64: [[UInt8]: [UInt8]]] {
   #expect(try m.check().entries == 1000)
 }
 
-@Test func theLogWrapsThroughCheckpoints() throws {
-  var e = try newEngine(blocks: 2048, logBlocks: 64)
+@Test func manyCommitsGoAroundTheRing() throws {
+  var e = try newEngine(blocks: 2048)
   for g in 0..<40 {
     try e.apply([.insert(tree: 1, key: [UInt8(g)], value: [UInt8](repeating: UInt8(g), count: 1000))])
     try e.commitGroup()

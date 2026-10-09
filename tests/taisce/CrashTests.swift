@@ -32,7 +32,7 @@ struct Workload {
 
 func record(seed: UInt64, groups: Int) throws -> Workload {
   var rng = SplitMix(state: seed)
-  let formatted = try Engine.format(MemoryDevice(blocks: 1024), label: [], uuid: Array(1...16), now: 0, logBlocks: 96)
+  let formatted = try Engine.format(MemoryDevice(blocks: 1024), label: [], uuid: Array(1...16), now: 0)
   var w = Workload(image: formatted.store.volume.device)
   var e = try Engine.mount(RecordingDevice(w.image))
   var model: State = [:]

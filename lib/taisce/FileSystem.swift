@@ -37,9 +37,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable {
   // MARK: Volumes
 
   /// A new file system on `device`, with an empty root directory.
-  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
-                            logBlocks: UInt64? = nil) throws(TaisceError) -> FileSystem {
-    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, logBlocks: logBlocks))
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
+    throws(TaisceError) -> FileSystem
+  {
+    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now))
     var c = Changes()
     for (name, kind, tree) in [(Array("name".utf8), AttributeKind.string, nameIndex), (Array("size".utf8), .uint64, sizeIndex),
                                (Array("mtime".utf8), .time, mtimeIndex), (Array("sys:type".utf8), .string, typeIndex)] {

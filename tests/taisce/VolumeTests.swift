@@ -17,47 +17,61 @@ import Testing
 
 @Test func theLayoutPacksRegionsInOrder() throws {
   let l = try Layout(blockCount: 262_144)  // 1 GiB
-  #expect(l.logStart == 2)
-  #expect(l.logBlocks == 2621)  // 1%
-  #expect(l.bitmapStart == 2 + 2621)
   #expect(l.bitmapBlocks == 8)  // 262,144 bits
-  #expect(l.dataStart == 2 + 2621 + 8)
-  #expect(throws: TaisceError.tooSmall) { try Layout(blockCount: 100) }
+  #expect(l.bitmapStart(txg: 2) == 4 && l.bitmapStart(txg: 3) == 4 + 8)  // two regions, alternating
+  #expect(l.dataStart == 4 + 16)
+  #expect(l.dataEnd == 262_144 - 4)  // the footer ring after the data
+  #expect(l.headSlot(txg: 6) == 2 && l.footerSlot(txg: 6) == 262_144 - 4 + 2)
+  #expect(l.reserved == 20 + 4)
+  #expect(throws: TaisceError.tooSmall) { try Layout(blockCount: 40) }
 }
 
 @Test func aSuperblockRoundTripsAndRejectsDamage() throws {
   var s = Superblock(layout: try Layout(blockCount: 10_000), uuid: Array(1...16), label: Array("home".utf8),
                      createdNs: 42)
   s.catalogRoot = NodePointer(block: 777, checksum: Checksum(a: 1, b: 2), birth: 3)
-  s.generation = 9
+  s.txg = 9
   var block = s.encode()
   #expect(try Superblock.decode(block) == s)
-  block[200] ^= 1  // a flipped bit anywhere fails the checksum
+  block[200] ^= 1  // a flipped bit anywhere fails the BLAKE3 check
   #expect(try Superblock.decode(block) == nil)
   #expect(try Superblock.decode([UInt8](repeating: 0, count: 4096)) == nil)
 }
 
 @Test func theAllocatorHandsOutExtentsAndPersists() throws {
-  var a = Allocator(blockCount: 1000, reserved: 10)
-  #expect(a.freeCount == 990)
+  var a = Allocator(blockCount: 1000, reserved: 10, reservedTail: 4)
+  #expect(a.freeCount == 986)
   let first = try a.allocate(100)
   #expect(first == [Extent(start: 10, count: 100)])
   let node = try a.allocateContiguous(4, near: 500)
   #expect(node == Extent(start: 500, count: 4))
-  a.free(Extent(start: 20, count: 10))
-  // A request bigger than the hole spans extents, first fit from the hint.
+  a.free(Extent(start: 20, count: 10))  // allocated in this group: free again at once
   let spread = try a.allocate(15, near: 15)
   #expect(spread == [Extent(start: 20, count: 10), Extent(start: 110, count: 5)])
-  #expect(a.freeCount == 990 - 100 - 4 + 10 - 15)
+  #expect(a.freeCount == 986 - 100 - 4 + 10 - 15)
   #expect(throws: TaisceError.noSpace) { try a.allocate(10_000) }
+  for block in UInt64(996)..<1000 { #expect(a.isUsed(block)) }  // the footer ring is never handed out
+  #expect(try a.allocateContiguous(10, near: 995).end <= 996)
 
-  // Stored and loaded, it's the same.
+  // Stored (either region) and loaded, it's the same.
   var bitmap: [UInt8] = []
-  for (_, bytes) in a.dirtyBlocks() { bitmap += bytes }
-  var b = try Allocator(blockCount: 1000, bitmap: bitmap)
+  for (_, bytes) in a.dirtyBlocks(region: 0) { bitmap += bytes }
+  let b = try Allocator(blockCount: 1000, bitmap: bitmap)
   #expect(b.freeCount == a.freeCount)
   for block in UInt64(0)..<1000 { #expect(b.isUsed(block) == a.isUsed(block)) }
-  #expect(throws: TaisceError.noSpace) { try b.allocateContiguous(1000) }
+  #expect(a.dirtyBlocks(region: 0).isEmpty && a.dirtyBlocks(region: 1).count == 1)  // region 1 still owed it
+}
+
+@Test func freedBlocksWaitAGroupAfterTheirCommit() throws {
+  var a = Allocator(blockCount: 200, reserved: 10)
+  let e = try a.allocate(5)[0]
+  a.groupCommitted()  // e is committed
+  a.free(e)
+  #expect(try a.allocate(1, near: e.start)[0].start != e.start)  // held: committed state points at it
+  a.groupCommitted()  // the group that freed it commits
+  #expect(try a.allocate(1, near: e.start)[0].start != e.start)  // deferred: a fallback superblock might
+  a.groupCommitted()
+  #expect(try a.allocate(1, near: e.start)[0].start == e.start)  // now it's free
 }
 
 @Test func aFormattedVolumeOpens() throws {
@@ -69,18 +83,25 @@ import Testing
   #expect(throws: TaisceError.notAVolume) { try Volume.open(MemoryDevice(blocks: 64)) }
 }
 
-@Test func aTornSuperblockWriteFallsBackToTheOtherCopy() throws {
+@Test func theNewestValidSuperblockWinsFromEitherCopy() throws {
   var v = try Volume.format(MemoryDevice(blocks: 4096), label: [], uuid: Array(1...16), now: 0)
-  let before = v.superblock
-  let pointer = NodePointer(block: 1234, checksum: Checksum(a: 5, b: 6), birth: 7)
-  try v.commit { $0.catalogRoot = pointer }
-  #expect(try Volume.open(v.device).superblock.catalogRoot == pointer)
-  // Tear the newest copy: the previous generation is what mounts.
-  var damaged = v.device
-  try damaged.write(v.superblock.slot, [UInt8](repeating: 0xAB, count: 4096))
-  let opened = try Volume.open(damaged)
-  #expect(opened.superblock.generation == before.generation)
-  #expect(opened.superblock.catalogRoot == .null)
+  for i in UInt64(1)...9 {
+    try v.commit { $0.nextInode = 100 + i }  // around the ring twice
+  }
+  let newest = v.superblock
+  #expect(newest.txg == 10)
+  #expect(try Volume.open(v.device).superblock == newest)
+  let layout = newest.layout
+  let garbage = [UInt8](repeating: 0xAB, count: 4096)
+  // A torn head copy: the footer copy of the same group wins.
+  var oneTorn = v.device
+  try oneTorn.write(layout.headSlot(txg: 10), garbage)
+  #expect(try Volume.open(oneTorn).superblock == newest)
+  // Both copies torn: the group before it.
+  var bothTorn = oneTorn
+  try bothTorn.write(layout.footerSlot(txg: 10), garbage)
+  let fallback = try Volume.open(bothTorn).superblock
+  #expect(fallback.txg == 9 && fallback.nextInode == 108)
 }
 
 @Test func aCommitIsOrderedByBarriers() throws {
@@ -89,20 +110,21 @@ import Testing
   _ = try r.allocator.allocate(50)
   try r.commit()
   let log = r.device.log
-  // Bitmap, a barrier, the superblock, a barrier.
-  #expect(log.count == 4)
-  guard case .write(let bitmapBlock, _) = log[0], case .write(let superBlock, _) = log[2] else {
+  // The bitmap's region for this group, a barrier, the head and footer copies, a barrier.
+  #expect(log.count == 5)
+  guard case .write(let bitmapBlock, _) = log[0], case .write(let head, _) = log[2], case .write(let footer, _) = log[3]
+  else {
     Issue.record("unexpected log \(log)")
     return
   }
-  #expect(bitmapBlock == r.superblock.layout.bitmapStart)
-  #expect(log[1] == .flush && log[3] == .flush)
-  #expect(superBlock == r.superblock.slot)
+  let layout = r.superblock.layout
+  #expect(bitmapBlock == layout.bitmapStart(txg: 2))
+  #expect(log[1] == .flush && log[4] == .flush)
+  #expect(head == layout.headSlot(txg: 2) && footer == layout.footerSlot(txg: 2))
   // Any prefix of the log mounts, before or after the commit.
   for k in 0...log.count {
-    let crashed = v.device.applying(log.prefix(k))
-    let opened = try Volume.open(crashed)
-    #expect(opened.superblock.generation == (k >= 3 ? r.superblock.generation : v.superblock.generation))
+    let opened = try Volume.open(v.device.applying(log.prefix(k)))
+    #expect(opened.superblock.txg == (k >= 3 ? 2 : 1))
   }
 }
 

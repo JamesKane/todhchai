@@ -149,12 +149,16 @@ let abi = todhchaiABI(keys: keyUsages(in: read("lib/sdk/KeyUsage.swift")))
     td_sound_free(again)
   }
 
-  @Test func errorsArePerThread() async throws {
+  @Test func errorsArePerThread() throws {
     _ = td_loop_wait(nil, 0, 0)
     let here = String(cString: td_last_error()!)
-    let there = await Task.detached { String(cString: td_last_error()!) }.value
     #expect(!here.isEmpty)
-    // A fresh thread has no error, unless the pool reused this one.
-    #expect(there.isEmpty || there == here)
+    // A new thread (not a pool thread another test may have used) has none.
+    final class Seen: @unchecked Sendable { var text = "unset" }
+    let seen = Seen()
+    let t = try Thread.spawn(intent: .throughput) { seen.text = String(cString: td_last_error()!) }
+    t.join()
+    #expect(seen.text.isEmpty)
+    #expect(String(cString: td_last_error()!) == here)  // and this thread's is still its own
   }
 }

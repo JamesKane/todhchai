@@ -275,6 +275,18 @@ public struct BTree: Equatable, Sendable {
     return NodePointer(block: p.block, checksum: Checksum(of: bytes), birth: txg)
   }
 
+  /// Every node's first block, root first.
+  public func nodeBlocks<D>(_ store: inout Store<D>) throws(TaisceError) -> [UInt64] {
+    var out: [UInt64] = []
+    var stack = root.isNull ? [] : [root]
+    while let p = stack.popLast() {
+      out.append(p.block)
+      let n = try store.node(p)
+      stack += n.children
+    }
+    return out
+  }
+
   // MARK: Checking
 
   public struct Stats: Equatable, Sendable {

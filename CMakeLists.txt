@@ -38,12 +38,12 @@ todhchai_tier0(TDUnicode)
 
 add_library(Taisce STATIC
   lib/taisce/Allocator.swift lib/taisce/AttributeStore.swift lib/taisce/Attributes.swift lib/taisce/BlockDevice.swift lib/taisce/Bytes.swift lib/taisce/CRC32C.swift
-  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/Log.swift lib/taisce/Query.swift lib/taisce/QueryEngine.swift
-  lib/taisce/Node.swift
+  lib/taisce/BTree.swift lib/taisce/Engine.swift lib/taisce/Errors.swift lib/taisce/FileSystem.swift lib/taisce/Inode.swift lib/taisce/Query.swift lib/taisce/QueryEngine.swift
+  lib/taisce/Node.swift lib/taisce/Pointer.swift
   lib/taisce/Store.swift
   lib/taisce/Superblock.swift lib/taisce/Volume.swift)
 set_target_properties(Taisce PROPERTIES Swift_MODULE_NAME Taisce)
-target_link_libraries(Taisce PUBLIC TDUnicode)
+target_link_libraries(Taisce PUBLIC TDUnicode TDCrypto)
 target_include_directories(Taisce INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Taisce)
 

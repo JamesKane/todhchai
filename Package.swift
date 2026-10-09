@@ -112,7 +112,7 @@ let package = Package(
     .testTarget(name: "UnicodeTests", dependencies: ["TDUnicode", "UCDGen"], path: "tests/unicode"),
     // Taisce (filesystem.md): the file system's core is tier 0, built
     // again as Embedded Swift by CMake; the host's devices and tools are not.
-    .target(name: "Taisce", dependencies: ["TDUnicode"], path: "lib/taisce", swiftSettings: tier0),
+    .target(name: "Taisce", dependencies: ["TDUnicode", "TDCrypto"], path: "lib/taisce", swiftSettings: tier0),
     .target(name: "TaisceHost", dependencies: ["Taisce", "TDLinux"], path: "lib/taisce-host"),
     .executableTarget(name: "MkfsTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/mkfs-taisce"),
     .executableTarget(name: "FsckTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/fsck-taisce"),

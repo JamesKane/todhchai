@@ -93,7 +93,9 @@ The file system ([docs/filesystem.md](docs/filesystem.md); stage plan in
 are byte arrays with explicit little-endian fields (`Bytes.swift`), never
 memory layouts. Every change to what reaches the disk goes through a
 `BlockDevice`, so `RecordingDevice` can replay any prefix of the writes as
-a crash.
+a crash. Since S1, every node is copy-on-write with a BLAKE3-128 checksum
+in its parent pointer, and a group commits by superblock flip (no log):
+never write a committed block in place.
 
 On the host: `swift build --product mkfs.taisce` (also `fsck.taisce`,
 `taisce-fuse`), then
