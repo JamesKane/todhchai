@@ -16,6 +16,9 @@ public enum TaisceError: Error, Equatable, Sendable {
   case tooSmall
   /// There isn't enough free space.
   case noSpace
+  /// A commit failed on the device, so nothing more is written until the
+  /// volume is mounted again (which finds the last commit that completed).
+  case readOnly
   /// On-disk structures disagree (what was found is the case's name).
   case corrupt(Corruption)
   /// A key or value larger than a node allows (BTree.maxKey, maxValue),

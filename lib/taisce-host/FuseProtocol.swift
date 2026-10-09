@@ -219,6 +219,7 @@ extension TaisceError {
     case .notEmpty: 39  // ENOTEMPTY
     case .nameTooLong: 36  // ENAMETOOLONG
     case .noSpace: 28  // ENOSPC
+    case .readOnly: 30  // EROFS
     case .tooLarge: 27  // EFBIG
     case .invalid, .badQuery, .needsIndex, .badDelta, .missingKey: 22  // EINVAL
     case .io(let errno): errno

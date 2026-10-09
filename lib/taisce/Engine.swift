@@ -51,6 +51,10 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   var intentAt: UInt64 = 0
   var intentSeq: UInt64 = 0
   public var nextInode: UInt64
+  /// A commit failed on the device: what it had written (bitmap blocks
+  /// marked written, trees marked unchanged, nodes still fresh) can't be
+  /// trusted, so the engine writes nothing more until it's mounted again.
+  public private(set) var stopped = false
   /// Lock-free readers (S1f), once enabled: their epochs, and what waits
   /// for them in limbo (snapshots replaced, blocks retired), oldest first,
   /// with the epoch each was retired in.
@@ -147,6 +151,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   }
 
   mutating func applyOnce(_ batch: [Message]) throws(TaisceError) {
+    guard !stopped else { throw .readOnly }
     let ordered = batch.indices.sorted { a, b in
       let x = batch[a], y = batch[b]
       if x.tree != y.tree { return x.tree < y.tree }
@@ -278,6 +283,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// written). The blocks they allocated are pinned until the commit. If
   /// the log is full, it commits the group instead.
   public mutating func fsync() throws(TaisceError) {
+    guard !stopped else { throw .readOnly }
     guard !pendingOps.isEmpty else {
       if dataWritten { try store.volume.device.flush() }
       return
@@ -388,6 +394,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// superblock naming the catalog's root, and a barrier. File data written
   /// for the group is made durable by that first barrier too.
   public mutating func commitGroup() throws(TaisceError) {
+    guard !stopped else { throw .readOnly }
     let written: [(block: UInt64, bytes: [UInt8])]
     do {
       written = try prepareCommit()
@@ -409,12 +416,18 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       pendingOps = []
       return
     }
-    for (block, bytes) in written { try store.volume.device.write(block, bytes) }
-    store.written()
     let root = catalog.root, inode = nextInode
-    let retired = try store.volume.commit { sb in
-      sb.catalogRoot = root
-      sb.nextInode = inode
+    let retired: [Extent]
+    do {
+      for (block, bytes) in written { try store.volume.device.write(block, bytes) }
+      store.written()
+      retired = try store.volume.commit { sb in
+        sb.catalogRoot = root
+        sb.nextInode = inode
+      }
+    } catch {
+      stopped = true
+      throw error
     }
     retire(nil, retired)
     publish()

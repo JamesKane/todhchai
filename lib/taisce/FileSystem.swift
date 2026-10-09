@@ -89,6 +89,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// blocks it rewrote in place get their contents back), so it's safe to
   /// commit between the two tries.
   mutating func reclaiming<T>(_ operation: (inout Self) throws(TaisceError) -> T) throws(TaisceError) -> T {
+    guard !engine.stopped else { throw .readOnly }  // before any file data is written
     do {
       return try operation(&self)
     } catch .noSpace where engine.reclaimable > 0 {

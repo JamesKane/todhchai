@@ -94,3 +94,45 @@ func contents<D>(_ e: inout Engine<D>) throws -> [UInt64: [[UInt8]: [UInt8]]] {
   #expect(try m.scan(1, from: []).count == 40)
   _ = try m.check()
 }
+
+/// Whether a FlakyDevice's writes fail, shared by its copies.
+final class Flakiness {
+  var failWrites = false
+}
+
+/// A memory device whose writes can be made to fail.
+struct FlakyDevice: BlockDevice {
+  var base: MemoryDevice
+  let flakiness: Flakiness
+  var blockSize: Int { base.blockSize }
+  var blockCount: UInt64 { base.blockCount }
+  mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] { try base.read(block, count: count) }
+  mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    if flakiness.failWrites { throw .io(5) }
+    try base.write(block, bytes)
+  }
+  mutating func flush() throws(TaisceError) {}
+}
+
+@Test func aCommitThatFailsOnTheDeviceStopsWritesUntilARemount() throws {
+  let flakiness = Flakiness()
+  var e = try Engine.format(FlakyDevice(base: MemoryDevice(blocks: 4096), flakiness: flakiness), label: [],
+                            uuid: Array(1...16), now: 1)
+  try e.apply((0..<300).map { .insert(tree: 1, key: bigEndian($0), value: [UInt8](repeating: 1, count: 100)) })
+  try e.commitGroup()
+  try e.apply((300..<600).map { .insert(tree: 1, key: bigEndian($0), value: [UInt8](repeating: 2, count: 100)) })
+  flakiness.failWrites = true
+  #expect(throws: TaisceError.io(5)) { try e.commitGroup() }
+  flakiness.failWrites = false  // the device recovers, but what that commit wrote can't be trusted
+  let stopped = e.stopped
+  #expect(stopped)
+  #expect(throws: TaisceError.readOnly) { try e.commitGroup() }
+  #expect(throws: TaisceError.readOnly) { try e.apply([.insert(tree: 1, key: [9], value: [9])]) }
+  #expect(throws: TaisceError.readOnly) { try e.fsync() }
+  #expect(try e.get(1, bigEndian(500)) == [UInt8](repeating: 2, count: 100))  // reads go on
+  // Mounted again: the last commit that completed, whole.
+  var after = try Engine<MemoryDevice>.mount(e.store.volume.device.base)
+  #expect(try after.get(1, bigEndian(299)) == [UInt8](repeating: 1, count: 100))
+  #expect(try after.get(1, bigEndian(300)) == nil)
+  _ = try after.check()
+}
