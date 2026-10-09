@@ -15,7 +15,7 @@ is further along.
   - "study designs, never copy code";
   - FoundationEssentials counts as toolchain;
   - our own libc;
-  - Prism as the SDK's GPU API; the single-file ELF app format; our own
+  - Loinnir as the SDK's GPU API; the single-file ELF app format; our own
     debug-info format converted from DWARF; a Wayland client as the first
     hosted backend; hosted mode as a development tool only;
   - amd64 first, on the reference machine (i7-12700KF, RX 6750 XT); the
@@ -28,8 +28,8 @@ is further along.
   driver with three tiers (§10), the board database and SCMI (§9), DMA
   exceptions (§17), new croi requirements (items 1–3, 5, 7, 13, 14; §3 items
   11–12; §4), and milestone M10.
-- **Still open:** one decision in [roadmap.md](roadmap.md), "Open
-  decisions": component names, before M3.
+- **Still open:** no decisions in [roadmap.md](roadmap.md); component
+  names were the last (Taisce, Loinnir, Radharc).
 - **croi at the time of writing:** it boots on amd64, arm64 and rv64,
   builds its own page tables, installs exception vectors and halts. It has
   no PMM, threads, user mode, syscalls or kernel objects yet
@@ -68,7 +68,7 @@ is further along.
 - **If croi has reached M2** (userboot runs a tier 0 process that uses
   channels, VMOs, ports and timers), start **M3**: `libsys`, the native IPC
   transport, the launcher and namespaces, the Node protocol, devmgr with the
-  AML interpreter, virtio drivers, and the block service plus BeFS-NG S0.
+  AML interpreter, virtio drivers, and the block service plus Taisce S0.
 - **If not, start where croi isn't needed.** These run fully hosted on
   Linux:
   - **M0:**
@@ -79,18 +79,16 @@ is further along.
       protocol, with a Swift client, a C client and a Swift server,
       exchanging a message that carries a handle.
   - **M1:** the hosted SDK core (`Loop`, `Window`, `Frame`, `Input`,
-    `Audio`, `Memory`, `Thread`) as a Wayland client, plus the C ABI, Prism
+    `Audio`, `Memory`, `Thread`) as a Wayland client, plus the C ABI, Loinnir
     v0 and the minimal, synth and game-loop reference programs.
   - **F track:** the libc test harness, then libc written against the Swift
     runtime's and FoundationEssentials' symbol lists.
-  - **BeFS-NG S0**, hosted through `/dev/fuse` with the crash harness and
+  - **Taisce S0**, hosted through `/dev/fuse` with the crash harness and
     the fuzzers.
 
 ## Decisions to make before the milestone that needs them
 
-| Before | Decide |
-|---|---|
-| M3 | component names (7), before names reach code and protocol ids |
+None are left; every open decision has been made (roadmap, "Decided").
 
 ## Facts to re-verify, since they may have moved
 
@@ -103,7 +101,7 @@ is further along.
   `libswiftCore` needs, and what FoundationEssentials adds. Re-run `llvm-nm
   -u` against the current toolchain before writing libc.
 - **Vulkan:** the status of `VK_EXT_present_timing`, descriptor heaps and
-  unified image layouts (Prism's hardware floor), and whether the Venus
+  unified image layouts (Loinnir's hardware floor), and whether the Venus
   protocol XML has moved.
 - **Unverified claims in the research notes** (tagged `[U]`). In particular,
   the NoGraphicsAPI library's date and license, Mesa/Magma details, and the

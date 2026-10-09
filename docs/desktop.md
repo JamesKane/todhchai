@@ -4,7 +4,9 @@ The desktop draws on BeOS for structure (Tracker, Deskbar, yellow tabs,
 replicants, queries everywhere) and on retro-future cyberpunk for its look.
 It is built on Vulkan and puts game latency ahead of effects.
 
-## 1. Compositor
+## 1. Compositor: Radharc
+
+The compositor is **Radharc** (Irish for "view, scene").
 
 ### Protocol: a Flatland-style retained layer tree
 - Each client owns a small tree of 2D layers. A layer is a rectangle with
@@ -180,7 +182,7 @@ it as the **router**, a tier 0 service.
 - **Rules** keep the plumber's readable text format, reloaded when the rules
   file changes. They add MIME wildcards (`type is image/*`), content
   sniffing through translators, attribute matching (`attr Audio:Artist is
-  ...`), and BeFS-NG queries. A rule starts an app by signature with a typed
+  ...`), and Taisce queries. A rule starts an app by signature with a typed
   argument array. It never runs a shell command.
 - **Uses:**
   - **Tracker:** "Open" is a routed message carrying the MIME type and an

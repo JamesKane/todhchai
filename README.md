@@ -24,7 +24,7 @@ working toward user space.
    and the same core scales to AAA engines.
 3. A modern desktop on Vulkan, inspired by BeOS (Tracker, Deskbar, yellow
    tabs, replicants, queries everywhere) with a retro-future cyberpunk look.
-4. BeFS-NG, a modern Be file system: typed attributes, indices, live queries
+4. Taisce, a modern Be-style file system: typed attributes, indices, live queries
    and a persistent change journal first; copy-on-write, checksums and
    snapshots after.
 5. The lessons of the NeoDarwin API study (`../NeoDarwin-api-study`): 30
@@ -45,9 +45,9 @@ working toward user space.
 |---|---|
 | [docs/principles.md](docs/principles.md) | 29 design principles, each tied to its source; §I (Swift first, no third-party code) overrides the rest |
 | [docs/architecture.md](docs/architecture.md) | Layers, Swift tiers, process tree, IPC, namespaces (bind, union, sealed), the Node protocol, memory, scheduling and power, drivers, graphics, storage, audio, input, packaging, compatibility, observability, security and keyring, hosted mode, remote export bridge, and the foundations we write with their specifications |
-| [docs/sdk.md](docs/sdk.md) | SDK modules, loop and events, minimal programs in Swift and C, Prism GPU, audio, UI Kit, Game Kit, C ABI rules, tools, reference programs |
-| [docs/desktop.md](docs/desktop.md) | Compositor (nestable, plane-first, late latch, game mode), window management, shell apps and scripting, the router, replicants and translators, theme tokens and rendering budget |
-| [docs/filesystem.md](docs/filesystem.md) | BeFS-NG: staged features, on-disk layout, storage engine, snapshots as directories, attributes, query language v2, live queries, trade-offs |
+| [docs/sdk.md](docs/sdk.md) | SDK modules, loop and events, minimal programs in Swift and C, the Loinnir GPU library, audio, UI Kit, Game Kit, C ABI rules, tools, reference programs |
+| [docs/desktop.md](docs/desktop.md) | Radharc, the compositor (nestable, plane-first, late latch, game mode), window management, shell apps and scripting, the router, replicants and translators, theme tokens and rendering budget |
+| [docs/filesystem.md](docs/filesystem.md) | Taisce, the file system: staged features, on-disk layout, storage engine, snapshots as directories, attributes, query language v2, live queries, trade-offs |
 | [docs/performance.md](docs/performance.md) | Performance budgets with the milestone that enforces each, how they are measured from traces, what the profiling tools must show, and what happens when a budget is violated |
 | [docs/croi-requirements.md](docs/croi-requirements.md) | What the kernel must provide, in order, and the extensions a low-latency game desktop needs |
 | [docs/roadmap.md](docs/roadmap.md) | Four work tracks, milestones M0–M10 with exit tests, risks, open and decided questions |

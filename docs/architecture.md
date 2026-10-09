@@ -27,11 +27,11 @@ in [principles.md](principles.md), and the order of work is in
  │                         Debug · Trace                                    │
  ├────────────────────────────────┬─────────────────────────────────────────┤
  │ Vulkan (our client driver,     │ libc (ours, from ISO C + POSIX)         │
- │ in-process) + GPU lib "Prism"  │ (ports and the full Swift runtime only) │
+ │ in-process) + GPU lib "Loinnir"│ (ports and the full Swift runtime only) │
  ├────────────────────────────────┴─────────────────────────────────────────┤
  │ System services (separate processes, mostly Embedded Swift)              │
  │  launcher · devmgr + driver hosts · gpu system driver · display · power  │
- │  compositor · input · audio · fs (BeFS-NG) · block · net · indexer       │
+ │  compositor · input · audio · fs (Taisce) · block · net · indexer        │
  │  tracer · keyring · router (plumber) · debugd · export bridge            │
  ├──────────────────────────────────────────────────────────────────────────┤
  │ IPC protocols (Swift-source IDL → Swift + C bindings) over channels,     │
@@ -93,10 +93,10 @@ UEFI ──► croi loader ──► croi kernel ──► userboot (from bootfs
                                            └─► launcher   (holds root job, root resources)
                                                 ├─► devmgr ──► driver hosts (PCI, NVMe, xHCI, HDA, virtio, GPU, …)
                                                 ├─► power   (DVFS policy, thermal, device power, profiles)
-                                                ├─► block ──► fs (BeFS-NG volumes) ──► indexer
+                                                ├─► block ──► fs (Taisce volumes) ──► indexer
                                                 ├─► gpu system driver(s)
                                                 ├─► display driver(s)  (scanout, vblank, hotplug)
-                                                ├─► compositor  (over /svc/display + Vulkan)
+                                                ├─► compositor  (Radharc, over /svc/display + Vulkan)
                                                 ├─► input   (HID class, keymaps, IME host)
                                                 ├─► audio   (mixer, device graph)
                                                 ├─► tracer · debugd · net · keyring · router
@@ -218,7 +218,7 @@ attach messages exist for.
 @IPCProtocol(id: "todhchai.node.Node", version: 1)
 protocol Node {
     func walk(_ names: borrowing NameList) throws(NodeError) -> WalkResult   // ≤ 16 names; partial results show where it stopped
-    func stat(_ fields: StatMask) throws(NodeError) -> Stat                  // typed attributes, BeFS-NG style
+    func stat(_ fields: StatMask) throws(NodeError) -> Stat                  // typed attributes, Taisce style
     func readdir(cursor: UInt64, max: UInt32, fields: StatMask) throws(NodeError) -> DirBatch
     func read(offset: UInt64, max: UInt32) throws(NodeError) -> Bytes
     func write(offset: UInt64, _ data: borrowing Bytes) throws(NodeError) -> UInt32
@@ -447,7 +447,7 @@ Full design: [desktop.md](desktop.md).
 - **Staged driver path.** Each stage is ours. The guest side of a VM
   protocol is written from that protocol's specification.
   1. **No Vulkan:** the GOP framebuffer and the compositor's CPU path. Apps
-     use CPU surfaces, and Prism waits for stage 2 (it already runs hosted
+     use CPU surfaces, and Loinnir waits for stage 2 (it already runs hosted
      on Linux).
   2. **Venus client driver over virtio-gpu (QEMU).** Venus serializes Vulkan
      calls to the host's driver, and its protocol is generated from a
@@ -484,7 +484,7 @@ Full design: [filesystem.md](filesystem.md).
 
 - The **block** service runs on NVMe/AHCI/virtio-blk drivers and exposes
   shared-memory submission and completion rings with per-request cache policy.
-- The **fs** service implements BeFS-NG: typed attributes, indices, queries,
+- The **fs** service implements Taisce: typed attributes, indices, queries,
   live queries and a persistent change journal. Later stages add copy-on-write,
   checksums and snapshots.
 - **File I/O:**
@@ -553,7 +553,7 @@ Full design: [filesystem.md](filesystem.md).
 ## 14. Apps, packaging and updates
 
 - **An app is one file:** an ELF executable with an appended resource archive
-  (icons, assets, translations, manifest). The file has BeFS-NG attributes: type
+  (icons, assets, translations, manifest). The file has Taisce attributes: type
   `application/x-todhchai-app`, signature, version and requested capabilities.
   Copying the file installs the app, and deleting it uninstalls it.
 - Apps link `libtodhchai` and Vulkan dynamically, against a versioned **API
@@ -567,7 +567,7 @@ Full design: [filesystem.md](filesystem.md).
   so a missing one is an open error, not a `dlopen` probe (F-219).
 - **System updates:** the system image is a read-only, signed volume. An
   update writes a new image, and boot switches between images atomically. With
-  snapshots (BeFS-NG S2), user data is snapshotted before each update.
+  snapshots (Taisce S2), user data is snapshotted before each update.
   Nothing updates without the user asking.
 
 ## 15. Compatibility
@@ -777,7 +777,7 @@ usage tables) feed our generators.
 | Crypto and TLS | 0 | FIPS, RFC and BLAKE3 specs (§17) | NIST CAVP, RFC vectors, Wycheproof vectors used as data |
 | Image codecs (PNG, JPEG, WebP, QOI) and audio codecs (WAV, FLAC, Opus, Vorbis) as translators | 1 | W3C PNG, ITU T.81, RFC 9649, RFC 6716 and the format specs | reference test images and streams |
 | Wayland server | 1 | Wayland protocol XML and documentation | GTK and Qt clients ported by their own projects |
-| File systems: BeFS-NG, FAT/exFAT, read-only BFS and ext4 | 0 | our design; Microsoft's FAT and exFAT specs; Giampaolo's book; the ext4 on-disk documentation | crash harness, shadow-model fuzzer |
+| File systems: Taisce, FAT/exFAT, read-only BFS and ext4 | 0 | our design; Microsoft's FAT and exFAT specs; Giampaolo's book; the ext4 on-disk documentation | crash harness, shadow-model fuzzer |
 | Debug-info reader and writer, debugger | 1 | DWARF 5, ELF | toolchain output |
 
 **Not ours, by the toolchain exception:**

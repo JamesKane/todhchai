@@ -1,7 +1,8 @@
 # Irish names for Todhchai's components
 
 Date: 2026-10-09. Research for open decision 7 in [../roadmap.md](../roadmap.md)
-("Component names"), due before M3. Nothing here is decided.
+("Component names"). **Decided 2026-10-09:** taisce, loinnir and radharc,
+as recommended below.
 
 ## How the candidates were checked
 

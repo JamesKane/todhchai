@@ -1,4 +1,4 @@
-# BeFS-NG: a modern Be file system
+# Taisce: a modern Be-style file system
 
 The Be File System made typed attributes, indices and live queries part of
 the file system, and the desktop was built on them: People files, mail as
@@ -7,7 +7,9 @@ it. Research notes: [research/systems.md](research/systems.md) §A, and
 9front's gefs, cwfs and hjfs in
 [research/9front-system.md](research/9front-system.md) §1–2.
 
-"BeFS-NG" is a working name.
+Its name, *taisce*, is Irish for a store kept safe, a treasure
+([research/irish-names.md](research/irish-names.md)). Its working name
+was BeFS-NG.
 
 ## 1. What to keep, what to fix
 
@@ -92,7 +94,7 @@ Volume FS tree   CoW B+tree, key = (inode_id: u64, kind: u8, sub_key)
 9front's gefs (about 12K lines) is a recent, small copy-on-write file
 system built on a Bε-tree. Interior nodes buffer update messages that flow
 down lazily, which suits workloads of many small scattered writes. That
-describes BeFS-NG's attribute updates: one indexed attribute change touches
+describes Taisce's attribute updates: one indexed attribute change touches
 the attribute key, the old and new index entries, and the journal.
 
 **Decision:** S0 and S1 use a B+tree (copy-on-write from S1) with an
@@ -138,7 +140,7 @@ checksum tree.
 Plan 9 proved that snapshots should be ordinary directories:
 `/n/dump/2026/1009/usr/...` from cwfs and hjfs, and any tool (`diff`, `cp`,
 `bind`) works on them. gefs lists snapshots by label instead, and 9front's
-`history` tool had to learn a second path pattern because of it. BeFS-NG
+`history` tool had to learn a second path pattern because of it. Taisce
 offers both views, synthesized by the `fs` service rather than stored on
 disk:
 - `/snap/<volume>/<label>/` for tools. Labels carry their schedule, for

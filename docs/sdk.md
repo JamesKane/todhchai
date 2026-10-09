@@ -6,7 +6,7 @@ of them.
 | Audience | Wants | Gets |
 |---|---|---|
 | **Hackers and learners** | a window, pixels, input and a sound in a dozen lines | `Loop` + `CPUSurface` + `Mixer`, polled `Keys`, one-call GPU setup |
-| **Indie game developers** | an SDL-like layer, fast iteration, any language | Game Kit, C ABI, hot reload, an arena allocator, Prism GPU; SDL3 through SDL's own Todhchai backend |
+| **Indie game developers** | an SDL-like layer, fast iteration, any language | Game Kit, C ABI, hot reload, an arena allocator, Loinnir GPU; SDL3 through SDL's own Todhchai backend |
 | **AAA engines** | exact timing, no hidden threads or locks, direct control, raw Vulkan | `Loop` with frame feedback, raw Vulkan, thread intents, memory budgets, direct rings, async I/O rings, pipeline-cache service |
 
 All three use the same core. The convenience layers are thin wrappers over the
@@ -19,14 +19,14 @@ libtodhchai (C ABI, plus Swift overlay "Todhchai")
   Loop      one wait: events, timers, fd/handle watches, post, wake
   Window    open/set/close; configure events; decorations and title-bar regions
   Frame     requestFrame, latency, frame events with present feedback
-  Surface   CPUSurface (pixels) | GPUSurface (handle bag for Vulkan/Prism/WebGPU)
+  Surface   CPUSurface (pixels) | GPUSurface (handle bag for Vulkan/Loinnir/WebGPU)
   Input     key/text/IME/pointer/pen/relative/gamepad events + shared-memory state
   Audio     stream (pull|push) + contract; Mixer voices
   Thread    spawn(intent:), sleep(until:leeway:), Mutex/Condition (PI futex), workgroups
   Memory    reserve/commit/decommit/protect/mapView; Arena, Scratch
   Time      monotonic ns, Deadline, wall clock
   File      open/read/write via streams; async I/O ring; batched directory listing
-  Query     attributes, indices, queries, live queries (BeFS-NG)
+  Query     attributes, indices, queries, live queries (Taisce)
   Code      CodeModule: load, swap on rebuild, fixed-address state block
   Trace     trace points, counters, scoped zones (feed the system tracer)
   Debug     self-inspection; debug-protocol client
@@ -34,7 +34,7 @@ libtodhchai (C ABI, plus Swift overlay "Todhchai")
   Route     send to and receive from the router (plumber) ports; intent streams
   Auth      keyring sessions: authenticate a connection, sign, never see keys
 
-Prism       thin GPU library over Vulkan 1.4 (see §5)
+Loinnir     thin GPU library over Vulkan 1.4 (see §5)
 UI Kit      immediate-mode UI with keyed retained cache, themes, a11y tree
 Game Kit    polled input snapshot, fixed-step helper, SDL3-shaped callback driver
 Media Kit   node graphs with latency accounting, translators
@@ -170,21 +170,21 @@ int main(void) {
 - **Surfaces:**
   - `CPUSurface: ~Copyable` gives `pixels: MutableRawSpan` and `age` (buffer
     age, for partial redraw).
-  - `GPUSurface` is a handle bag for `VK_KHR_todhchai_surface`, Prism or
+  - `GPUSurface` is a handle bag for `VK_KHR_todhchai_surface`, Loinnir or
     WebGPU, plus a surface size independent of the window size
     (viewporter-style scaling), which the NeoDarwin prototypes found
     necessary.
 
-## 5. GPU: Vulkan underneath, Prism on top
+## 5. GPU: Vulkan underneath, Loinnir on top
 
 **Decision (proposed):** Vulkan 1.4, through Todhchai's own drivers, is the
-only native API. The SDK's own GPU library, **Prism**, is a thin API in
+only native API. The SDK's own GPU library, **Loinnir** (Irish for "radiance"), is a thin API in
 Sebastian Aaltonen's "No Graphics API" style, implemented directly on Vulkan
 1.4 features (buffer device address, descriptor heaps, unified image layouts,
 dynamic rendering, shader objects, timeline semaphores).
 
 ```swift
-let gpu = try Prism.open(window: win)              // device, queue, swapchain in one call (NeoDarwin S7)
+let gpu = try Loinnir.open(window: win)              // device, queue, swapchain in one call (NeoDarwin S7)
 let verts = try gpu.alloc(MemoryKind.upload, bytes: 64 << 10)   // returns a CPU-mapped pointer + GPU address
 let tex = try gpu.texture(.rgba8, 512, 512)                     // 32-bit index into the global heap
 let pso = try gpu.pipeline(vs: spirvVS, fs: spirvFS, targets: [.bgra8])  // microcode state only; built at install
@@ -195,14 +195,14 @@ cmd.render(to: gpu.backbuffer) { r in
 gpu.submit(consume cmd, signal: gpu.timeline + 1)  // 64-bit timeline counter
 ```
 
-Why Prism and not `webgpu.h` as the main drawing API (NeoDarwin chose
+Why Loinnir and not `webgpu.h` as the main drawing API (NeoDarwin chose
 `webgpu.h`, for portability):
 - Todhchai has only one GPU backend, so WebGPU's portability buys nothing
   inside the OS.
-- Prism has fewer concepts than WebGPU, sits closer to the hardware, and
+- Loinnir has fewer concepts than WebGPU, sits closer to the hardware, and
   reaches AAA without a separate path: bindless indices, explicit memory,
   timeline sync.
-- Prism is about 1 to 3K lines over Vulkan, all ours. A WebGPU
+- Loinnir is about 1 to 3K lines over Vulkan, all ours. A WebGPU
   implementation is hundreds of thousands of lines, and under principle 29
   it would be ours to write too.
 
@@ -222,13 +222,13 @@ What we keep regardless:
     These compilers are development toolchains under principle 29: they run
     at build time, and nothing from them ships.
 
-Hardware cost: Prism needs descriptor-heap and BDA-class hardware (roughly
+Hardware cost: Loinnir needs descriptor-heap and BDA-class hardware (roughly
 RDNA2, Xe and Turing or newer). That fits the published hardware list
 (principle 21). Older GPUs, where our drivers support them, can still use raw
 Vulkan.
 
 Aaltonen's "NoGraphicsAPI" library (reported September 2026) and his talk
-are design references only. Prism is written from his published design and
+are design references only. Loinnir is written from his published design and
 the Vulkan specification, not from that library's code.
 
 ## 6. Input
@@ -374,7 +374,7 @@ The exit criteria come from NeoDarwin and the Handmade discussions:
 | Program | Exit criterion |
 |---|---|
 | minimal | ≤ 13 calls to window+frame+input+sound; 0 idle wakeups/s |
-| game loop (Prism) | frame error p99 ≤ 1 ms against present feedback; one-call GPU setup |
+| game loop (Loinnir) | frame error p99 ≤ 1 ms against present feedback; one-call GPU setup |
 | text editor | 0 dropped frames while typing; 0 allocations in layout/paint; IME works |
 | synth | 0 underruns at 128 frames; compiler-checked lock- and allocation-free callback |
 | compute → display | zero copies end to end |

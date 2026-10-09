@@ -47,7 +47,7 @@ that can be checked.
   on Linux. The backend is a Wayland client; DRM/KMS fullscreen comes later
   for latency work.
 - The C ABI and generated headers. Zig and Odin bindings work.
-- Prism v0 on Linux Vulkan 1.4.
+- Loinnir v0 on Linux Vulkan 1.4.
 - Reference programs: minimal, synth, game loop.
 - The SDK's `Trace` module and the hosted tracer, writing the record format
   croi uses, so the programs' numbers below are read from traces.
@@ -78,9 +78,9 @@ that can be checked.
   measured with it.
 - devmgr and driver hosts; our AML interpreter; PCI/ECAM; virtio blk, net,
   input, gpu-2d and sound; the GOP framebuffer.
-- The block service and **BeFS-NG S0**, which have been developed hosted in
+- The block service and **Taisce S0**, which have been developed hosted in
   parallel: FUSE plus a crash harness on Linux.
-- **Exit:** boot to a framebuffer text console in QEMU. Mount a BeFS-NG S0
+- **Exit:** boot to a framebuffer text console in QEMU. Mount a Taisce S0
   volume on virtio-blk, write files with attributes, and get a live query
   update for them. M3's system budgets (boot to console, spawn to `main`,
   a cached read, a live query, resident memory) are met in QEMU.
@@ -101,7 +101,7 @@ that can be checked.
   client driver (Magma-shaped split), generated from `vk.xml` and the Venus
   protocol XML.
 - Buffer negotiation, the GPU buffer object, counters as timeline semaphores.
-- Compositor on Vulkan (async compute, late latch), and Prism native.
+- Compositor on Vulkan (async compute, late latch), and Loinnir native.
 - **Exit:** the game-loop reference program runs on Venus under QEMU. A
   fullscreen app is presented by direct scanout of the virtio-gpu scanout
   buffer.
@@ -127,12 +127,12 @@ that can be checked.
   `td build`/`td bundle`.
 - The export bridge: remote debugging, tracing and file access from a dev
   box to a test machine.
-- Our own games and demos on Game Kit and Prism, which exercise the SDK the
+- Our own games and demos on Game Kit and Loinnir, which exercise the SDK the
   way third parties will.
 - **Third-party ports, outside the tree:** help SDL upstream land a Todhchai
   backend, and help a Quake-class engine and a few indie games build with
   `td build`. Dawn/wgpu and Zink are welcome as ports run by others.
-- **Exit:** a game written on Game Kit and Prism runs with hot reload,
+- **Exit:** a game written on Game Kit and Loinnir runs with hot reload,
   swapping a 10K-line module in under 1 s. The tracer shows input-to-photon
   latency for a frame. At least one third-party SDL3 game runs through SDL's
   own backend.
@@ -162,7 +162,7 @@ that can be checked.
   published alongside.
 
 ### M9: Maturity
-- BeFS-NG S1 (CoW and checksums), then S2 (snapshots, compression,
+- Taisce S1 (CoW and checksums), then S2 (snapshots, compression,
   encryption, send/receive). Atomic system updates.
 - Wayland core+ server (ours, from the protocol XML). Intel GPU (from the
   PRMs). The indexer with translators. Media Kit node graphs.
@@ -185,7 +185,7 @@ need are in [research/hardware-targets.md](research/hardware-targets.md).
   - display tier 1 on the GOP framebuffer, then tier 2 if the Linlon
     pipeline UEFI leaves can be taken over;
   - optionally, Todhchai as a KVM guest on the board with Venus over the
-    host's Vulkan, if the host's panvk meets Prism's floor.
+    host's Vulkan, if the host's panvk meets Loinnir's floor.
 - **Radxa Dragon Q8B second:** the GENI console, the MMIO wake timer, EPSS,
   TSENS, the MMU-500s within the hypervisor's rules, starting the ADSP
   (the fan), display tier 2 (the `msmfb` design). Audio, USB-C and the
@@ -208,7 +208,7 @@ M0 ─┬─► M1 (H) ───────────────────
                                                     └─► M10 (arm64 boards)
 
 Feeding in from the hosted and F tracks:
-    BeFS-NG S0 (H) ─► M3      libc + ld (F) ─► M5
+    Taisce S0 (H) ─► M3      libc + ld (F) ─► M5
     text stack (F) ─► M6      shader compiler (F) ─► M8
 ```
 
@@ -227,7 +227,7 @@ Feeding in from the hosted and F tracks:
 
 ## Open decisions
 
-These need the project owner's call. None blocks M0.
+None remain open; each is recorded under "Decided".
 
 1. ~~SDK GPU API~~: decided (see "Decided").
 2. ~~Desktop architecture priority~~: decided (see "Decided").
@@ -235,21 +235,21 @@ These need the project owner's call. None blocks M0.
 4. ~~App format~~: decided (see "Decided").
 5. ~~Debug info format~~: decided (see "Decided").
 6. ~~Hosted backend~~: decided (see "Decided").
-7. **Component names.** Only components novel enough to trademark get a
-   name: the file system (working name BeFS-NG), the GPU library (Prism)
-   and the compositor. Everything else keeps a descriptive name. Irish
-   names would match croi and Todhchai.
-   Candidates, checked against Ó Dónaill, tearma.ie and existing software,
-   are in [research/irish-names.md](research/irish-names.md).
+7. ~~Component names~~: decided (see "Decided").
 8. ~~License~~: decided (see "Decided").
 9. ~~Hosted mode as a product~~: decided (see "Decided").
 
 ## Decided
 
-- **SDK GPU API** (2026-10-09): Prism, a "No Graphics API"-style library
+- **Component names** (2026-10-09): only components novel enough to
+  trademark get a name, in Irish: **Taisce** the file system (was BeFS-NG),
+  **Loinnir** the GPU library (was Prism) and **Radharc** the compositor.
+  Code uses the lowercase forms. Everything else keeps a descriptive name
+  ([research/irish-names.md](research/irish-names.md)).
+- **SDK GPU API** (2026-10-09): Loinnir, a "No Graphics API"-style library
   over Vulkan 1.4, not `webgpu.h` ([sdk.md](sdk.md) §5).
 - **App format** (2026-10-09): one file, an ELF with an appended resource
-  archive plus BeFS-NG attributes, not a directory bundle
+  archive plus Taisce attributes, not a directory bundle
   ([architecture.md](architecture.md) §14).
 - **Debug info format** (2026-10-09): our own fast format, designed from
   what RAD Debugger's RDI shows works and converted from DWARF at link time.
