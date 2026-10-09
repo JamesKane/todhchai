@@ -27,4 +27,19 @@ int td_linux_memfd(const char *name);
 // The calling thread's name (at most 15 bytes are kept).
 void td_linux_set_thread_name(const char *name);
 
+// Sequentially consistent atomics on memory shared with another process
+// (PipeWire's activation records), where Swift's Atomic can't live.
+static inline int td_atomic_cas_u32(void *p, uint32_t expected, uint32_t desired) {
+  return __atomic_compare_exchange_n((uint32_t *)p, &expected, desired, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+static inline uint32_t td_atomic_xchg_u32(void *p, uint32_t v) {
+  return __atomic_exchange_n((uint32_t *)p, v, __ATOMIC_SEQ_CST);
+}
+static inline int32_t td_atomic_sub_fetch_i32(void *p, int32_t v) {
+  return __atomic_sub_fetch((int32_t *)p, v, __ATOMIC_SEQ_CST);
+}
+static inline uint32_t td_atomic_load_u32(const void *p) { return __atomic_load_n((const uint32_t *)p, __ATOMIC_SEQ_CST); }
+static inline void td_atomic_store_u32(void *p, uint32_t v) { __atomic_store_n((uint32_t *)p, v, __ATOMIC_SEQ_CST); }
+static inline void td_atomic_store_i32(void *p, int32_t v) { __atomic_store_n((int32_t *)p, v, __ATOMIC_SEQ_CST); }
+
 #endif

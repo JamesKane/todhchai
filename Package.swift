@@ -76,10 +76,26 @@ let package = Package(
     .target(name: "Wayland", path: "lib/wayland", exclude: ["gen"], sources: ["runtime", "generated"]),
     .testTarget(name: "WaylandTests", dependencies: ["Wayland", "WaylandGen"], path: "tests/wayland"),
 
+    // PipeWire, spoken directly (docs/research/pipewire-protocol.md).
+    .target(name: "PipeWire", dependencies: ["TDLinux"], path: "lib/pipewire"),
+    .testTarget(name: "PipeWireTests", dependencies: ["PipeWire"], path: "tests/pipewire"),
+
     // The SDK (sdk.md): the Swift overlay of libtodhchai, hosted on Linux.
     .target(name: "TDLinux", path: "lib/sdk/linux"),
-    .target(name: "Todhchai", dependencies: ["Trace", "TDLinux", "Wayland"], path: "lib/sdk", exclude: ["linux"]),
+    .macro(name: "TodhchaiMacros", dependencies: [
+      .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+      .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+    ], path: "lib/sdk/macros"),
+    .target(name: "Todhchai", dependencies: ["Trace", "TDLinux", "Wayland", "PipeWire", "TodhchaiMacros"], path: "lib/sdk",
+            exclude: ["linux", "macros"]),
     .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai", "Wayland"], path: "tests/sdk"),
+    .testTarget(name: "TodhchaiMacrosTests", dependencies: [
+      "TodhchaiMacros",
+      .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
+    ], path: "tests/sdk-macros"),
+
+    // Examples you can run to see, or hear, a piece working.
+    .executableTarget(name: "tone", dependencies: ["Todhchai"], path: "examples/tone"),
 
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", path: "lib/bench"),

@@ -66,6 +66,15 @@ regenerate and commit the output:
 Tests that open real windows run only with `TODHCHAI_LIVE_WINDOWS=1`;
 `td ci` doesn't set it, so ordinary runs never put windows on the desktop.
 
+## Audio
+
+The hosted SDK plays through PipeWire's native protocol, spoken directly
+(`lib/pipewire`, spec in `docs/research/pipewire-protocol.md`). Renderers
+are `@AudioRenderer` types: the compiler rejects allocation, locks and
+calls it can't see into inside `render`, so compute tables outside it.
+Live audio tests run only with `TODHCHAI_LIVE_AUDIO=1` (they play
+silence); `.build/debug/tone` plays something you can hear.
+
 ## libc (the F track)
 
 `lib/libc` is our libc, in Swift, written from ISO C and POSIX

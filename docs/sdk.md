@@ -251,13 +251,24 @@ the Vulkan specification, not from that library's code.
 ## 7. Audio
 
 ```swift
-let stream = try AudioStream.open(.f32(channels: 2, rate: 48_000), periodFrames: 128, loop: &loop) {
-    (out: inout MutableSpan<Float>, time: AudioTime) in          // @_noLocks @_noAllocation enforced
-    synth.render(into: &out, at: time)
+@AudioRenderer                       // the compiler checks render: no allocation, no locks
+struct Synth {
+    var voice = Voice()
+    mutating func render(into out: UnsafeMutableBufferPointer<Float>, time: AudioTime) {
+        voice.render(into: out, at: time)
+    }
 }
-stream.contract   // period, rate, latencyNs (end to end), device↔host clock anchor, deviceID
+let stream = try AudioStream.open(.f32(channels: 2, rate: 48_000), periodFrames: 128, renderer: Synth())
+stream.contract   // period, rate, latency (end to end), device
+stream.underruns  // periods rendered too late to be heard on time
 ```
 
+- **The callback is a type, not a closure.** `@AudioRenderer` puts
+  `@_noAllocation` on its `render`, so the compiler rejects allocation,
+  locks and reference counting there. A real-time callback that could
+  glitch fails to build. Closures can't carry that check, which is why
+  this differs from the closure the design first sketched (decided in
+  M1e, 2026-10-09).
 - **Pull** streams run on an SDK-created real-time thread that has already
   passed admission. **Push** streams use `write`.
 - **Contract** changes, such as switching device, arrive as `.audio` events.
