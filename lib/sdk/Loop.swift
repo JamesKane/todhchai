@@ -211,9 +211,11 @@ public struct Loop: ~Copyable {
     var oneShot: TimerID?
     if let deadline { oneShot = timer(at: deadline, leeway: leeway) }
     defer { if let oneShot { cancel(oneShot) } }
-    buffer.removeAll(keepingCapacity: true)
-    collect(blocking: true, deadlineTimer: oneShot)
+    // Events taken between waits (a round trip to the compositor) are
+    // already here: report them without blocking.
+    collect(blocking: buffer.isEmpty, deadlineTimer: oneShot)
     framesLast()
+    defer { buffer = [] }
     return Events(items: buffer)
   }
 
@@ -233,9 +235,9 @@ public struct Loop: ~Copyable {
 
   /// Returns what has already happened, without blocking.
   public mutating func poll() -> Events {
-    buffer.removeAll(keepingCapacity: true)
     collect(blocking: false, deadlineTimer: nil)
     framesLast()
+    defer { buffer = [] }
     return Events(items: buffer)
   }
 

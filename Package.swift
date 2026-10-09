@@ -84,6 +84,9 @@ let package = Package(
     .target(name: "TDVulkan", path: "lib/vulkan/c"),
     .target(name: "Vulkan", dependencies: ["TDVulkan"], path: "lib/vulkan/swift"),
     .testTarget(name: "VulkanTests", dependencies: ["Vulkan", "VulkanGen"], path: "tests/vulkan"),
+    // Loinnir: the SDK's GPU library (sdk.md §5), on Vulkan.
+    .target(name: "Loinnir", dependencies: ["Vulkan", "Todhchai"], path: "lib/loinnir"),
+    .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir"),
 
     // PipeWire, spoken directly (docs/research/pipewire-protocol.md).
     .target(name: "PipeWire", dependencies: ["TDLinux"], path: "lib/pipewire"),

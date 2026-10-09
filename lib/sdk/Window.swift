@@ -81,6 +81,7 @@ final class WindowSystem {
   let viewporter: WpViewporter?
   let fractional: WpFractionalScaleManagerV1?
   let seat: WlSeat?
+  var dmabuf: DmabufState?
   var keyboard: WlKeyboard?
   var pointer: WlPointer?
   var input = InputState()
@@ -141,6 +142,9 @@ final class WindowSystem {
     viewporter = bind(WpViewporter.self, max: 1)
     fractional = viewporter == nil ? nil : bind(WpFractionalScaleManagerV1.self, max: 1)
     seat = bind(WlSeat.self, max: 9)
+    if let g = globals["zwp_linux_dmabuf_v1"], g.version >= 4, let d = bind(ZwpLinuxDmabufV1.self, max: 5) {
+      dmabuf = DmabufState(d)
+    }
     if let seat { input.pointerFrames = c.version(of: seat.id) >= 5 }
     try flush()
   }
@@ -180,6 +184,7 @@ final class WindowState {
   var pool: (fd: Int32, map: UnsafeMutableRawBufferPointer, wl: WlShmPool)?
   var buffers: [ShmBuffer] = []
   var bufferSize: (Int32, Int32) = (0, 0)
+  var gpuBuffers: [GPUBufferSlot] = []  // dmabufs a GPU library imported
 
   // The frame clock. Until a buffer is presented the surface isn't mapped,
   // and a frame callback wouldn't fire, so frames come from configure.
@@ -341,13 +346,22 @@ extension Loop {
     guard let config = w.current, config.configSeq == configSeq,
       (surface.width, surface.height) == (config.pixelWidth, config.pixelHeight), index < w.buffers.count
     else { throw .staleConfig }
+    w.buffers[index].busy = true
+    w.buffers[index].lastPresented = ws.frameSeq + 1
+    try commit(ws, w, buffer: w.buffers[index].buffer, width: surface.width, height: surface.height, config: config)
+  }
+
+  /// Attaches `buffer` and commits it, with presentation feedback and the
+  /// next frame callback in the same commit. CPU and GPU buffers both come
+  /// here.
+  func commit(_ ws: WindowSystem, _ w: WindowState, buffer: WlBuffer, width: Int32, height: Int32, config: Configure)
+    throws(WindowError)
+  {
     let c = ws.c
     ws.frameSeq += 1
-    w.buffers[index].busy = true
-    w.buffers[index].lastPresented = ws.frameSeq
     w.mapped = true
-    w.surface.attach(c, buffer: w.buffers[index].buffer, x: 0, y: 0)
-    w.surface.damageBuffer(c, x: 0, y: 0, width: surface.width, height: surface.height)
+    w.surface.attach(c, buffer: buffer, x: 0, y: 0)
+    w.surface.damageBuffer(c, x: 0, y: 0, width: width, height: height)
     if let viewport = w.viewport {
       viewport.setDestination(c, width: config.width, height: config.height)
     } else {
@@ -416,7 +430,10 @@ extension Loop {
     case .wlBuffer(let b, .release):
       for w in ws.windows.values {
         if let i = w.buffers.firstIndex(where: { $0.buffer == b }) { w.buffers[i].busy = false }
+        if let i = w.gpuBuffers.firstIndex(where: { $0.buffer == b }) { w.gpuBuffers[i].busy = false }
       }
+    case .zwpLinuxDmabufFeedbackV1(_, let e):
+      ws.dmabuf?.handle(e)
     case .wlCallback(let cb, .done):
       guard let w = state(ws, where: { $0.frameCallback == cb }) else { return }
       w.frameCallback = nil

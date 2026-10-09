@@ -61,7 +61,7 @@ The hosted SDK speaks Wayland directly (architecture §18). The protocol
 XML is data in `data/wayland` (see its PROVENANCE.md). After changing it,
 regenerate and commit the output:
 
-    .build/debug/wlgen lib/wayland/generated/Protocols.swift data/wayland/{wayland,xdg-shell,presentation-time,viewporter,fractional-scale-v1}.xml
+    .build/debug/wlgen lib/wayland/generated/Protocols.swift data/wayland/{wayland,xdg-shell,presentation-time,viewporter,fractional-scale-v1,linux-dmabuf-v1,linux-drm-syncobj-v1}.xml
 
 Tests that open real windows run only with `TODHCHAI_LIVE_WINDOWS=1`;
 `td ci` doesn't set it, so ordinary runs never put windows on the desktop.

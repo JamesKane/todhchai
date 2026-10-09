@@ -13,7 +13,10 @@ let root: String = {
   return parts.joined(separator: "/")
 }()
 
-let protocolFiles = ["wayland.xml", "xdg-shell.xml", "presentation-time.xml", "viewporter.xml", "fractional-scale-v1.xml"]
+let protocolFiles = [
+  "wayland.xml", "xdg-shell.xml", "presentation-time.xml", "viewporter.xml", "fractional-scale-v1.xml",
+  "linux-dmabuf-v1.xml", "linux-drm-syncobj-v1.xml",
+]
 
 // MARK: XML and generation
 
