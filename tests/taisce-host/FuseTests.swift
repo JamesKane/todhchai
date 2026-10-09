@@ -269,6 +269,11 @@ func dirents(_ listing: [UInt8]) -> [(name: String, offset: UInt64)] {
   #expect(pages > 10)
   #expect(seen.count == 302 && Set(seen).count == 302)  // ".", "..", and 300 names, each once
   #expect(Set(seen) == Set([".", ".."] + (0..<300).map { "file-\($0)" }))
+  // A buffer too small for the next name: an error, not an empty reply
+  // (which the kernel would take for the end of the directory).
+  var tiny = FuseWriter()
+  tiny.u64(0); tiny.u64(2); tiny.u32(16); tiny.u32(0); tiny.u64(0); tiny.u32(0); tiny.u32(0)
+  #expect(call(.readdir, dir, tiny.bytes).error == -22)  // EINVAL
   // Not a directory: OPENDIR says so.
   let f = try s.fs.lookup(dir, Array("file-0".utf8))
   #expect(call(.opendir, f, [0, 0, 0, 0, 0, 0, 0, 0]).error == -20)  // ENOTDIR

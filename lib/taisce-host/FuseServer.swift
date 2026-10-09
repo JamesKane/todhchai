@@ -408,7 +408,10 @@ public final class FuseServer<Device: BlockDevice> {
     ]
     if dir == FileSystem<Device>.root { special.append((controlName, controlDirectory, .directory)) }
     for (i, e) in special.enumerated() where offset <= UInt64(i) {
-      guard fits([e], UInt64(i + 1)) else { return out }
+      guard fits([e], UInt64(i + 1)) else {
+        guard !out.isEmpty else { throw FuseErrno(22) }  // EINVAL
+        return out
+      }
     }
     // Then the names, by hash. Two hashes share an offset (h / 2), so the
     // entries with one offset go out together or not at all, and a page
@@ -430,7 +433,11 @@ public final class FuseServer<Device: BlockDevice> {
         while j < page.count, offsetOf(page[j].cookie) == off { j += 1 }
         if j == page.count && !complete && i > 0 { break }
         let group = page[i..<j].map { (name: $0.entry.name, ino: $0.entry.ino, type: $0.entry.type) }
-        guard fits(group, off) else { return out }
+        guard fits(group, off) else {
+          // Not even these names fit: an empty reply would end the listing.
+          guard !out.isEmpty else { throw FuseErrno(22) }  // EINVAL
+          return out
+        }
         cookie = off == 4 ? max(page[j - 1].cookie, 9) : off << 1 | 1
         i = j
       }
