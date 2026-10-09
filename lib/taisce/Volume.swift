@@ -29,6 +29,15 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
 
   /// Opens the volume on `device`: the newest valid superblock wins.
   public static func open(_ device: consuming Device) throws(TaisceError) -> Volume {
+    let superblock = try newestSuperblock(&device)
+    let layout = superblock.layout
+    let bitmap = try device.read(layout.bitmapStart, count: Int(layout.bitmapBlocks))
+    let allocator = try Allocator(blockCount: layout.blockCount, bitmap: bitmap)
+    return Volume(device: device, superblock: superblock, allocator: allocator)
+  }
+
+  /// The newest valid superblock copy on `device`.
+  public static func newestSuperblock(_ device: inout Device) throws(TaisceError) -> Superblock {
     guard device.blockSize == Layout.blockSize, device.blockCount >= 2 else { throw .notAVolume }
     var newest: Superblock?
     for b: UInt64 in 0..<2 {
@@ -37,10 +46,7 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
     }
     guard let superblock = newest else { throw .notAVolume }
     guard superblock.layout.blockCount <= device.blockCount else { throw .corrupt(.superblockLayout) }
-    let layout = superblock.layout
-    let bitmap = try device.read(layout.bitmapStart, count: Int(layout.bitmapBlocks))
-    let allocator = try Allocator(blockCount: layout.blockCount, bitmap: bitmap)
-    return Volume(device: device, superblock: superblock, allocator: allocator)
+    return superblock
   }
 
   init(device: consuming Device, superblock: Superblock, allocator: Allocator) {
@@ -51,7 +57,8 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
 
   /// Writes the changed bitmap blocks and a new superblock generation,
   /// with a barrier between: the superblock never names state that isn't
-  /// on disk yet. (S0c puts this behind the log.)
+  /// on disk yet. The engine (Engine.swift) checkpoints through this; its
+  /// bitmap changes have already gone through the log.
   public mutating func commit(_ update: (inout Superblock) -> Void = { _ in }) throws(TaisceError) {
     for (index, bytes) in allocator.dirtyBlocks() { try device.write(superblock.layout.bitmapStart + index, bytes) }
     try device.flush()

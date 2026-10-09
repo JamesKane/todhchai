@@ -43,12 +43,13 @@ public struct Superblock: Equatable, Sendable {
   public var uuid: [UInt8]  // 16 bytes
   public var label: [UInt8]  // UTF-8, at most 64 bytes
   public var createdNs: UInt64
-  /// The root of the file system tree (a block number), or 0 when empty.
-  public var treeRoot: UInt64
+  /// The root of the catalog, the tree of every tree's root (a block
+  /// number), or 0 when empty.
+  public var catalogRoot: UInt64
   public var nextInode: UInt64
-  /// Where replay starts in the log: its sequence and block.
-  public var logHeadSequence: UInt64
-  public var logHeadBlock: UInt64
+  /// The log's epoch: only records written in it are replayed. Each
+  /// checkpoint starts a new one, at the start of the log.
+  public var logEpoch: UInt64
 
   public init(layout: Layout, uuid: [UInt8], label: [UInt8], createdNs: UInt64) {
     self.layout = layout
@@ -56,10 +57,9 @@ public struct Superblock: Equatable, Sendable {
     self.uuid = uuid
     self.label = Array(label.prefix(64))
     self.createdNs = createdNs
-    treeRoot = 0
+    catalogRoot = 0
     nextInode = 2  // 1 is the root directory
-    logHeadSequence = 1
-    logHeadBlock = layout.logStart
+    logEpoch = 1
   }
 
   // The block: fields at fixed offsets, CRC-32C of the rest in its last 4 bytes.
@@ -79,10 +79,9 @@ public struct Superblock: Equatable, Sendable {
     b.put(layout.dataStart, at: 64)
     b.put(UInt32(Layout.nodeBlocks), at: 72)
     b.put(createdNs, at: 80)
-    b.put(treeRoot, at: 88)
+    b.put(catalogRoot, at: 88)
     b.put(nextInode, at: 96)
-    b.put(logHeadSequence, at: 104)
-    b.put(logHeadBlock, at: 112)
+    b.put(logEpoch, at: 104)
     b.put(bytes: uuid, at: 128)
     b.put(UInt8(label.count), at: 144)
     b.put(bytes: label, at: 145)
@@ -110,10 +109,9 @@ public struct Superblock: Equatable, Sendable {
     var s = Superblock(layout: layout, uuid: b.get(bytes: 16, at: 128), label: b.get(bytes: labelCount, at: 145),
                        createdNs: b.get(UInt64.self, at: 80))
     s.generation = b.get(UInt64.self, at: 16)
-    s.treeRoot = b.get(UInt64.self, at: 88)
+    s.catalogRoot = b.get(UInt64.self, at: 88)
     s.nextInode = b.get(UInt64.self, at: 96)
-    s.logHeadSequence = b.get(UInt64.self, at: 104)
-    s.logHeadBlock = b.get(UInt64.self, at: 112)
+    s.logEpoch = b.get(UInt64.self, at: 104)
     return s
   }
 

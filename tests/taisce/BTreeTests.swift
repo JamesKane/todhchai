@@ -86,9 +86,9 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
 
   // Written and reopened, the tree is the same.
   try store.writeDirty()
-  try store.volume.commit { $0.treeRoot = tree.root }
+  try store.volume.commit { $0.catalogRoot = tree.root }
   var reopened = Store(try Volume.open(store.volume.device))
-  let again = BTree(root: reopened.volume.superblock.treeRoot)
+  let again = BTree(root: reopened.volume.superblock.catalogRoot)
   #expect(try again.check(&reopened).entries == model.count)
   #expect(try again.scan(from: [], &reopened).map(\.key) == model.keys.sorted { $0.lexicographicallyPrecedes($1) })
 

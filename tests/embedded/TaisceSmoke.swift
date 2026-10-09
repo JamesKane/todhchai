@@ -27,6 +27,16 @@ import Taisce
       for k in stride(from: 0, to: 2000, by: 2) { try tree.delete([UInt8(k >> 8), UInt8(k & 0xff)], &store) }
       check(try tree.check(&store).entries == 1000, "b+tree")
       check(try tree.get([0, 1], &store) != nil && tree.get([0, 2], &store) == nil, "b+tree lookups")
+      // The engine: a group committed, a crash before the next one's
+      // commit point, and a remount that replays the log.
+      var e = try Engine.format(MemoryDevice(blocks: 2048), label: [], uuid: [UInt8](repeating: 2, count: 16), now: 0)
+      try e.apply([.insert(tree: 1, key: [1], value: [UInt8](repeating: 0, count: 8)),
+                   .delta(tree: 1, key: [1], .add(offset: 0, value: 41))])
+      try e.commitGroup()
+      try e.apply([.insert(tree: 1, key: [2], value: [2])])  // never committed
+      var m = try Engine.mount(e.store.volume.device)
+      check(try m.get(1, [1]) == [41, 0, 0, 0, 0, 0, 0, 0] && m.get(1, [2]) == nil, "engine replay")
+      check(try m.check().entries == 1, "engine check")
     } catch {
       check(false, "a Taisce call threw")
     }

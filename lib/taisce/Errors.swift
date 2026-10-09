@@ -18,14 +18,22 @@ public enum TaisceError: Error, Equatable, Sendable {
   case noSpace
   /// On-disk structures disagree (what was found is the case's name).
   case corrupt(Corruption)
-  /// A key or value larger than a node allows (BTree.maxKey, maxValue).
+  /// A key or value larger than a node allows (BTree.maxKey, maxValue),
+  /// or a transaction group larger than the log.
   case tooLarge
+  /// A delta for a key that isn't there.
+  case missingKey
+  /// A delta past the end of the value it changes.
+  case badDelta
 }
 
 public enum Corruption: Equatable, Sendable {
   case superblockLayout
   case bitmapSize
   case node
+  case catalog
+  /// Blocks in use that no tree holds, or held twice.
+  case leakedBlocks
   /// A tree breaks an invariant (BTree.check says which).
   case tree(TreeFault)
 }
