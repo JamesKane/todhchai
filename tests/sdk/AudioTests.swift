@@ -97,6 +97,8 @@ func aStreamPlaysThroughPipeWire() throws {
   #expect(stream.contract.device == "pipewire" && stream.contract.period == 128)
   #expect(stream.cycles > 150 && stream.cycles == calls.pointee.load(ordering: .relaxed))
   #expect(stream.underruns == 0)
+  // On a desktop, real-time comes from somewhere: our own privilege, or RealtimeKit.
+  #expect(stream.admission != .refused(.noRealtimePrivilege), "the render thread runs on the normal scheduler")
 }
 
 @AudioRenderer

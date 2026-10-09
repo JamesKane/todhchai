@@ -34,6 +34,9 @@ public enum Admission: Sendable, Equatable {
   case deadline
   /// Granted a fixed real-time priority, without a budget.
   case fixedPriority
+  /// Granted a fixed real-time priority (SCHED_RR) by RealtimeKit, the
+  /// desktop's broker, for a process without its own RLIMIT_RTPRIO.
+  case fixedPriorityViaRealtimeKit
   /// Refused: the thread runs on the normal scheduler.
   case refused(Refusal)
 }
@@ -122,6 +125,9 @@ public struct Thread: ~Copyable {
         return .deadline
       }
       if td_linux_sched_fifo(10) == 0 { return .fixedPriority }
+      // Without the privilege, ask the desktop's broker, as PipeWire's own
+      // clients do.
+      if RealtimeKit.makeCurrentThreadRealtime(priority: 10) { return .fixedPriorityViaRealtimeKit }
       return .refused(.noRealtimePrivilege)
     case .frame, .interactive:
       return .notRealtime

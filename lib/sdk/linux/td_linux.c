@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -139,4 +140,13 @@ int td_linux_receive_fd(int socket) {
   int fd;
   memcpy(&fd, CMSG_DATA(c), sizeof fd);
   return fd;
+}
+
+// MARK: RealtimeKit's needs
+
+uint64_t td_linux_gettid(void) { return (uint64_t)syscall(SYS_gettid); }
+
+int td_linux_set_rttime_limit(uint64_t microseconds) {
+  struct rlimit l = {.rlim_cur = microseconds, .rlim_max = microseconds};
+  return setrlimit(RLIMIT_RTTIME, &l) == 0 ? 0 : errno;
 }

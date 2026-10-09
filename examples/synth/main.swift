@@ -90,4 +90,4 @@ run: while end.map({ Deadline.now < $0 }) ?? true {
 Trace.mark("steady.end")
 let underruns = stream.underruns - start
 stream.stop()
-print("synth on \(stream.contract.device): \(stream.contract.period) frames a period, \(stream.cycles) periods, \(underruns) underruns")
+print("synth on \(stream.contract.device): \(stream.contract.period) frames a period, \(stream.cycles) periods, \(underruns) underruns; render thread: \(stream.admission)")

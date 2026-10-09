@@ -62,4 +62,10 @@ td_swift_costs td_swift_costs_read(void);
 // macros Swift can't use.
 int td_linux_receive_fd(int socket);
 
+// The calling thread's kernel ID (what RealtimeKit's MakeThreadRealtime takes).
+uint64_t td_linux_gettid(void);
+// Sets RLIMIT_RTTIME (µs a real-time thread may run without blocking), soft
+// and hard; 0 or an errno. RealtimeKit requires one.
+int td_linux_set_rttime_limit(uint64_t microseconds);
+
 #endif

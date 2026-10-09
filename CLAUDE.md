@@ -153,7 +153,10 @@ The hosted SDK plays through PipeWire's native protocol, spoken directly
 are `@AudioRenderer` types: the compiler rejects allocation, locks and
 calls it can't see into inside `render`, so compute tables outside it.
 Live audio tests run only with `TODHCHAI_LIVE_AUDIO=1` (they play
-silence); `.build/debug/tone` plays something you can hear.
+silence); `.build/debug/tone` plays something you can hear. Render
+threads get real-time scheduling from RealtimeKit over our own D-Bus
+(`lib/sdk/DBus.swift`) when the account has no RLIMIT_RTPRIO; check
+`AudioStream.admission` before trusting an underrun count.
 
 ## libc (the F track)
 

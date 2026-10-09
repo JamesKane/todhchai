@@ -93,6 +93,9 @@ public final class AudioStream: @unchecked Sendable {
     return c
   }
   var thread: Thread?
+  /// What the render thread's real-time request was granted (on the host:
+  /// SCHED_DEADLINE, SCHED_FIFO, RealtimeKit's SCHED_RR, or refused).
+  public let admission: Admission
 
   /// Render periods that came too late to be heard on time.
   public var underruns: Int { counters.underruns.load(ordering: .relaxed) }
@@ -102,6 +105,7 @@ public final class AudioStream: @unchecked Sendable {
   init(contract: AudioContract, counters: AudioCounters, thread: consuming Thread) {
     self.opened = contract
     self.counters = counters
+    admission = thread.admission
     self.thread = consume thread
   }
 
