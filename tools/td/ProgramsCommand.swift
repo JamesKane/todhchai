@@ -7,7 +7,9 @@
 //   synth     0 underruns at 128 frames over 60 s (muted)
 //   gameloop  p99 frame error ≤ 1 ms over 1,000+ frames
 //   taisce    a cached 4 KiB read, and a live query's update after a
-//             matching write (S0, ahead of M3's QEMU budgets)
+//             matching write (S0, ahead of M3's QEMU budgets); the read by
+//             a lock-free reader, four readers' slowdown, fsync and a
+//             group commit on the host's disk (S1)
 //   and Swift's retains and allocations per frame in each steady state.
 //
 // They open windows and play (silent) audio, so they need the desktop and
@@ -95,5 +97,11 @@ func programBudgets(out: String) -> [(String, Double)] {
   let zones = taisce.file.zones()
   result("program.taisce.read4k_p99", percentile(zones["fs.read4k"] ?? [], 0.99))
   result("program.taisce.live_p99", percentile(zones["fs.live"] ?? [], 0.99))
+  result("program.taisce.reader_read4k_p99", percentile(zones["fs.read4k.reader"] ?? [], 0.99))
+  if let one = taisce.lastCounter("fs.readers.ns.1"), let four = taisce.lastCounter("fs.readers.ns.4"), one > 0 {
+    result("program.taisce.reader_slowdown_4", Double(four) / Double(one))
+  }
+  result("program.taisce.fsync_p99", percentile(zones["fs.fsync"] ?? [], 0.99))
+  result("program.taisce.commit_p99", percentile(zones["fs.commit"] ?? [], 0.99))
   return results
 }

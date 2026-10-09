@@ -59,6 +59,14 @@ public struct Rule: Sendable {
     // matching write, at most 1 ms; a cached 4 KiB read, M3's target 5 µs.
     case "program.taisce.live_p99": Rule(tolerance: 0.5, floor: 50e-6, window: 5, limit: 1e-3)
     case "program.taisce.read4k_p99": Rule(tolerance: 0.5, floor: 1e-6, window: 5, limit: 5e-6)
+    // S1: the same read by a lock-free reader thread; how much slower a
+    // read gets with four readers at once than alone (a ratio, at most
+    // 1.5); fsync through the intent log and a group commit, on this
+    // machine's disk (so its flush), at most 2 ms and 20 ms.
+    case "program.taisce.reader_read4k_p99": Rule(tolerance: 0.5, floor: 1e-6, window: 5, limit: 5e-6)
+    case "program.taisce.reader_slowdown_4": Rule(tolerance: 0.25, floor: 0.1, window: 5, limit: 1.5, unit: .count)
+    case "program.taisce.fsync_p99": Rule(tolerance: 0.5, floor: 200e-6, window: 5, limit: 2e-3)
+    case "program.taisce.commit_p99": Rule(tolerance: 0.5, floor: 2e-3, window: 5, limit: 20e-3)
     default:
       if name.hasPrefix("program.") { .perFrame } else if name.hasPrefix("build.clean.") { .cleanBuild } else { .buildTime }
     }

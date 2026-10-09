@@ -119,7 +119,7 @@ let package = Package(
     .executableTarget(name: "MkfsTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/mkfs-taisce"),
     .executableTarget(name: "FsckTaisce", dependencies: ["Taisce", "TaisceHost"], path: "tools/fsck-taisce"),
     .executableTarget(name: "TaisceFuse", dependencies: ["Taisce", "TaisceHost"], path: "tools/taisce-fuse"),
-    .executableTarget(name: "TaisceBench", dependencies: ["Taisce", "Trace"], path: "tools/taisce-bench"),
+    .executableTarget(name: "TaisceBench", dependencies: ["Taisce", "TaisceHost", "Trace"], path: "tools/taisce-bench"),
     .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "tests/taisce"),
     .target(name: "FuseLayoutC", path: "tests/taisce-host/c"),
     .testTarget(name: "TaisceHostTests", dependencies: ["Taisce", "TaisceHost", "FuseLayoutC"], path: "tests/taisce-host",
