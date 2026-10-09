@@ -56,6 +56,11 @@ let package = Package(
     .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC"], path: "tests/ipc/idl",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
 
+    // td: the developer tool (bench, ci); Bench is its testable core.
+    .target(name: "Bench", path: "lib/bench"),
+    .executableTarget(name: "td", dependencies: ["Bench"], path: "tools/td"),
+    .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tests/bench"),
+
     // Each milestone's exit test (docs/milestones/).
     .testTarget(name: "MilestoneTests", dependencies: ["Echo", "IDLCTests"], path: "tests/milestones",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),

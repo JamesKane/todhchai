@@ -11,6 +11,18 @@ through swiftly. There are two builds, and each step keeps both passing:
     swift build && swift test             # hosted: tier 1, tools, tests (SwiftPM)
     cmake --workflow --preset embedded    # tier 0 as Embedded Swift: build + ctest
 
+Before committing, run everything a change must pass, including the
+build-time budgets (docs/performance.md):
+
+    swift build --product td && .build/debug/td ci     # --no-bench to skip the bench
+    .build/debug/td bench --record                       # on a clean tree: record a passing run
+
+Run td's binary, not `swift run td`: the builds it starts would wait on
+SwiftPM's lock. Logs and the budget report go to `bench/out/`; each
+machine's recorded history is `bench/history/<host>.tsv`. A regressed
+budget is fixed, or recorded with `--accept` as a decision made in the
+open, never silently.
+
 - **Hosted (SwiftPM, `Package.swift`).** Everything builds here, tier 0
   libraries included, with croi's strict-memory-safety flags.
 - **Embedded (CMake/Ninja, `build/embedded/`).** Tier 0 libraries are built
