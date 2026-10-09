@@ -2,29 +2,36 @@
 
 /// A lock-free reader of a file system (S1f), one per thread. Inside
 /// `withSnapshot` it sees one published state, whole, without taking a
-/// lock or waiting for the writer. Its caches keep each node and block with
-/// the checksum it was verified against, and a hit must match the checksum
-/// the snapshot expects, so they never need invalidating when a block is
-/// reused. Both caches are two-way set-associative: two hot nodes that map
-/// to one set (a tree's root and an inner node, say) don't evict each other
-/// on every read, as they did direct-mapped.
+/// lock or waiting for the writer. Every cache keeps each node and block
+/// with the checksum it was verified against, and a hit must match the
+/// checksum the snapshot expects, so none needs invalidating when a block
+/// is reused.
+///
+/// Verified bytes (file blocks, nodes as stored) are in caches all the
+/// file system's readers share (`ReaderCaches`), so a block one reader
+/// read is a hit for the next. Each reader keeps its own small cache of
+/// decoded nodes: a decoded node's arrays shared between threads would
+/// have their reference counts bounce between cores on every read. Its
+/// cache is two-way set-associative: two hot nodes that map to one set (a
+/// tree's root and an inner node, say) don't evict each other on every
+/// read, as they did direct-mapped.
 public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Sendable {
   let epochs: EpochManager
   let device: Device
   let slot: Int
   var snapshot: Snapshot?
   var nodes: VerifiedCache<Node>
-  var blocks: VerifiedCache<[UInt8]>
+  let shared: ReaderCaches
 
   /// A reader of what the writer publishes to `epochs`, on `device` (a copy
   /// of the writer's); nil if every reader slot is taken.
-  init?(epochs: EpochManager, device: Device, cacheNodes: Int, cacheBlocks: Int) {
+  init?(epochs: EpochManager, device: Device, shared: ReaderCaches, cacheNodes: Int) {
     guard let slot = epochs.register() else { return nil }
     self.epochs = epochs
     self.device = device
     self.slot = slot
+    self.shared = shared
     nodes = VerifiedCache(count: cacheNodes)
-    blocks = VerifiedCache(count: cacheBlocks)
   }
 
   deinit { epochs.unregister(slot) }
@@ -47,8 +54,12 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
     if let n = snapshot!.dirty.node(pointer.block) { return n }
     let set = pointer.block / UInt64(Layout.nodeBlocks)
     if let n = nodes.get(pointer.block, pointer.checksum, set: set) { return n }
-    let bytes = try device.readConcurrently(pointer.block, count: Layout.nodeBlocks)
-    guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(pointer.block)) }
+    var bytes: [UInt8] = []
+    if !shared.nodes.get(pointer.block, pointer.checksum, set: set, into: &bytes) {
+      bytes = try device.readConcurrently(pointer.block, count: Layout.nodeBlocks)
+      guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(pointer.block)) }
+      shared.nodes.put(pointer.block, pointer.checksum, set: set, bytes)
+    }
     let node = try Node.decode(bytes)
     nodes.put(pointer.block, pointer.checksum, node, set: set)
     return node
@@ -62,30 +73,33 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
     out.reserveCapacity(checksums.count * bs)
     for (k, sum) in checksums.enumerated() {
       let b = physical + UInt64(k)
-      guard let bytes = blocks.get(b, sum, set: b) else { break }
-      out += bytes
+      guard shared.blocks.get(b, sum, set: b, into: &out) else { break }
     }
     if out.count == checksums.count * bs { return out }
     let bytes = try device.readConcurrently(physical, count: checksums.count)
     for (k, sum) in checksums.enumerated() {
       let b = physical + UInt64(k)
-      let block = Array(bytes[(k * bs)..<((k + 1) * bs)])
-      guard Checksum(of: block) == sum else { throw .corrupt(.checksum(b)) }
-      blocks.put(b, sum, block, set: b)
+      guard Checksum(of: Array(bytes[(k * bs)..<((k + 1) * bs)])) == sum else { throw .corrupt(.checksum(b)) }
+      shared.blocks.put(b, sum, set: b, bytes, from: k * bs)
     }
     return bytes
   }
 }
 
 extension FileSystem where Device: ConcurrentReadable {
-  /// A lock-free reader for another thread (S1f), caching up to
-  /// `cacheNodes` nodes and `cacheBlocks` file blocks; nil if all
+  /// A lock-free reader for another thread (S1f), keeping up to
+  /// `cacheNodes` decoded nodes of its own; nil if all
   /// `EpochManager.readers` slots are taken. The first starts the writer
-  /// publishing snapshots.
-  public mutating func reader(cacheNodes: Int = 512, cacheBlocks: Int = 4096) -> FileReader<Device>? {
+  /// publishing snapshots, and makes the caches every reader shares, of
+  /// `sharedNodes` nodes and `sharedBlocks` file blocks (later readers'
+  /// shared sizes are ignored).
+  public mutating func reader(cacheNodes: Int = 256, sharedNodes: Int = 512, sharedBlocks: Int = 4096)
+    -> FileReader<Device>?
+  {
     let epochs = engine.enableReaders()
-    return FileReader(epochs: epochs, device: engine.store.volume.device, cacheNodes: cacheNodes,
-                      cacheBlocks: cacheBlocks)
+    let shared = readerCaches ?? ReaderCaches(blocks: sharedBlocks, nodes: sharedNodes)
+    readerCaches = shared
+    return FileReader(epochs: epochs, device: engine.store.volume.device, shared: shared, cacheNodes: cacheNodes)
   }
 }
 

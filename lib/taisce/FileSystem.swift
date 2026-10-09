@@ -25,6 +25,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     var block: UInt64
     var bytes: [UInt8]
   }
+  /// The caches its reader threads share, once there are readers (S1f).
+  var readerCaches: ReaderCaches?
   /// Every declared index, from the registry.
   public internal(set) var indices: [IndexInfo] = []
   /// The next change-journal sequence number.
