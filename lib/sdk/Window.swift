@@ -7,6 +7,7 @@
 
 import Glibc
 import TDLinux
+import Trace
 import Wayland
 
 public enum WindowError: Error, Equatable {
@@ -209,6 +210,19 @@ final class WindowState {
   var refresh: Duration?
   var measured = false
   var presentedFrames = 0
+  // The last frame event's target, and whether it came from measured
+  // timing; each commit's feedback carries it, to give the frame error.
+  var frameTarget: Deadline?
+  var frameTargetMeasured = false
+  var feedback: [(object: WpPresentationFeedback, target: Deadline?, committed: Deadline)] = []
+  // The compositor's latency in whole refreshes: how many vsyncs after the
+  // first one following a commit the frame reaches the glass (KWin's
+  // pipeline holds two). Measured from commit time, so an app that's late
+  // shows as frame error instead of raising it; the median of the last 16
+  // frames, so one odd frame doesn't move it. Targets include it.
+  var latency = 0
+  var latencySeen = InlineArray<16, UInt8>(repeating: UInt8.max)  // max: not yet seen
+  var latencyNext = 0
 
   init(id: WindowID, surface: WlSurface, xdgSurface: XdgSurface, toplevel: XdgToplevel, viewport: WpViewport?,
        fractionalScale: WpFractionalScaleV1?, requested: (Int32, Int32)) {
@@ -219,6 +233,26 @@ final class WindowState {
     self.viewport = viewport
     self.fractionalScale = fractionalScale
     self.requested = requested
+  }
+
+  /// Takes one frame's latency (whole refreshes) into the median.
+  func learnLatency(_ frames: UInt8) {
+    latencySeen[latencyNext] = frames
+    latencyNext = (latencyNext + 1) % 16
+    var counts = InlineArray<9, UInt8>(repeating: 0)
+    var seen = 0
+    for i in 0..<16 where latencySeen[i] <= 8 {
+      counts[Int(latencySeen[i])] += 1
+      seen += 1
+    }
+    var below = 0
+    for k in 0..<9 {
+      below += Int(counts[k])
+      if 2 * below > seen {
+        latency = k
+        return
+      }
+    }
   }
 
   func releasePool(_ c: WaylandConnection) {
@@ -377,7 +411,11 @@ extension Loop {
     } else {
       w.surface.setBufferScale(c, scale: w.integerScale)
     }
-    if let presentation = ws.presentation { _ = presentation.feedback(c, surface: w.surface) }
+    if let presentation = ws.presentation {
+      let target = w.frameTargetMeasured ? w.frameTarget : nil
+      w.feedback.append((presentation.feedback(c, surface: w.surface), target, .now))
+      w.frameTarget = nil  // a second present for the same frame event has no target of its own
+    }
     if w.frameCallback == nil { w.frameCallback = w.surface.frame(c) }  // in this commit, never one of its own
     w.frameReady = false
     w.surface.commit(c)
@@ -448,20 +486,43 @@ extension Loop {
       guard let w = state(ws, where: { $0.frameCallback == cb }) else { return }
       w.frameCallback = nil
       if w.wantsFrame { emitFrame(w, ws) } else { w.frameReady = true }
-    case .wpPresentationFeedback(_, .presented(let hi, let lo, let nsec, let refresh, _, _, let flags)):
-      // Feedback belongs to the window that committed it; with one window
-      // pending at a time per surface this is exact, and every window
-      // shares an output's timing otherwise.
+    case .wpPresentationFeedback(let object, .presented(let hi, let lo, let nsec, let refresh, _, _, let flags)):
+      // Feedback belongs to the commit, and so the window, that asked for it.
+      guard let (w, target, committed) = takeFeedback(ws, object) else { return }
       let ns = (UInt64(hi) << 32 | UInt64(lo)) * 1_000_000_000 + UInt64(nsec)
-      for w in ws.windows.values {
-        w.lastPresented = ws.presentationClockMonotonic ? Deadline(ns: ns) : .now
-        if refresh > 0 { w.refresh = .nanoseconds(Int64(refresh)) }
-        w.measured = flags.contains(.vsync) && flags.contains(.hwClock)
-        w.presentedFrames += 1
+      w.lastPresented = ws.presentationClockMonotonic ? Deadline(ns: ns) : .now
+      if refresh > 0 { w.refresh = .nanoseconds(Int64(refresh)) }
+      w.measured = flags.contains(.vsync) && flags.contains(.hwClock)
+      w.presentedFrames += 1
+      // The frame error (sdk.md §2): when it reached the glass against when
+      // the frame event said it would. Only for targets from measured timing.
+      if let target, ws.presentationClockMonotonic {
+        Trace.counter(Self.frameErrorName, Int64(bitPattern: ns &- target.ns), .frame)
       }
+      if refresh > 0, ws.presentationClockMonotonic, ns > committed.ns {
+        w.learnLatency(UInt8(min(8, (ns - committed.ns) / UInt64(refresh))))
+      }
+    case .wpPresentationFeedback(let object, .discarded):
+      // Replaced by a later commit before it was shown.
+      if takeFeedback(ws, object) != nil { Trace.counter(Self.frameDiscardedName, 1, .frame) }
     default:
       break
     }
+  }
+
+  static let frameErrorName = TraceName("frame.error")
+  static let frameDiscardedName = TraceName("frame.discarded")
+
+  /// The window a feedback object was asked for by, its frame's target,
+  /// and when it was committed.
+  func takeFeedback(_ ws: WindowSystem, _ object: WpPresentationFeedback) -> (WindowState, Deadline?, Deadline)? {
+    for w in ws.windows.values {
+      if let i = w.feedback.firstIndex(where: { $0.object.id == object.id }) {
+        let f = w.feedback.remove(at: i)
+        return (w, f.target, f.committed)
+      }
+    }
+    return nil
   }
 
   /// The window a surface belongs to.
@@ -532,10 +593,12 @@ extension Loop {
     if let last = w.lastPresented, let refresh = w.refresh, refresh.nanoseconds > 0 {
       let step = refresh.nanoseconds
       let ahead = now.ns > last.ns ? (now.ns - last.ns) / step + 1 : 1
-      target = Deadline(ns: last.ns + ahead * step)
+      target = Deadline(ns: last.ns + (ahead + UInt64(w.latency)) * step)
     }
     let frame = Frame(frameSeq: ws.frameSeq + 1, target: target, presentedAt: w.lastPresented, refresh: w.refresh,
                       estimated: !w.measured)
+    w.frameTarget = target
+    w.frameTargetMeasured = w.measured && w.lastPresented != nil
     append(.frame(frame), window: w.id)
   }
 }

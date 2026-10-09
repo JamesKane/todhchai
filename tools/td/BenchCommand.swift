@@ -27,6 +27,9 @@ struct BenchOptions {
   /// Fail on a regression or a missed limit. Only on a quiet, dedicated
   /// machine; elsewhere results are advisory (docs/performance.md §5).
   var enforce = false
+  /// The reference programs' budgets instead of build times
+  /// (ProgramsCommand.swift): they need the desktop.
+  var programs = false
 }
 
 /// The machine's name for its history file, and a description of it.
@@ -90,45 +93,50 @@ func bench(_ options: BenchOptions) -> Bool {
     results.append((name, m))
   }
 
-  say("td bench: build times (\(options.repeats) repeats, clean builds \(options.cleanRepeats))")
-  let cleanScratch = "\(out)/clean-scratch"
-  measure("build.clean.hosted", repeats: options.cleanRepeats, before: { removeTree(cleanScratch) },
-          [["swift", "build", "--scratch-path", cleanScratch]])
-  removeTree(cleanScratch)
-  let cleanCMake = "\(out)/clean-embedded"
-  let configure = ["cmake", "-S", ".", "-B", cleanCMake, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=cmake/embedded.cmake",
-                   "-DCMAKE_BUILD_TYPE=RelWithDebInfo"]
-  measure("build.clean.embedded", repeats: options.cleanRepeats, before: { removeTree(cleanCMake) },
-          [configure, ["cmake", "--build", cleanCMake]])
-  removeTree(cleanCMake)
+  if options.programs {
+    say("td bench: the reference programs (release builds, traced)")
+    results = programBudgets(out: out)
+  } else {
+    say("td bench: build times (\(options.repeats) repeats, clean builds \(options.cleanRepeats))")
+    let cleanScratch = "\(out)/clean-scratch"
+    measure("build.clean.hosted", repeats: options.cleanRepeats, before: { removeTree(cleanScratch) },
+            [["swift", "build", "--scratch-path", cleanScratch]])
+    removeTree(cleanScratch)
+    let cleanCMake = "\(out)/clean-embedded"
+    let configure = ["cmake", "-S", ".", "-B", cleanCMake, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=cmake/embedded.cmake",
+                     "-DCMAKE_BUILD_TYPE=RelWithDebInfo"]
+    measure("build.clean.embedded", repeats: options.cleanRepeats, before: { removeTree(cleanCMake) },
+            [configure, ["cmake", "--build", cleanCMake]])
+    removeTree(cleanCMake)
 
-  // Incremental builds start from a built tree.
-  guard run(["swift", "build", "--scratch-path", scratch], log: "\(out)/logs/warm.log").ok else {
-    fail("the warm-up build failed; see \(out)/logs/warm.log")
-  }
-  measure("build.noop.hosted", repeats: options.repeats, [["swift", "build", "--scratch-path", scratch]])
-  for c in components {
-    measure("build.incremental.\(c.name)", repeats: options.repeats, before: { touch(c.file) },
-            [["swift", "build", "--scratch-path", scratch]])
-  }
-  removeTree(cmakeDir)
-  _ = run(configure.map { $0 == cleanCMake ? cmakeDir : $0 }, log: "\(out)/logs/warm.log")
-  _ = run(["cmake", "--build", cmakeDir], log: "\(out)/logs/warm.log")
-  measure("build.incremental.embedded.IPCWire", repeats: options.repeats,
-          before: { touch("lib/ipc/wire/Encoder.swift") }, [["cmake", "--build", cmakeDir]])
+    // Incremental builds start from a built tree.
+    guard run(["swift", "build", "--scratch-path", scratch], log: "\(out)/logs/warm.log").ok else {
+      fail("the warm-up build failed; see \(out)/logs/warm.log")
+    }
+    measure("build.noop.hosted", repeats: options.repeats, [["swift", "build", "--scratch-path", scratch]])
+    for c in components {
+      measure("build.incremental.\(c.name)", repeats: options.repeats, before: { touch(c.file) },
+              [["swift", "build", "--scratch-path", scratch]])
+    }
+    removeTree(cmakeDir)
+    _ = run(configure.map { $0 == cleanCMake ? cmakeDir : $0 }, log: "\(out)/logs/warm.log")
+    _ = run(["cmake", "--build", cmakeDir], log: "\(out)/logs/warm.log")
+    measure("build.incremental.embedded.IPCWire", repeats: options.repeats,
+            before: { touch("lib/ipc/wire/Encoder.swift") }, [["cmake", "--build", cmakeDir]])
 
-  // The tracer's own cost, in a release build (docs/performance.md).
-  let release = ".build/td-bench-release"
-  guard run(["swift", "build", "-c", "release", "--product", "trace-cost", "--scratch-path", release],
-            log: "\(out)/logs/trace-cost.log").ok,
-    let output = capture(["\(release)/release/trace-cost"])
-  else { fail("trace-cost failed; see \(out)/logs/trace-cost.log") }
-  for line in output.split(separator: "\n") {
-    let f = line.split(separator: " ")
-    guard f.count == 2, let ns = Double(f[1]), f[0].hasPrefix("zone.") else { continue }
-    let name = "trace.\(f[0])"
-    say("  \(name): \(formatValue(ns * 1e-9))")
-    results.append((name, ns * 1e-9))
+    // The tracer's own cost, in a release build (docs/performance.md).
+    let release = ".build/td-bench-release"
+    guard run(["swift", "build", "-c", "release", "--product", "trace-cost", "--scratch-path", release],
+              log: "\(out)/logs/trace-cost.log").ok,
+      let output = capture(["\(release)/release/trace-cost"])
+    else { fail("trace-cost failed; see \(out)/logs/trace-cost.log") }
+    for line in output.split(separator: "\n") {
+      let f = line.split(separator: " ")
+      guard f.count == 2, let ns = Double(f[1]), f[0].hasPrefix("zone.") else { continue }
+      let name = "trace.\(f[0])"
+      say("  \(name): \(formatValue(ns * 1e-9))")
+      results.append((name, ns * 1e-9))
+    }
   }
 
   // Judge against this machine's history.

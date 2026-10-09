@@ -14,6 +14,10 @@ public struct Rule: Sendable {
   public var window: Int
   /// A hard target: above it fails whatever the history says.
   public var limit: Double? = nil
+  /// What the values are: seconds, or a count of something.
+  public var unit: Unit = .seconds
+
+  public enum Unit: Sendable { case seconds, count }
 
   /// Incremental and no-change builds: a few seconds, steady to ±4%.
   public static let buildTime = Rule(tolerance: 0.10, floor: 0.25, window: 5)
@@ -28,18 +32,43 @@ public struct Rule: Sendable {
   public static let traceZoneEnabled = Rule(tolerance: 0.25, floor: 2e-9, window: 5, limit: 20e-9)
   public static let traceZoneDisabled = Rule(tolerance: 0.25, floor: 0.5e-9, window: 5, limit: 1e-9)
 
+  // The reference programs (M1's exit; docs/performance.md §2). Counts
+  // are exact, so any rise fails.
+  /// sdk.md §3: at most 13 calls for window, frame, input and sound.
+  public static let minimalCalls = Rule(tolerance: 0, floor: 0.5, window: 5, limit: 13, unit: .count)
+  /// Nothing to do means no wakeups.
+  public static let zero = Rule(tolerance: 0, floor: 0.5, window: 5, limit: 0, unit: .count)
+  /// p99 frame error against present feedback, at most 1 ms. Below that,
+  /// a rise of a quarter millisecond is noise on a shared desktop.
+  public static let frameError = Rule(tolerance: 0.5, floor: 0.25e-3, window: 5, limit: 1e-3)
+  /// Retains and allocations per frame: recorded per program; a rise fails.
+  public static let perFrame = Rule(tolerance: 0, floor: 0.5, window: 5, unit: .count)
+
   /// The rule for a measurement, by name.
   public static func `for`(_ name: String) -> Rule {
     switch name {
     case "trace.zone.enabled": .traceZoneEnabled
     case "trace.zone.disabled": .traceZoneDisabled
-    default: name.hasPrefix("build.clean.") ? .cleanBuild : .buildTime
+    case "program.minimal.calls": .minimalCalls
+    case "program.minimal.idle_wakeups", "program.synth.underruns": .zero
+    case "program.gameloop.frame_error_p99": .frameError
+    default:
+      if name.hasPrefix("program.") { .perFrame } else if name.hasPrefix("build.clean.") { .cleanBuild } else { .buildTime }
+    }
+  }
+
+  /// A value in this rule's unit.
+  public func format(_ v: Double) -> String {
+    switch unit {
+    case .seconds: formatValue(v)
+    case .count: v == v.rounded() ? String(Int(v)) : String(Double(Int(v * 10)) / 10)
     }
   }
 
   /// "+10%, 0.25 s", and the limit if there is one.
   public var summary: String {
-    "+\(Int((tolerance * 100).rounded()))%, \(formatValue(floor))" + (limit.map { "; ≤ \(formatValue($0))" } ?? "")
+    let rise = tolerance == 0 ? "any rise" : "+\(Int((tolerance * 100).rounded()))%, \(format(floor))"
+    return rise + (limit.map { "; ≤ \(format($0))" } ?? "")
   }
 }
 
@@ -60,6 +89,7 @@ public struct Judgement: Equatable {
   public var baseline: Double?
   public var verdict: Verdict
   public var rule: String
+  public var unit: Rule.Unit = .seconds
 
   /// The change from the baseline, as a fraction.
   public var change: Double? { baseline.map { $0 > 0 ? (seconds - $0) / $0 : 0 } }
@@ -69,15 +99,15 @@ public func judge(_ name: String, seconds: Double, history: [Sample], rule: Rule
   let past = history.filter { $0.name == name }.suffix(rule.window).map(\.seconds)
   if let limit = rule.limit, seconds > limit {
     return Judgement(name: name, seconds: seconds, baseline: past.isEmpty ? nil : median(Array(past)),
-                     verdict: .overLimit, rule: rule.summary)
+                     verdict: .overLimit, rule: rule.summary, unit: rule.unit)
   }
   guard !past.isEmpty else {
-    return Judgement(name: name, seconds: seconds, baseline: nil, verdict: .new, rule: rule.summary)
+    return Judgement(name: name, seconds: seconds, baseline: nil, verdict: .new, rule: rule.summary, unit: rule.unit)
   }
   let baseline = median(Array(past))
   let regressed = seconds > baseline * (1 + rule.tolerance) && seconds - baseline > rule.floor
-  return Judgement(
-    name: name, seconds: seconds, baseline: baseline, verdict: regressed ? .regressed : .ok, rule: rule.summary)
+  return Judgement(name: name, seconds: seconds, baseline: baseline, verdict: regressed ? .regressed : .ok,
+                   rule: rule.summary, unit: rule.unit)
 }
 
 /// The budget report, in Markdown.
@@ -101,7 +131,8 @@ public func report(_ judgements: [Judgement], machine: String, commit: String, d
     case .regressed: "**OVER**"
     case .overLimit: "**OVER LIMIT**"
     }
-    out += "| `\(j.name)` | \(formatValue(j.seconds)) | \(j.baseline.map(formatValue) ?? "—") | \(change) | \(j.rule) | \(verdict) |\n"
+    let show = { (v: Double) in Rule(tolerance: 0, floor: 0, window: 0, unit: j.unit).format(v) }
+    out += "| `\(j.name)` | \(show(j.seconds)) | \(j.baseline.map(show) ?? "—") | \(change) | \(j.rule) | \(verdict) |\n"
   }
   return out
 }

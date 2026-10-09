@@ -103,6 +103,15 @@ public struct Loop: ~Copyable {
   static let timerToken: UInt64 = 1
   static let waitName = TraceName("loop.wait")
 
+  // Swift's costs per frame (docs/performance.md, "Swift costs"): with
+  // TODHCHAI_SWIFT_COSTS set, the loop's thread counts retains, releases
+  // and allocations, and each batch with a frame records what the last
+  // frame cost, from one frame event to the next.
+  var swiftCosts: td_swift_costs?
+  static let retainsName = TraceName("swift.retains")
+  static let releasesName = TraceName("swift.releases")
+  static let allocationsName = TraceName("swift.allocations")
+
   public init() throws(LoopError) {
     let epoll = epoll_create1(Int32(EPOLL_CLOEXEC))
     let event = eventfd(0, Int32(EFD_CLOEXEC | EFD_NONBLOCK))
@@ -119,6 +128,7 @@ public struct Loop: ~Copyable {
       var ev = epoll_event(events: EPOLLIN.rawValue, data: epoll_data_t(u64: token))
       epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &ev)
     }
+    if getenv("TODHCHAI_SWIFT_COSTS") != nil, td_swift_costs_install() == 0 { swiftCosts = td_swift_costs_read() }
     if quitTarget == nil {
       quitTarget = shared
       quitFD = event
@@ -215,8 +225,20 @@ public struct Loop: ~Copyable {
     // already here: report them without blocking.
     collect(blocking: buffer.isEmpty, deadlineTimer: oneShot)
     framesLast()
+    recordCosts()
     defer { buffer = [] }
     return Events(items: buffer)
+  }
+
+  /// What the last frame cost, if this batch starts a new one.
+  mutating func recordCosts() {
+    guard let last = swiftCosts, buffer.contains(where: { if case .frame = $0.payload { true } else { false } })
+    else { return }
+    let now = td_swift_costs_read()
+    Trace.counter(Self.retainsName, Int64(now.retains &- last.retains), .frame)
+    Trace.counter(Self.releasesName, Int64(now.releases &- last.releases), .frame)
+    Trace.counter(Self.allocationsName, Int64(now.allocations &- last.allocations), .frame)
+    swiftCosts = td_swift_costs_read()  // what recording cost is the next frame's
   }
 
   /// Moves `.frame` events to the end of the batch, renumbering `seq`, so
@@ -237,6 +259,7 @@ public struct Loop: ~Copyable {
   public mutating func poll() -> Events {
     collect(blocking: false, deadlineTimer: nil)
     framesLast()
+    recordCosts()
     defer { buffer = [] }
     return Events(items: buffer)
   }

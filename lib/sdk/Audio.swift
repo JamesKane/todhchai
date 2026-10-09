@@ -8,6 +8,14 @@
 import Glibc
 import PipeWire
 import Synchronization
+import Trace
+
+/// Trace counters for the audio budgets (docs/performance.md): the
+/// period in frames when it changes, and the underrun total when it rises.
+enum AudioTrace {
+  static let period = TraceName("audio.period")
+  static let underruns = TraceName("audio.underruns")
+}
 
 /// Interleaved 32-bit float, `channels` per frame, at `rate` Hz.
 public struct AudioFormat: Sendable, Equatable {
@@ -195,11 +203,14 @@ enum PipeWireBackend {
             if p.cycles > before {
               position += UInt64(p.quantum)
               counters.cycles.add(1, ordering: .relaxed)
-              counters.period.store(p.quantum, ordering: .relaxed)
+              if counters.period.exchange(p.quantum, ordering: .relaxed) != p.quantum {
+                Trace.counter(AudioTrace.period, Int64(p.quantum), .audio)
+              }
             }
             if p.underruns > lastUnderruns {
               counters.underruns.add(p.underruns - lastUnderruns, ordering: .relaxed)
               lastUnderruns = p.underruns
+              Trace.counter(AudioTrace.underruns, Int64(counters.underruns.load(ordering: .relaxed)), .audio)
             }
           }
         }
@@ -241,7 +252,10 @@ enum ClockBackend {
         while counters.running.load(ordering: .acquiring) {
           sleep(until: deadline)
           let late = Deadline.now.since(deadline)
-          if late > period { counters.underruns.add(1, ordering: .relaxed) }
+          if late > period {
+            let total = counters.underruns.add(1, ordering: .relaxed).newValue
+            Trace.counter(AudioTrace.underruns, Int64(total), .audio)
+          }
           buffer.update(repeating: 0)
           state.value.render(into: buffer, time: AudioTime(position: position, playsAt: deadline + period))
           position += UInt64(periodFrames)

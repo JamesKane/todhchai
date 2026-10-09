@@ -42,4 +42,19 @@ static inline uint32_t td_atomic_load_u32(const void *p) { return __atomic_load_
 static inline void td_atomic_store_u32(void *p, uint32_t v) { __atomic_store_n((uint32_t *)p, v, __ATOMIC_SEQ_CST); }
 static inline void td_atomic_store_i32(void *p, int32_t v) { __atomic_store_n((int32_t *)p, v, __ATOMIC_SEQ_CST); }
 
+// Swift's own costs (docs/performance.md, "Swift costs"), counted per
+// thread through the hooks the Swift runtime offers instrumentation:
+// retains and releases (an _n call counts n) and object allocations
+// (class instances and array, string and closure storage; not malloc).
+typedef struct td_swift_costs {
+  uint64_t retains;
+  uint64_t releases;
+  uint64_t allocations;
+} td_swift_costs;
+// Starts counting, process-wide; 0, or -1 if the runtime lacks the hooks.
+// Call before other threads start.
+int td_swift_costs_install(void);
+// The calling thread's totals since it started.
+td_swift_costs td_swift_costs_read(void);
+
 #endif

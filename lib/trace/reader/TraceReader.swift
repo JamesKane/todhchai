@@ -13,6 +13,9 @@ public struct TraceRecord: Equatable, Sendable {
   public var tid: UInt32
   public var a: UInt64
   public var b: UInt64
+  public init(time: UInt64, kind: UInt16, cpu: UInt16 = 0, tid: UInt32 = 1, a: UInt64, b: UInt64) {
+    (self.time, self.kind, self.cpu, self.tid, self.a, self.b) = (time, kind, cpu, tid, a, b)
+  }
 }
 
 public enum TraceReadError: Error, Equatable {
@@ -91,6 +94,18 @@ public struct TraceFile: Sendable {
   }
 
   /// A name id's text.
+  /// A trace from its parts, for tests of what reads traces.
+  public init(counterHz: UInt64, start: UInt64 = 0, processID: UInt32 = 1, records: [TraceRecord],
+              names: [UInt64: String]) {
+    self.counterHz = counterHz
+    self.start = start
+    self.processID = processID
+    circular = false
+    self.records = records
+    dropped = 0
+    strings = names
+  }
+
   public func name(_ id: UInt64) -> String { strings[id] ?? "#\(id)" }
 
   /// Ticks to seconds.

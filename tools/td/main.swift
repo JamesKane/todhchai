@@ -2,7 +2,7 @@
 
 // td: the Todhchai developer tool (sdk.md §13). M0 has:
 //
-//   td bench [--repeats N] [--clean-repeats N] [--record [--accept]] [--enforce]
+//   td bench [--repeats N] [--clean-repeats N] [--programs] [--record [--accept]] [--enforce]
 //       Measures the budgets and judges them against this machine's
 //       history (bench/history/). Advisory unless --enforce: a shared,
 //       busy machine makes timings noisy, so only a quiet, dedicated one
@@ -52,6 +52,7 @@ while i < args.count {
   case "--record": options.record = true
   case "--accept": options.accept = true
   case "--enforce": options.enforce = true
+  case "--programs": options.programs = true
   case "--no-bench" where command == "ci": runBench = false
   case "--check" where command == "shaders": break
   default: fail("unknown option \(args[i])")

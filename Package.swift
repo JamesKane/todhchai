@@ -98,7 +98,7 @@ let package = Package(
                 exclude: ["c"]),
     // Loinnir: the SDK's GPU library (sdk.md §5), on Vulkan.
     .target(name: "Loinnir", dependencies: ["Vulkan", "Todhchai"], path: "lib/loinnir"),
-    .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir"),
+    .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "tests/loinnir", exclude: ["shaders"]),
 
     // PipeWire, spoken directly (docs/research/pipewire-protocol.md).
     .target(name: "PipeWire", dependencies: ["TDLinux"], path: "lib/pipewire"),
@@ -112,7 +112,7 @@ let package = Package(
     ], path: "lib/sdk/macros"),
     .target(name: "Todhchai", dependencies: ["Trace", "TDLinux", "Wayland", "PipeWire", "TodhchaiMacros"], path: "lib/sdk",
             exclude: ["linux", "macros"]),
-    .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai", "Wayland"], path: "tests/sdk"),
+    .testTarget(name: "TodhchaiTests", dependencies: ["Todhchai", "Wayland", "TDLinux"], path: "tests/sdk"),
     .testTarget(name: "TodhchaiMacrosTests", dependencies: [
       "TodhchaiMacros",
       .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
@@ -120,11 +120,17 @@ let package = Package(
 
     // Examples you can run to see, or hear, a piece working.
     .executableTarget(name: "tone", dependencies: ["Todhchai"], path: "examples/tone"),
+    // The reference programs (M1h): their budgets are td bench --programs.
+    .executableTarget(name: "minimal", dependencies: ["Todhchai", "Trace"], path: "examples/minimal",
+                      exclude: ["minimal.c", "minimal.zig", "minimal.odin", "beep.wav", "make-beep.py"]),
+    .executableTarget(name: "synth", dependencies: ["Todhchai", "Trace"], path: "examples/synth"),
+    .executableTarget(name: "gameloop", dependencies: ["Loinnir", "Todhchai", "Trace"], path: "examples/gameloop",
+                      exclude: ["shaders"]),
 
     // td: the developer tool (bench, ci); Bench is its testable core.
-    .target(name: "Bench", path: "lib/bench"),
-    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tools/td"),
-    .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tests/bench"),
+    .target(name: "Bench", dependencies: ["TraceFormat", "TraceReader"], path: "lib/bench"),
+    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader", "ABIGen"], path: "tools/td"),
+    .testTarget(name: "BenchTests", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tests/bench"),
 
     // Each milestone's exit test (docs/milestones/).
     .testTarget(name: "MilestoneTests", dependencies: ["Echo", "IDLCTests"], path: "tests/milestones",

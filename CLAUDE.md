@@ -17,6 +17,11 @@ build-time budgets (docs/performance.md):
     swift build --product td && .build/debug/td ci     # --no-bench to skip the bench
     .build/debug/td bench --record                       # on a clean tree: record a passing run
 
+The reference programs' budgets (M1's exit: minimal, synth, game loop)
+are `td bench --programs`. It opens windows and plays (muted) audio, so it
+runs only on request, from the desktop; their traces stay in
+`bench/out/programs/`.
+
 Run td's binary, not `swift run td`: the builds it starts would wait on
 SwiftPM's lock. Logs and the budget report go to `bench/out/`; each
 machine's recorded history is `bench/history/<host>.tsv`. A regressed
