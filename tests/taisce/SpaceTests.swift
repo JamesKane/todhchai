@@ -116,3 +116,21 @@ import Testing
   #expect(try again.attribute(f, n("user:x")) == .int64(1))
   try again.check()
 }
+
+@Test func aNodeUnlinkedButNotYetFreedSurvivesACommitAsAnOrphan() throws {
+  var fs = try newFS(blocks: 4096)
+  let f = try fs.create(root, n("f"), .file, mode: 0o644, now: 2)
+  try fs.write(f, offset: 0, [UInt8](repeating: 1, count: 40_000), now: 2)
+  let d = try fs.create(root, n("d"), .directory, mode: 0o755, now: 2)
+  try fs.sync()
+  let free = fs.engine.store.volume.allocator.freeCount
+  // The first batch of unlink and of rmdir, then a commit before the
+  // second (as a reclaim between them makes), then a crash.
+  #expect(try fs.removeName(root, n("f"), now: 3) == f)
+  #expect(try fs.removeDirectory(root, n("d"), now: 3) == d)
+  try fs.sync()
+  var after = try FileSystem.mount(fs.engine.store.volume.device)  // frees what orphans it finds
+  try after.check()
+  #expect(throws: TaisceError.notFound) { try after.stat(f) }
+  #expect(after.engine.store.volume.allocator.freeCount + after.engine.reclaimable >= free + 10)
+}

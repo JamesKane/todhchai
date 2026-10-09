@@ -804,8 +804,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       .isEmpty
   }
 
-  /// Drops one link to `ino`. True if the node is to be freed now; one
-  /// that's open becomes an orphan instead.
+  /// Drops one link to `ino`; the last makes it an orphan. True if it's
+  /// to be freed now; one that's open waits for its last close.
   mutating func dropLink(_ ino: UInt64, _ now: UInt64, _ c: inout Changes) throws(TaisceError) -> Bool {
     var node = try inode(ino, &c)
     node.links = node.type == .directory ? 0 : node.links - 1
@@ -813,11 +813,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     node.version += 1
     try putInode(ino, node, &c)
     guard node.links == 0 else { return false }
-    if isOpen(ino) {
-      c.orphans.append(ino)
-      return false
-    }
-    return true
+    // An orphan either way: one that's open is freed at its last close;
+    // otherwise the caller frees it in a second batch, and if a commit
+    // comes between the two (a reclaim) and then a crash, mount frees it.
+    c.orphans.append(ino)
+    return !isOpen(ino)
   }
 
   /// Frees a node with no links: its keys, its blocks, its orphan entry.
