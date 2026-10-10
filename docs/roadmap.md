@@ -288,3 +288,7 @@ None remain open; each is recorded under "Decided".
 - **Foundation:** FoundationEssentials, the core of swift-foundation, is
   treated as toolchain for tier 1. The internationalization and networking
   modules are not used.
+- **Tier 0 runtime:** our own (`libsys`), not croi's user runtime
+  (2026-10-10, [milestones/M3.md](milestones/M3.md)).
+- **croi in the build:** Todhchai builds `../croi` at its head, with no pin;
+  the two projects will become one repository (2026-10-10).
