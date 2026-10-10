@@ -10,10 +10,11 @@ import FoundationEssentials
 let protocols: [(file: String, baselines: String)] = [
   ("tests/ipc/echo/Echo.swift", "tests/ipc/baselines"),
   ("lib/node/Node.swift", "lib/node/idl"),
+  ("lib/node/Srv.swift", "lib/node/idl"),
 ]
 
 /// idlc's C headers, which must compile cleanly.
-let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h"]
+let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h", "lib/node/idl/srv_ipc.h"]
 
 func ci(bench benchOptions: BenchOptions?) -> Bool {
   let logs = "bench/out/ci"

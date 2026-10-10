@@ -80,6 +80,12 @@ public final class IPCDispatcher: @unchecked Sendable {
     try? Port.queue(port, Packet(key: 0))
   }
 
+  /// Drops every server, closing their channels: for a service that is
+  /// done, once `run` has returned.
+  public func removeAll() {
+    entries.withLock { $0.byID = [:] }
+  }
+
   /// Serves until `stop`.
   public func run() throws(Status) {
     while true {

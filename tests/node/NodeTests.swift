@@ -40,10 +40,27 @@ final class Service: @unchecked Sendable {
     return Client(channel: ends.a)
   }
 
+  /// A channel served at the node at `path` (the root if empty).
+  func channel(path: String = "") throws -> Handle {
+    let ends = try Channel.create()
+    try tree.serve(ends.b, at: path.isEmpty ? tree.root : tree.node(path)!)
+    return ends.a
+  }
+
   /// Stops the dispatcher and waits for it.
   func stop() {
+    guard !stopped else { return }
+    stopped = true
     dispatcher.stop()
     pthread_join(thread, nil)
+  }
+
+  var stopped = false
+
+  /// Stops, and closes every channel it served: as if its program ended.
+  func end() {
+    stop()
+    dispatcher.removeAll()
   }
 }
 
@@ -259,11 +276,12 @@ func nextChange(_ c: inout Client, ms: Int64 = 2000) -> NodeIPC.Change? {
     }
     return String(decoding: out, as: UTF8.self)
   }
-  let source = "lib/node/Node.swift"
-  let interface = try scan([(source, try #require(read(source)))])
-  let (library, node) = try #require(interface.protocols.first)
-  let regenerate = "regenerate: .build/debug/idlc --c-out lib/node/idl --doc-out lib/node/idl \(source)"
-  #expect(cHeader(library, source: source) == read("lib/node/idl/node_ipc.h"), "\(regenerate)")
-  #expect(markdown(node, library, source: source) == read("lib/node/idl/Node.md"), "\(regenerate)")
-  #expect(Baseline(node, library).text == read("lib/node/idl/todhchai.node.Node.api"))
+  for (source, header) in [("lib/node/Node.swift", "node_ipc.h"), ("lib/node/Srv.swift", "srv_ipc.h")] {
+    let interface = try scan([(source, try #require(read(source)))])
+    let (library, p) = try #require(interface.protocols.first)
+    let regenerate = "regenerate: .build/debug/idlc --c-out lib/node/idl --doc-out lib/node/idl \(source)"
+    #expect(cHeader(library, source: source) == read("lib/node/idl/\(header)"), "\(regenerate)")
+    #expect(markdown(p, library, source: source) == read("lib/node/idl/\(p.name).md"), "\(regenerate)")
+    #expect(Baseline(p, library).text == read("lib/node/idl/\(p.id).api"))
+  }
 }

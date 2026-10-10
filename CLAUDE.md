@@ -61,7 +61,10 @@ ids (category `ipc`).
 and `NodeTree`, the helper that publishes an in-memory tree with text
 leaves (`status`, `ctl`). A service serves all its channels from one
 thread with `IPCDispatcher` (lib/ipc/runtime); change the tree from any
-thread and watchers hear. idlc's outputs for it are in `lib/node/idl`.
+thread and watchers hear. A process's `Namespace` (lib/node) maps paths
+to unions of Node channels, resolved in the client; `SrvBoard` is the
+session's `/srv`. idlc's outputs for Node and the board are in
+`lib/node/idl`.
 
 ## Sys
 

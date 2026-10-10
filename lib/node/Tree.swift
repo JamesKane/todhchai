@@ -25,6 +25,8 @@ public final class TreeNode: @unchecked Sendable {
     case directory(allowsCreate: Bool)
     case bytes([UInt8], writable: Bool)
     case text(read: @Sendable () -> String, write: (@Sendable (String) throws(NodeError) -> Void)?)
+    /// Another service's node: walks into it go there.
+    case remote(Remote)
   }
 
   public let name: String
@@ -51,9 +53,35 @@ public final class TreeNode: @unchecked Sendable {
   }
 
   var kind: NodeIPC.NodeKind {
-    if case .directory = content { .directory } else { .file }
+    switch content {
+    case .directory, .remote: .directory
+    case .bytes, .text: .file
+    }
   }
   var qid: NodeIPC.Qid { NodeIPC.Qid(path: path, version: version, kind: kind) }
+}
+
+/// A channel to another service's node, which a tree forwards walks to.
+final class Remote: @unchecked Sendable {
+  let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+  var client: NodeIPC.NodeClient
+
+  init(_ channel: consuming Handle) {
+    client = NodeIPC.NodeClient(channel: channel)
+    pthread_mutex_init(mutex, nil)
+  }
+
+  deinit {
+    pthread_mutex_destroy(mutex)
+    mutex.deallocate()
+  }
+
+  /// Walks `names` from the remote node, one caller at a time.
+  func walk(_ names: [String]) throws(NodeIPC.NodeClient.Failure) -> NodeIPC.Walked {
+    pthread_mutex_lock(mutex)
+    defer { pthread_mutex_unlock(mutex) }
+    return try client.walk(names)
+  }
 }
 
 /// A session watching a node; it goes when the session's channel does.
@@ -110,6 +138,12 @@ public final class NodeTree: @unchecked Sendable {
   public func text(_ path: String, read: @escaping @Sendable () -> String,
                    write: (@Sendable (String) throws(NodeError) -> Void)? = nil) -> TreeNode {
     place(path, .text(read: read, write: write))
+  }
+
+  /// Another service's node at `path`: walks into it are forwarded there.
+  @discardableResult
+  public func mount(_ path: String, _ channel: consuming Handle) -> TreeNode {
+    place(path, .remote(Remote(channel)))
   }
 
   /// The node at `path`, if there is one.
@@ -223,7 +257,8 @@ public final class NodeTree: @unchecked Sendable {
   /// Serves Node on `channel`, at the root.
   public func serve(_ channel: consuming Handle) throws(Status) { try serve(channel, at: root) }
 
-  func serve(_ channel: consuming Handle, at node: TreeNode) throws(Status) {
+  /// Serves Node on `channel`, at `node`.
+  public func serve(_ channel: consuming Handle, at node: TreeNode) throws(Status) {
     let state = SessionState()
     let server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state))
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
@@ -258,10 +293,11 @@ struct Session: NodeIPC.NodeHandler {
   mutating func walk(_ names: [String]) throws(NodeError) -> NodeIPC.Walked {
     guard names.count <= NodeIPC.maxWalk else { throw .tooManyNames }
     guard names.allSatisfy({ $0 == ".." || NodeIPC.isValidName($0) }) else { throw .badName }
-    let (qids, end) = try tree.locked { () throws(NodeError) -> ([NodeIPC.Qid], TreeNode?) in
+    let (qids, end, rest) = try tree.locked { () throws(NodeError) -> ([NodeIPC.Qid], TreeNode?, [String]) in
       var at = try current()
       var qids: [NodeIPC.Qid] = []
       for (i, name) in names.enumerated() {
+        if case .remote = at.content, i > 0 { return (qids, at, Array(names[i...])) }
         let next: TreeNode?
         if name == ".." {
           next = at.parent ?? at
@@ -273,15 +309,36 @@ struct Session: NodeIPC.NodeHandler {
         }
         guard let next else {
           if i == 0 { throw .notFound }
-          return (qids, nil)
+          return (qids, nil, [])
         }
         at = next
         qids.append(at.qid)
       }
-      return (qids, at)
+      return (qids, at, [])
     }
     guard let end else { return NodeIPC.Walked(qids: qids, node: nil) }
-    return NodeIPC.Walked(qids: qids, node: try channel(to: end))
+    guard case .remote(let remote) = end.content else { return NodeIPC.Walked(qids: qids, node: try channel(to: end)) }
+    return try forward(rest, to: remote, at: end, after: qids)
+  }
+
+  /// Walks the rest of a walk in another service, whose node `end` is.
+  func forward(_ rest: [String], to remote: Remote, at end: TreeNode, after qids: [NodeIPC.Qid]) throws(NodeError)
+    -> NodeIPC.Walked
+  {
+    do throws(NodeIPC.NodeClient.Failure) {
+      let walked = try remote.walk(rest)
+      let node = walked.node
+      return NodeIPC.Walked(qids: qids + walked.qids, node: node)
+    } catch .remote(let e) {
+      // Its first name failed: the walk ends where the remote node is.
+      if qids.isEmpty { throw e }
+      return NodeIPC.Walked(qids: qids, node: nil)
+    } catch {
+      // The other service is gone: so is its node.
+      tree.remove(end)
+      if qids.count <= 1 { throw .notFound }
+      return NodeIPC.Walked(qids: Array(qids.dropLast()), node: nil)
+    }
   }
 
   /// A new channel served at `node`: the client's end.
@@ -330,7 +387,7 @@ struct Session: NodeIPC.NodeHandler {
     let content = try tree.locked { () throws(NodeError) in try current().content }
     let bytes: [UInt8]
     switch content {
-    case .directory: throw .isDirectory
+    case .directory, .remote: throw .isDirectory
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
     }
@@ -343,7 +400,7 @@ struct Session: NodeIPC.NodeHandler {
     guard data.count <= NodeIPC.maxIO else { throw .invalid }
     let content = try tree.locked { () throws(NodeError) in try current().content }
     switch content {
-    case .directory:
+    case .directory, .remote:
       throw .isDirectory
     case .text(_, let write):
       guard let write else { throw .unsupported }
