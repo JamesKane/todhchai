@@ -23,11 +23,13 @@ import Sys
     } catch {
       Boot.fail("can't start: \(error)")
     }
-    // What manifests may grant: userboot's ranged root resources, and bootfs.
+    // What manifests may grant: userboot's ranged root resources, bootfs
+    // and the boot data.
     for kind in [ResourceKind.mmio, .irq, .ioport, .smc, .system] {
       if let r = StartupHandles.take(ProcessArgs.info(HandleType.resource(kind))) { launcher.allow(resource: kind, Handle(raw: r)) }
     }
     if let copy = try? boot.bootfs.duplicate() { launcher.allow(bootfs: copy) }
+    if let data = StartupHandles.take(ProcessArgs.info(HandleType.vmoBootData)) { launcher.allow(bootData: Handle(raw: data)) }
     do throws(LaunchError) {
       try launcher.start(boot.manifests)
     } catch {

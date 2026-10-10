@@ -7,8 +7,9 @@
 //
 // It reads devmgr's status through /svc: q35's host bridge and the ESP's
 // virtio-blk are found and left unbound, the edu device is bound to bin/edu
-// and running; then reads the edu driver host's own tree through devmgr's,
-// where the driver reports what it did with the device it was given.
+// and running, and ACPI's devices from q35's DSDT are there (M3h); then
+// reads the edu driver host's own tree through devmgr's, where the driver
+// reports what it did with the device it was given.
 
 import Launch
 import LibSys
@@ -50,6 +51,10 @@ import Sys
       exit(1)
     }
     check(edu[4] == "running", "edu's driver host is running")
+    // ACPI's devices, from q35's DSDT through croi's boot data (M3h).
+    check(lines.contains { $0[0] == "acpi-_SB_.PCI0" && $0[1] == "PNP0A08" }, "ACPI's PCI root bridge")
+    check(lines.contains { $0[0] == "acpi-_SB_.PCI0.SF8_.RTC_" && $0[1] == "PNP0B00" }, "ACPI's RTC")
+    check(lines.filter { $0[1] == "PNP0C0F" }.count == 16, "ACPI's interrupt links")
     check(edu[3].utf8.starts(with: "edu-".utf8), "edu's driver host is bin/edu")
 
     guard let driver = read(ns, "/svc/devmgr/drivers/\(edu[3])/status") else {
@@ -62,6 +67,11 @@ import Sys
     check(words.contains("3628800,"), "the device's factorial")
     check(words.contains("confined"), "the driver's resource is its BAR")
     if let e = read(ns, "/svc/devmgr/enumeration") { print("devices-test: enumeration: \(e)", terminator: "") }
+    guard let acpi = read(ns, "/svc/devmgr/acpi") else {
+      print("devices-test: FAILED: reading /svc/devmgr/acpi")
+      exit(1)
+    }
+    for line in acpi.split(separator: "\n") { print("devices-test: acpi: \(line)") }
     print("devices-test: ok")
   }
 }

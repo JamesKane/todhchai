@@ -14,10 +14,12 @@
 //     restart on-failure      # never (the default), on-failure or always
 //     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
 //     programs                # it starts programs from bootfs, in a job under its own
+//     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //
-// `resource` and `programs` are what devmgr is given (M3g): the launcher's
-// own ranged root resource of the kind, and bootfs with a job, so that it
-// can start driver hosts. A launcher that has none to give refuses them.
+// `resource`, `programs` and `bootdata` are what devmgr is given (M3g,
+// M3h): the launcher's own ranged root resource of the kind, bootfs with a
+// job, so that it can start driver hosts, and the boot data. A launcher
+// that has none to give refuses them.
 //
 // Anything wrong stops the launch with its file and line: Plan 9 ignores
 // errors in namespace files, and sandboxes come out quietly wrong.
@@ -65,6 +67,8 @@ public struct Manifest: Sendable {
   public var resources: [(kind: ResourceKind, line: Int)] = []
   /// `programs`: its line, or 0.
   public var programsLine = 0
+  /// `bootdata`: its line, or 0.
+  public var bootDataLine = 0
   public var serviceLine = 0
 
   /// "file:line: message"
@@ -149,6 +153,9 @@ public struct Manifest: Sendable {
       case "programs":
         try count(0...0)
         programsLine = lineNumber
+      case "bootdata":
+        try count(0...0)
+        bootDataLine = lineNumber
       default:
         throw error(lineNumber, "unknown directive '\(directive)'")
       }

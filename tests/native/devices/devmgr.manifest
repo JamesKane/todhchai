@@ -1,10 +1,10 @@
-# devmgr's test boot (M3g): devmgr over q35's ECAM (OVMF puts it at
-# 0xE0000000; the MCFG says so, once croi's K9b passes it on), with QEMU's
-# edu device added (td ci: -- -device edu). amd64: it grants I/O ports.
+# devmgr's test boot (M3g, M3h): devmgr reads the firmware's tables from
+# croi's boot data and finds ECAM through the MCFG, with QEMU's edu device
+# added (td ci: -- -device edu). amd64: it grants I/O ports.
 service devmgr
 program devmgr
-arg --ecam 0xe0000000 --buses 256
 resource mmio
 resource ioport
+bootdata
 programs
 export

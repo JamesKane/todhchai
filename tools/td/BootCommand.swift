@@ -3,7 +3,7 @@
 // td boot: Todhchai on croi in QEMU (M3).
 //
 //   td boot [--arch amd64|arm64|rv64] [--test] [--timeout S] [--next PROGRAM]
-//           [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]
+//           [--manifests DIR] [--data DIR] [--cmdline WORDS] [-- QEMU ARGS]
 //
 // Builds croi's loader and kernel from ../croi's last commit (M3 decided:
 // no pin; its working tree, edited beside us, is never built), exported
@@ -13,7 +13,8 @@
 // build/boot/<arch>/esp with croi's loader and kernel, the bootfs, and a
 // command line that has userboot start PROGRAM (bin/launcher), plus WORDS
 // (such as launcher.until=SERVICE). bootfs also holds DIR's manifests as
-// etc/manifests/NAME.manifest, for the launcher. Then boots
+// etc/manifests/NAME.manifest, for the launcher, and --data DIR's files
+// as data/NAME (such as an ACPI corpus machine's tables). Then boots
 // it: interactively on the terminal, or with --test headless, judged by
 // userboot's report that the program exited with 0. Logs, the console
 // included, are in bench/out/boot/<arch>/. amd64 uses KVM when /dev/kvm
@@ -31,6 +32,7 @@ struct BootOptions {
   var timeout = 60.0
   var next = "bin/launcher"
   var manifests: String?
+  var data: String?
   var cmdline: [String] = []
   var qemuArgs: [String] = []
 }
@@ -52,11 +54,12 @@ func bootCommand(_ args: [String]) -> Bool {
       o.timeout = t
     case "--next": o.next = value()
     case "--manifests": o.manifests = value()
+    case "--data": o.data = value()
     case "--cmdline": o.cmdline += value().split(separator: " ").map(String.init)
     case "--":
       o.qemuArgs = Array(args[(i + 1)...])
       i = args.count
-    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]")
+    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--data DIR] [--cmdline WORDS] [-- QEMU ARGS]")
     }
     i += 1
   }
@@ -114,6 +117,16 @@ func boot(_ o: BootOptions) -> Bool {
     for m in names.sorted() {
       guard let data = try? Data(contentsOf: URL(filePath: "\(dir)/\(m)")) else { fail("can't read \(dir)/\(m)") }
       files.append(("etc/manifests/\(m)", Array(data)))
+    }
+  }
+  // Data files for programs to read from bootfs.
+  if let dir = o.data {
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { !$0.hasPrefix(".") }
+    for n in names.sorted() {
+      var info = stat()
+      guard stat("\(dir)/\(n)", &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+      guard let data = try? Data(contentsOf: URL(filePath: "\(dir)/\(n)")) else { fail("can't read \(dir)/\(n)") }
+      files.append(("data/\(n)", Array(data)))
     }
   }
   let image: [UInt8]

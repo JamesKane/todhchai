@@ -7,15 +7,23 @@
 // `programs`: bootfs and a job, under which it runs the hosts with
 // lib/launch, so they restart by policy like any service.
 //
-//     arg --ecam BASE [--buses N]     # the ECAM window, until croi's K9b gives the MCFG
+//     arg [--ecam BASE] [--buses N]   # the ECAM window, if not the MCFG's
+//
+// It reads the firmware's tables from the RSDP in croi's boot data
+// (`bootdata`, K9b), takes ECAM's window from the MCFG, and loads ACPI's
+// namespace with our AML interpreter, its regions over this machine
+// (lib/devmgr/Firmware.swift), before it enumerates PCI (M3h).
 //
 // Its tree:
 //   status             a line a device: name, ids, class, driver host and state
-//   enumeration        how long finding the functions took
+//   enumeration        how long finding the PCI functions took
+//   acpi               the tables, and how long loading and _STA took
 //   drivers/SERVICE/   each driver host's own tree
 
 import DevMgr
 import IPC
+import TDACPI
+import ZBI
 import Launch
 import LibSys
 import Node
@@ -55,7 +63,7 @@ import Sys
     let size = ECAM.size(buses: buses)
     let resource: Handle
     do throws(Status) {
-      resource = try Resource.create(parent: root, kind: .mmio, base: base, size: UInt64(size), name: "ecam")
+      resource = try Sys.Resource.create(parent: root, kind: .mmio, base: base, size: UInt64(size), name: "ecam")
     } catch {
       _ = root.release()
       throw error
@@ -77,11 +85,57 @@ import Sys
     var service: String? { program.map { "\($0)-" + (device.pci?.address.description ?? device.name) } }
   }
 
+  /// The firmware's tables, from the RSDP in the boot data.
+  static func tables(_ data: BootData, _ memory: PhysicalMemory) -> TableSet? {
+    guard let at = data.rsdp, let bytes = memory.bytes(at, 36), let rsdp = try? RSDP(bytes) else { return nil }
+    return try? TableSet(rsdp: rsdp, read: { memory.bytes($0, $1) })
+  }
+
+  /// What ACPI found, and how long each part took.
+  struct ACPIResult {
+    var devices: [Device.ACPIDevice] = []
+    var summary = "no ACPI tables\n"
+  }
+
+  /// Loads the DSDT and SSDTs with load-time code run over the machine
+  /// (`host`), runs _INI, and reads every device's _STA, HID and CIDs.
+  static func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACPIResult {
+    var result = ACPIResult()
+    let aml = ([set.dsdt].compactMap { $0 } + set.ssdts)
+    let t0 = Clock.monotonic()
+    var ns = Namespace(integerBits: set.integerBits)
+    var loadFailures = 0
+    for t in aml where (try? ns.load(t, host: host)) == nil { loadFailures += 1 }
+    let t1 = Clock.monotonic()
+    let initFailed = ns.initializeDevices(host: host)
+    let initFailures = initFailed.count
+    let t2 = Clock.monotonic()
+    let nodes = ns.deviceNodes()
+    var statuses: [(node: Int, status: UInt64)] = []
+    for d in nodes { statuses.append((d, (try? ns.status(d, host: host))?.raw ?? 0)) }
+    let t3 = Clock.monotonic()
+    for (d, status) in statuses where status & 1 != 0 {
+      let hid = (try? ns.hardwareID(d, host: host)).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) }
+      let cids = ((try? ns.compatibleIDs(d, host: host)) ?? []).map { String(decoding: $0, as: UTF8.self) }
+      result.devices.append(Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
+                                              status: status))
+    }
+    let bytes = aml.reduce(0) { $0 + $1.length }
+    result.summary = "\(set.tables.count) tables, \(aml.count) with AML (\(bytes) bytes), \(ns.nodes.count) nodes\n"
+      + "load \((t1 - t0) / 1000) us (\(loadFailures) failed), _INI \((t2 - t1) / 1000) us (\(initFailures) failed)\n"
+      + "_STA on \(nodes.count) devices \((t3 - t2) / 1000) us, \(result.devices.count) present\n"
+      + initFailed.map { "_INI failed: \(String(decoding: ns.path($0.device), as: UTF8.self)) \($0.error.name)\n" }.joined()
+      + statuses.filter { $0.status & 1 == 0 }.map { "absent: \(String(decoding: ns.path($0.node), as: UTF8.self))\n" }
+      .joined()
+      + host.log.map { "aml: \($0)\n" }.joined()
+    return result
+  }
+
   static func main() {
     guard let raw = StartupHandles.take(ProcessArgs.info(ProcessArgs.user0)) else { fail("no Startup handle") }
     var start: Startup
     do { start = try Startup(Handle(raw: raw)) } catch { fail("can't read Startup") }
-    var ecamBase: UInt64?
+    var ecamArgument: UInt64?
     var buses = 256
     var i = 0
     while i < start.args.count {
@@ -89,33 +143,72 @@ import Sys
       i += 1
       guard i < start.args.count, let v = number(start.args[i]) else { fail("bad arguments") }
       i += 1
-      if a == "--ecam" { ecamBase = v } else if a == "--buses", v >= 1, v <= 256 { buses = Int(v) } else {
+      if a == "--ecam" { ecamArgument = v } else if a == "--buses", v >= 1, v <= 256 { buses = Int(v) } else {
         fail("unknown argument \(a)")
       }
     }
-    guard let ecamBase else { fail("no --ecam") }
     guard let mmioRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.mmio))) else {
       fail("no MMIO resource (manifest: resource mmio)")
     }
     let ioRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.ioport))) ?? 0
     let boot = Boot()
+    let memory = PhysicalMemory(mmioRoot: mmioRaw)
+    let ports = ioRaw != 0 ? PortSpace(ioportRoot: ioRaw) : nil
 
-    // The functions, through ECAM.
+    // The firmware's tables, through croi's boot data (K9b).
     let t0 = Clock.monotonic()
+    var data = BootData()
+    if let raw = StartupHandles.take(ProcessArgs.info(HandleType.vmoBootData)) {
+      let vmo = Handle(raw: raw)
+      if let header = try? VMO.read(vmo, offset: 0, count: BootData.headerSize),
+        let length = try? BootData.length(header: header), let bytes = try? VMO.read(vmo, offset: 0, count: length),
+        let read = try? BootData(bytes)
+      {
+        data = read
+      } else {
+        print("devmgr: the boot data is malformed")
+      }
+    }
+    let tableSet = tables(data, memory)
+    let tablesRead = Clock.monotonic() - t0
+
+    // ECAM: the MCFG's first window, or --ecam.
+    var ecamBase: UInt64, startBus: UInt8 = 0
+    if let ecamArgument {
+      ecamBase = ecamArgument
+    } else if let t = tableSet?.table(MCFG.signature), let w = (try? MCFG(t))?.windows.first(where: { $0.segment == 0 }) {
+      ecamBase = w.base
+      startBus = w.startBus
+      buses = min(buses, Int(w.endBus) - Int(w.startBus) + 1)
+    } else {
+      fail("no MCFG and no --ecam: can't reach PCI")
+    }
+    let t1 = Clock.monotonic()
     let window: Mapping
     do throws(Status) {
       window = try mapECAM(mmioRaw, base: ecamBase, buses: buses)
     } catch {
       fail("can't map ECAM at \(hex(UInt32(truncatingIfNeeded: ecamBase), digits: 8)): \(error)")
     }
-    let mapped = Clock.monotonic() - t0
-    let ecam = unsafe ECAM(unsafe: window.address, endBus: UInt8(buses - 1))
-    let functions = enumerate(ecam)
-    let enumerated = Clock.monotonic() - t0 - mapped
-    let devices = functions.map { Device(pci: $0) }
+    let mapped = Clock.monotonic() - t1
+    let ecam = unsafe ECAM(unsafe: window.address, startBus: startBus, endBus: UInt8(Int(startBus) + buses - 1))
+
+    // ACPI's namespace, its regions over this machine.
+    let host = MachineHost(
+      readMemory: { memory.read($0, width: $1) }, writeMemory: { memory.write($0, width: $1, $2) },
+      readPort: ports.map { p in { p.read($0, width: $1) } }, writePort: ports.map { p in { p.write($0, width: $1, $2) } },
+      config: ecam)
+    let acpi = tableSet.map { loadNamespace($0, host: host) } ?? ACPIResult()
+    for line in ("tables read in \(tablesRead / 1000) us\n" + acpi.summary).split(separator: "\n") { print("devmgr: acpi: \(line)") }
+
+    // The PCI functions.
+    let t2 = Clock.monotonic()
+    let functions = enumerate(ecam, bus: startBus)
+    let enumerated = Clock.monotonic() - t2
+    let devices = functions.map { Device(pci: $0) } + acpi.devices.map { Device(acpi: $0) }
     let bound = bind(devices, Drivers.rules)
     let entries = devices.indices.map { Entry(device: devices[$0], program: bound[$0].map { Drivers.rules[$0].program }) }
-    print("devmgr: ECAM mapped in \(mapped / 1000) us; \(functions.count) PCI function(s) in \(enumerated / 1000) us, \(bound.filter { $0 != nil }.count) bound")
+    print("devmgr: ECAM at \(hex(UInt32(truncatingIfNeeded: ecamBase), digits: 8)) mapped in \(mapped / 1000) us; \(functions.count) PCI function(s) in \(enumerated / 1000) us; \(bound.filter { $0 != nil }.count) device(s) bound")
 
     // A bound function decodes its BARs; bus mastering is its driver's to turn on.
     for e in entries where e.program != nil {
@@ -133,7 +226,7 @@ import Sys
     tree.text("status", read: {
       lock.withLock {
         entries.map { e in
-          let ids = e.device.pci.map { hex(UInt32($0.vendor), digits: 4) + ":" + hex(UInt32($0.device), digits: 4) } ?? "-"
+          let ids = e.device.ids
           let cls = e.device.pci.map {
             hex(UInt32($0.classCode), digits: 2) + "." + hex(UInt32($0.subclass), digits: 2) + "."
               + hex(UInt32($0.progIF), digits: 2)
@@ -143,6 +236,9 @@ import Sys
       }
     })
     tree.text("enumeration", read: { "ECAM mapped in \(mapped) ns, \(functions.count) functions in \(enumerated) ns\n" })
+    let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
+      + "physical pages mapped \(memory.mappedPages)\n"
+    tree.text("acpi", read: { acpiSummary })
 
     // Driver hosts, each a service of devmgr's own launcher.
     let launcher: Launcher

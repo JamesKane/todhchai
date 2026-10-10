@@ -96,6 +96,7 @@ public final class Launcher: @unchecked Sendable {
   /// raw handles the launcher owns: `allow` them before `start`.
   var grantableResources: [(kind: ResourceKind, handle: UInt32)] = []
   var grantableBootfs: UInt32 = 0
+  var grantableBootData: UInt32 = 0
   /// The launcher's two threads (raw handles; 0 if not started).
   var dispatcherThread: UInt32 = 0
   var supervisorThread: UInt32 = 0
@@ -116,6 +117,7 @@ public final class Launcher: @unchecked Sendable {
   deinit {
     for r in grantableResources { close(raw: r.handle) }
     if grantableBootfs != 0 { close(raw: grantableBootfs) }
+    if grantableBootData != 0 { close(raw: grantableBootData) }
   }
 
   /// A resource that manifests may grant with `resource KIND`.
@@ -128,6 +130,12 @@ public final class Launcher: @unchecked Sendable {
   public func allow(bootfs: consuming Handle) {
     let raw = bootfs.release()
     locked { grantableBootfs = raw }
+  }
+
+  /// The boot data that manifests may grant with `bootdata`.
+  public func allow(bootData: consuming Handle) {
+    let raw = bootData.release()
+    locked { grantableBootData = raw }
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
@@ -157,6 +165,9 @@ public final class Launcher: @unchecked Sendable {
         throw m.error(r.line, "no '\(r.kind.name)' resource to grant")
       }
       if m.programsLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.programsLine, "no bootfs to grant") }
+      if m.bootDataLine != 0 && locked({ grantableBootData }) == 0 {
+        throw m.error(m.bootDataLine, "no boot data to grant")
+      }
     }
     startThreads()
     for m in order {
@@ -255,7 +266,7 @@ public final class Launcher: @unchecked Sendable {
     }
   }
 
-  /// The handles `resource` and `programs` grant an instance of `s`, with
+  /// The handles `resource`, `bootdata` and `programs` grant an instance of `s`, with
   /// their processargs info: duplicates of the launcher's, and a new job
   /// under the service's.
   func granted(_ s: Service) throws(LaunchError) -> [(info: UInt32, handle: UInt32)] {
@@ -274,6 +285,9 @@ public final class Launcher: @unchecked Sendable {
     for r in m.resources {
       let raw = locked { grantableResources.first { $0.kind == r.kind }!.handle }
       extra.append((HandleType.info(HandleType.resource(r.kind)), try duplicate(raw, r.line)))
+    }
+    if m.bootDataLine != 0 {
+      extra.append((HandleType.info(HandleType.vmoBootData), try duplicate(locked({ grantableBootData }), m.bootDataLine)))
     }
     if m.programsLine != 0 {
       extra.append((HandleType.info(HandleType.vmoBootfs), try duplicate(locked({ grantableBootfs }), m.programsLine)))

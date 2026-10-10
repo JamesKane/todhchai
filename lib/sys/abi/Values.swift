@@ -196,6 +196,8 @@ public enum ResourceKind: UInt32, Sendable {
 public enum HandleType {
   public static let jobDefault: UInt32 = 0x03
   public static let vmoBootfs: UInt32 = 0x1B
+  /// croi's boot data (K9b): a read-only VMO of ZBI items from firmware.
+  public static let vmoBootData: UInt32 = 0x1A
   public static let rootResource: UInt32 = 0x3F
   /// Each kind's ranged root: MMIO 0x50, IRQ 0x51, IOPORT 0x52, SMC 0x53,
   /// SYSTEM 0x54.

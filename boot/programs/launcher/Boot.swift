@@ -16,6 +16,8 @@ struct Boot: ~Copyable {
   let bootfs: Handle
   var programs: [(name: String, entry: ProgramEntry)] = []
   var manifests: [(path: String, text: String)] = []
+  /// bootfs's `data/NAME` files (td boot --data), unread.
+  var data: [(name: String, offset: Int, length: Int)] = []
 
   static func fail(_ what: String) -> Never {
     print("\(Arguments.strings.first ?? "launcher"): \(what)")
@@ -45,6 +47,8 @@ struct Boot: ~Copyable {
     for e in entries {
       if let name = e.name.dropping("bin/") {
         programs.append((name, ProgramEntry(image: bootfs.raw, offset: e.offset, length: e.length, name: e.name)))
+      } else if let name = e.name.dropping("data/") {
+        data.append((name, e.offset, e.length))
       } else if e.name.dropping("etc/manifests/") != nil,
         e.name.utf8.reversed().starts(with: ".manifest".utf8.reversed())
       {

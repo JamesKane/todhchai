@@ -80,14 +80,17 @@ names natively only (`lib/libc/native`, never in SwiftPM's build).
 
 ## devmgr and drivers
 
-`bin/devmgr` (`boot/programs/devmgr`, M3g) maps the ECAM window
-(`--ecam BASE` until croi's K9b passes the MCFG), enumerates PCI
+`bin/devmgr` (`boot/programs/devmgr`, M3g, M3h) reads the firmware's
+tables from croi's boot data (`lib/zbi`: K9b's ZBI items; the manifest's
+`bootdata`), loads ACPI's namespace with its regions over the machine
+(`lib/devmgr/Firmware.swift`), maps the MCFG's ECAM window, enumerates PCI
 (`lib/pci`, tier 0: `ConfigSpace`, `ECAM`, `enumerate`), binds drivers by
 the Swift predicates in `lib/devmgr/Rules.swift` (first match wins) and
 runs a driver host per bound device with its own `Launcher`, mounting each
 host's tree at `drivers/SERVICE`. A manifest grants hardware with
 `resource mmio|irq|ioport|smc|system` (the launcher's ranged roots from
-userboot) and `programs` (bootfs and a job under the service's). A host
+userboot), `programs` (bootfs and a job under the service's) and
+`bootdata`. A host
 gets exactly its device's resources as `HandleType.device` startup
 handles (argument 0-5 a BAR, 0x10 its config space): read them with
 `DeviceResources(take: StartupHandles.take)`, and its registers through
@@ -95,7 +98,9 @@ handles (argument 0-5 a BAR, 0x10 its config space): read them with
 needs `-enable-experimental-feature Volatile` on the target. The test is
 `td boot --test --manifests tests/native/devices --cmdline
 launcher.until=devices-test -- -device edu` (QEMU's edu device and
-`bin/edu`), in `td ci`.
+`bin/edu`), in `td ci`. A0's budgets on croi: `td boot --test --next
+bin/acpi-bench --data .cache/acpi/NAME` (`--data DIR` puts files in bootfs
+as `data/NAME`), in `td ci` when the corpus is here.
 
 ## IPC protocols
 

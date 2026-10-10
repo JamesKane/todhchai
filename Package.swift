@@ -202,13 +202,16 @@ let package = Package(
     // bootfs images (M3): td writes them, the native launcher reads them.
     .target(name: "Bootfs", path: "lib/bootfs", swiftSettings: tier0),
     .testTarget(name: "BootfsTests", dependencies: ["Bootfs"], path: "tests/bootfs"),
+    // croi's boot data (K9b): firmware's items in Zircon's ZBI format (M3h).
+    .target(name: "ZBI", path: "lib/zbi", swiftSettings: tier0),
+    .testTarget(name: "ZBITests", dependencies: ["ZBI"], path: "tests/zbi"),
     // PCI configuration space and enumeration (M3g), and devmgr's model:
     // devices, bind rules, what a driver host is granted.
     .target(name: "PCI", path: "lib/pci", swiftSettings: tier0 + [.enableExperimentalFeature("Volatile")]),
     .testTarget(name: "PCITests", dependencies: ["PCI", "TDACPI"], path: "tests/pci"),
-    .target(name: "DevMgr", dependencies: ["PCI", "Sys"], path: "lib/devmgr",
+    .target(name: "DevMgr", dependencies: ["PCI", "Sys", "TDACPI"], path: "lib/devmgr",
             swiftSettings: tier0 + [.enableExperimentalFeature("Volatile")]),
-    .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch"], path: "tests/devmgr"),
+    .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "tests/devmgr"),
     // ELF executables (M3d): the native loader reads programs from bootfs.
     .target(name: "Elf", path: "lib/elf", swiftSettings: tier0),
     .testTarget(name: "ElfTests", dependencies: ["Elf"], path: "tests/elf"),

@@ -5,6 +5,7 @@
 
 import Bench
 import FoundationEssentials
+import Glibc
 
 /// Protocol files, the directory holding their API baselines, and the
 /// files of libraries they compose protocols from.
@@ -20,6 +21,25 @@ let protocols: [(file: String, baselines: String, with: [String])] = [
 /// idlc's C headers, which must compile cleanly.
 let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h", "lib/node/idl/srv_ipc.h", "lib/launch/idl/launch_ipc.h",
                       "lib/block/idl/block_ipc.h", "lib/fs/idl/fs_ipc.h"]
+
+/// The ACPI corpus's machine with the most AML (.cache/acpi, td acpi), as
+/// acpi-bench measures hosted; nil with no corpus.
+func largestACPIMachine() -> String? {
+  let corpus = ".cache/acpi"
+  var best: (String, Int)?
+  for machine in (try? FileManager.default.contentsOfDirectory(atPath: corpus)) ?? [] {
+    let dir = "\(corpus)/\(machine)"
+    let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter {
+      ($0 == "DSDT" || $0.hasPrefix("SSDT")) && !$0.contains(".")
+    }
+    let bytes = files.reduce(0) { total, f in
+      var info = stat()
+      return total + (stat("\(dir)/\(f)", &info) == 0 ? Int(info.st_size) : 0)
+    }
+    if bytes > (best?.1 ?? 0) { best = (dir, bytes) }
+  }
+  return best?.0
+}
 
 func ci(bench benchOptions: BenchOptions?) -> Bool {
   let logs = "bench/out/ci"
@@ -44,6 +64,10 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
                         "--cmdline", "launcher.until=devices-test", "--", "-device", "edu"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
+  // A0's budgets on croi (M3h), when the out-of-tree corpus is here.
+  if let machine = largestACPIMachine() {
+    steps.append(("acpi-bench-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/acpi-bench", "--data", machine]]))
+  }
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))
   for p in protocols {
     steps.append(("baseline \(p.file)",

@@ -185,6 +185,12 @@ target_include_directories(Services INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Services PUBLIC Fs Block Launch Node IPC Taisce)
 todhchai_tier0(Services)
 
+# croi's boot data (K9b): firmware's items, Zircon's ZBI format (M3h).
+add_library(ZBI STATIC lib/zbi/BootData.swift)
+set_target_properties(ZBI PROPERTIES Swift_MODULE_NAME ZBI)
+target_include_directories(ZBI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(ZBI)
+
 # PCI configuration space and enumeration, and devmgr's model (M3g).
 # Device registers are read through _Volatile.
 add_library(PCI STATIC lib/pci/Config.swift lib/pci/ECAM.swift lib/pci/Enumerate.swift)
@@ -193,11 +199,11 @@ target_include_directories(PCI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(PCI PRIVATE "SHELL:-enable-experimental-feature Volatile")
 todhchai_tier0(PCI)
 
-add_library(DevMgr STATIC lib/devmgr/Devices.swift lib/devmgr/Grants.swift lib/devmgr/Rules.swift)
+add_library(DevMgr STATIC lib/devmgr/Devices.swift lib/devmgr/Firmware.swift lib/devmgr/Grants.swift lib/devmgr/Rules.swift)
 set_target_properties(DevMgr PROPERTIES Swift_MODULE_NAME DevMgr)
 target_include_directories(DevMgr INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(DevMgr PRIVATE "SHELL:-enable-experimental-feature Volatile")
-target_link_libraries(DevMgr PUBLIC PCI Sys)
+target_link_libraries(DevMgr PUBLIC PCI Sys TDACPI)
 todhchai_tier0(DevMgr)
 
 # bootfs images: td writes them, the native launcher reads them.
@@ -235,7 +241,7 @@ if(TODHCHAI_NATIVE)
   target_link_libraries(catalog PRIVATE Services)
   # devmgr and its first driver (M3g).
   todhchai_program(devmgr boot/programs/devmgr/Main.swift boot/programs/launcher/Boot.swift)
-  target_link_libraries(devmgr PRIVATE DevMgr PCI Launch Bootfs Node IPC Sys)
+  target_link_libraries(devmgr PRIVATE DevMgr PCI TDACPI ZBI Launch Bootfs Node IPC Sys)
   todhchai_program(edu boot/programs/edu/Main.swift)
   target_link_libraries(edu PRIVATE DevMgr Launch Node IPC Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.
@@ -256,6 +262,9 @@ if(TODHCHAI_NATIVE)
   # --cmdline launcher.until=devices-test -- -device edu.
   todhchai_program(devices-test tests/native/DevicesTest.swift)
   target_link_libraries(devices-test PRIVATE Launch Node IPC Sys)
+  # A0's budgets on croi: td boot --test --next bin/acpi-bench --data .cache/acpi/NAME.
+  todhchai_program(acpi-bench tests/native/ACPIBench.swift boot/programs/launcher/Boot.swift)
+  target_link_libraries(acpi-bench PRIVATE TDACPI Bootfs Sys)
   todhchai_program(spawn-probe tests/native/SpawnProbe.swift)
   target_link_libraries(spawn-probe PRIVATE Sys)
   return()
