@@ -104,6 +104,15 @@ enum Kernel {
 
   static func debuglogCreate(_ resource: UInt32, readable: Bool) throws(Status) -> UInt32 { throw .notSupported }
   static func debuglogRead(_ h: UInt32) throws(Status) -> Debuglog.Record { throw .notSupported }
+  static func portCreate(options: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func interruptCreate(_ resource: UInt32, _ number: UInt32, _ options: UInt32) throws(Status) -> UInt32 {
+    throw .notSupported
+  }
+  static func interruptBind(_ h: UInt32, _ port: UInt32, _ key: UInt64) throws(Status) { throw .notSupported }
+  static func interruptAck(_ h: UInt32) throws(Status) { throw .notSupported }
+  static func interruptWait(_ h: UInt32) throws(Status) -> Int64 { throw .notSupported }
+  static func interruptTrigger(_ h: UInt32, _ timestamp: Int64) throws(Status) { throw .notSupported }
+  static func interruptSetAffinity(_ h: UInt32, _ cpus: UInt64) throws(Status) { throw .notSupported }
   static func processSelf() throws(Status) -> UInt32 { try k.processSelf() }
   static func realtime() -> Int64 {
     var ts = timespec()

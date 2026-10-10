@@ -94,7 +94,12 @@ userboot), `programs` (bootfs and a job under the service's) and
 gets exactly its device's resources as `HandleType.device` startup
 handles (argument 0-5 a BAR, 0x10 its config space): read them with
 `DeviceResources(take: StartupHandles.take)`, and its registers through
-`Registers` (volatile). Device registers are read with `_Volatile`, which
+`Registers` (volatile), and its interrupt with `interrupt()` (devmgr
+routes INTx through ACPI's _PRT, `lib/devmgr/Routing.swift`; the
+manifest's `resource irq`). virtio drivers use `lib/virtio` (transport,
+split queues) through a `Window` over a mapped BAR; `bin/virtio-blk`
+negotiates and sizes disks, and its requests wait for croi's BTI (K9e).
+Device registers are read with `_Volatile`, which
 needs `-enable-experimental-feature Volatile` on the target. The test is
 `td boot --test --manifests tests/native/devices --cmdline
 launcher.until=devices-test -- -device edu` (QEMU's edu device and

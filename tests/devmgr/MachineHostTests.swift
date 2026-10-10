@@ -72,3 +72,22 @@ func q35Statuses(_ tables: [Table], _ config: RecordingConfig, hpet: [UInt64: UI
   // With nothing behind it, the HPET is absent.
   #expect(try q35Statuses(tables, RecordingConfig(), hpet: [:]).statuses["\\_SB_.HPET"] == 0)
 }
+
+/// q35's root bus in APIC mode: every slot's pins through GSIA-GSIH,
+/// GSIs 16-23, level and active high (QEMU's IOAPIC PCI lines).
+@Test func q35RoutesThroughTheAPIC() throws {
+  guard let tables = q35Tables() else { return }
+  let host = MachineHost(readMemory: { _, _ in 0 }, writeMemory: { _, _, _ in true }, readPort: { _, _ in 0 },
+                         writePort: { _, _, _ in true }, config: RecordingConfig())
+  var ns = Namespace(integerBits: 64)
+  for t in tables { try ns.load(t, host: host) }
+  try ns.useAPIC(host: host)
+  let routes = try ns.interruptRoutes(host: host)
+  #expect(routes.count == 32 * 4)
+  #expect(Set(routes.map { $0.gsi }) == Set(16...23))
+  #expect(routes.allSatisfy { $0.mode == .levelHigh })
+  // Each slot's four pins reach four different GSIs.
+  let slot3 = routes.filter { $0.slot == 3 }.sorted { $0.pin < $1.pin }
+  #expect(slot3.map { $0.pin } == [1, 2, 3, 4] && Set(slot3.map { $0.gsi }).count == 4)
+  print("q35 slot 3:", slot3.map { "INT\(["A", "B", "C", "D"][Int($0.pin) - 1]) GSI \($0.gsi)" })
+}

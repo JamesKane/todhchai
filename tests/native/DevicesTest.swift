@@ -3,7 +3,8 @@
 // bin/devices-test: devmgr's test on croi (M3g), a client the launcher
 // starts beside devmgr (tests/native/devices). Run by
 //
-//     td boot --test --manifests tests/native/devices --cmdline launcher.until=devices-test -- -device edu
+//     td boot --test --manifests tests/native/devices --cmdline launcher.until=devices-test -- -device edu \
+//       -blockdev driver=null-co,node-name=t,size=67108864 -device virtio-blk-pci,drive=t,disable-legacy=on
 //
 // It reads devmgr's status through /svc: q35's host bridge and the ESP's
 // virtio-blk are found and left unbound, the edu device is bound to bin/edu
@@ -51,6 +52,16 @@ import Sys
       exit(1)
     }
     check(edu[4] == "running", "edu's driver host is running")
+    // virtio-blk (M3i): the test disk (QEMU's null-co, 64 MiB, modern only)
+    // negotiated and sized.
+    guard let disk = lines.first(where: { $0[1] == "1af4:1042" }) else {
+      print("devices-test: FAILED: no modern virtio-blk (td ci adds -device virtio-blk-pci,disable-legacy=on)")
+      exit(1)
+    }
+    check(disk[3].utf8.starts(with: "virtio-blk-".utf8) && disk[4] == "running", "virtio-blk's driver host")
+    let blk = read(ns, "/svc/devmgr/drivers/\(disk[3])/status") ?? ""
+    for line in blk.split(separator: "\n") { print("devices-test: \(disk[3]): \(line)") }
+    check(blk.split(separator: "\n").contains("capacity 131072 sectors (64 MiB), block 512"), "the disk's size")
     // ACPI's devices, from q35's DSDT through croi's boot data (M3h).
     check(lines.contains { $0[0] == "acpi-_SB_.PCI0" && $0[1] == "PNP0A08" }, "ACPI's PCI root bridge")
     check(lines.contains { $0[0] == "acpi-_SB_.PCI0.SF8_.RTC_" && $0[1] == "PNP0B00" }, "ACPI's RTC")
@@ -62,10 +73,13 @@ import Sys
       exit(1)
     }
     print("devices-test: \(edu[3]): \(driver)", terminator: "")
-    let words = driver.split(separator: "\n").first.map { $0.split(separator: " ").map(String.init) } ?? []
+    let words = driver.split(separator: "\n").first.map {
+      $0.split(separator: " ").map { String(decoding: $0.utf8.filter { $0 != UInt8(ascii: ",") }, as: UTF8.self) }
+    } ?? []
     check(!words.contains("FAILED"), "the driver's checks")
-    check(words.contains("3628800,"), "the device's factorial")
+    check(words.contains("3628800"), "the device's factorial")
     check(words.contains("confined"), "the driver's resource is its BAR")
+    check(words.contains("taken"), "the device's interrupt, routed through ACPI's _PRT")
     if let e = read(ns, "/svc/devmgr/enumeration") { print("devices-test: enumeration: \(e)", terminator: "") }
     guard let acpi = read(ns, "/svc/devmgr/acpi") else {
       print("devices-test: FAILED: reading /svc/devmgr/acpi")

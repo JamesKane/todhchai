@@ -57,6 +57,12 @@ enum Number {
   static let timerCancel: UInt64 = 97
   static let debuglogCreate: UInt64 = 110
   static let debuglogRead: UInt64 = 112
+  static let interruptCreate: UInt64 = 140
+  static let interruptBind: UInt64 = 141
+  static let interruptAck: UInt64 = 142
+  static let interruptWait: UInt64 = 143
+  static let interruptTrigger: UInt64 = 145
+  static let interruptSetAffinity: UInt64 = 146
   static let resourceCreate: UInt64 = 130
   static let ioportsRequest: UInt64 = 131
   static let ioportsRelease: UInt64 = 132
@@ -227,6 +233,10 @@ enum Kernel {
 
   static func portCreate() throws(Status) -> UInt32 { try out(UInt32(0)) { sys(Number.portCreate, 0, $0) } }
 
+  static func portCreate(options: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.portCreate, UInt64(options), $0) }
+  }
+
   /// croi_port_packet_t: key, type and status, four payload words.
   static func record(_ p: Packet) -> InlineArray<6, UInt64> {
     var r = InlineArray<6, UInt64>(repeating: 0)
@@ -361,6 +371,30 @@ enum Kernel {
     #if arch(x86_64)
       td_port_out(port, UInt32(width), value)
     #endif
+  }
+
+  // MARK: Interrupts (croi K9c)
+
+  static func interruptCreate(_ resource: UInt32, _ number: UInt32, _ options: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.interruptCreate, UInt64(resource), UInt64(number), UInt64(options), $0) }
+  }
+
+  static func interruptBind(_ h: UInt32, _ port: UInt32, _ key: UInt64) throws(Status) {
+    try check(sys(Number.interruptBind, UInt64(h), UInt64(port), key, 0))
+  }
+
+  static func interruptAck(_ h: UInt32) throws(Status) { try check(sys(Number.interruptAck, UInt64(h))) }
+
+  static func interruptWait(_ h: UInt32) throws(Status) -> Int64 {
+    try out(Int64(0)) { sys(Number.interruptWait, UInt64(h), $0) }
+  }
+
+  static func interruptTrigger(_ h: UInt32, _ timestamp: Int64) throws(Status) {
+    try check(sys(Number.interruptTrigger, UInt64(h), 0, UInt64(bitPattern: timestamp)))
+  }
+
+  static func interruptSetAffinity(_ h: UInt32, _ cpus: UInt64) throws(Status) {
+    try check(sys(Number.interruptSetAffinity, UInt64(h), cpus))
   }
 
   // MARK: The debuglog

@@ -7,8 +7,10 @@
 // check (0x04 reads back the inverse of what was written), a factorial
 // the device computes (0x08, busy while bit 0 of 0x20 is set), the
 // function's ids through its configuration space, and that its resource
-// reaches no further than its BAR. Its tree's `status` says what it found.
-// Interrupts (0x60-0x64) wait for croi's interrupt objects (K9c).
+// reaches no further than its BAR. Then its interrupt (M3i, croi's K9c),
+// routed by devmgr through ACPI: 100 times the device raises it (0x60),
+// the driver takes it in interrupt_wait and lowers it (0x64), timing
+// raise-to-wake and fire-to-wake. Its tree's `status` says what it found.
 
 import DevMgr
 import IPC
@@ -59,6 +61,32 @@ import Sys
       }
       ok = ok && confined
       findings.append(confined ? "confined" : "not confined")
+
+      // The interrupt: INTx on (the command register's Interrupt Disable off).
+      config.store16(4, config.load16(4) & ~UInt16(0x400))
+      let gsi = try device.interruptNumber()
+      let irq = try device.interrupt()
+      var raiseToWake: [Int64] = [], fireToWake: [Int64] = []
+      for _ in 0..<100 {
+        let t0 = Clock.monotonic()
+        regs.store32(0x60, 1)
+        let fired = try Interrupt.wait(irq)
+        let t1 = Clock.monotonic()
+        guard regs.load32(0x24) & 1 == 1 else { throw .badState }
+        regs.store32(0x64, 1)  // the line goes down; the next wait unmasks it
+        raiseToWake.append(t1 - t0)
+        fireToWake.append(t1 - fired)
+      }
+      raiseToWake.sort()
+      fireToWake.sort()
+      let mode = switch device.interruptMode {
+      case .levelHigh: "level-high"
+      case .levelLow: "level-low"
+      case .edgeHigh: "edge-high"
+      case .edgeLow: "edge-low"
+      case .default, .none: "default"
+      }
+      findings.append("irq \(gsi) \(mode) 100 taken, raise to wake \(raiseToWake[50] / 1000) us, fire to wake \(fireToWake[50] / 1000) us")
     } catch {
       ok = false
       findings.append("failed: \(error)")

@@ -242,6 +242,22 @@ import Sys
     check(try me.info().type == ObjectType.process, "process self")
     // Resources (croi K9a): userboot passes each kind's ranged root on.
     try resources()
+
+    // A virtual interrupt (croi K9c), taken by wait and through a port.
+    let irq = try Interrupt.virtual()
+    try Interrupt.trigger(irq, timestamp: 1234)
+    check(try Interrupt.wait(irq) == 1234, "a virtual interrupt's timestamp, by wait")
+    // Taken by a wait, it stays for the next wait: a port takes another.
+    let bound = try Interrupt.virtual()
+    let irqPort = try Port.create(bindToInterrupt: true)
+    try Interrupt.bind(bound, port: irqPort, key: 77)
+    try Interrupt.trigger(bound, timestamp: 5678)
+    let ip = try Port.wait(irqPort, deadline: Clock.monotonic() + 1000 * ms)
+    check(ip.key == 77 && ip.type == Interrupt.packetType && ip.payload.0 == 5678, "a virtual interrupt's packet")
+    try Interrupt.ack(bound)
+    let plain = try Interrupt.virtual()
+    check(status { () throws(Status) in try Interrupt.bind(plain, port: port, key: 1) } != .ok,
+          "a port not made for interrupts refuses them")
     print("sys-test: \(Clock.monotonic() - t0) ns")
   }
 }

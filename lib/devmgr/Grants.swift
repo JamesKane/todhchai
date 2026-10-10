@@ -3,10 +3,11 @@
 // What a driver host is given for its device (architecture §9: exactly
 // the MMIO, IRQ, BTI and I/O port handles for it): a resource for each
 // BAR, MMIO or I/O ports as the BAR is, and an MMIO resource over the
-// function's 4 KiB of ECAM. They come as startup handles of type
+// function's 4 KiB of ECAM, and an IRQ resource for the GSI its interrupt
+// pin is routed to (Routing.swift). They come as startup handles of type
 // `HandleType.device`, whose argument says which: 0-5 the BAR of that
-// index, `configSpace` the configuration space. Interrupts follow with
-// croi's interrupt objects (K9c).
+// index, `configSpace` the configuration space, `interruptBase` plus the
+// trigger mode the interrupt.
 
 import PCI
 import Sys
@@ -16,15 +17,22 @@ public enum DeviceHandle {
   /// The argument of the configuration space's resource.
   public static let configSpace: UInt32 = 0x10
 
+  /// The interrupt's argument, plus its mode's value (Interrupt.Mode).
+  public static let interruptBase: UInt32 = 0x100
+
   public static func bar(_ index: Int) -> UInt32 { HandleType.info(HandleType.device, UInt32(index)) }
   public static var config: UInt32 { HandleType.info(HandleType.device, configSpace) }
+  public static func interrupt(_ mode: Interrupt.Mode) -> UInt32 {
+    HandleType.info(HandleType.device, interruptBase + mode.rawValue)
+  }
 }
 
 /// The resources for function `f`, made under devmgr's MMIO and I/O port
 /// ranged roots, with their startup info words. `ecam` is the physical
 /// address of bus `startBus`'s window. A BAR whose kind devmgr has no root
 /// for (I/O ports off amd64) is left out.
-public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowing Handle, ioports: borrowing Handle?)
+public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowing Handle, ioports: borrowing Handle?,
+                   interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil)
   throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
@@ -59,6 +67,15 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowi
   try add(DeviceHandle.config) { () throws(Status) in
     try Resource.create(parent: mmio, kind: .mmio, base: config, size: 4096, name: "\(name) config")
   }
+  if let interrupt {
+    switch irqs {
+    case .some(let root):
+      try add(DeviceHandle.interrupt(interrupt.mode)) { () throws(Status) in
+        try Resource.create(parent: root, kind: .irq, base: UInt64(interrupt.gsi), size: 1, name: "\(name) irq")
+      }
+    case .none: break
+    }
+  }
   return out
 }
 
@@ -67,17 +84,42 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowi
 public struct DeviceResources: ~Copyable {
   var bars: [(index: Int, handle: UInt32)] = []
   var config: UInt32 = 0
+  var irq: UInt32 = 0
+  /// The interrupt's trigger mode, if one was granted.
+  public private(set) var interruptMode: Interrupt.Mode?
 
   public init(take: (UInt32) -> UInt32?) {
     for i in 0..<6 {
       if let h = take(DeviceHandle.bar(i)) { bars.append((i, h)) }
     }
     config = take(DeviceHandle.config) ?? 0
+    for mode in [Interrupt.Mode.default, .edgeLow, .edgeHigh, .levelLow, .levelHigh] {
+      if let h = take(DeviceHandle.interrupt(mode)) {
+        irq = h
+        interruptMode = mode
+      }
+    }
   }
 
   deinit {
     for b in bars { close(raw: b.handle) }
     if config != 0 { close(raw: config) }
+    if irq != 0 { close(raw: irq) }
+  }
+
+  /// The interrupt's number (the GSI), if one was granted.
+  public func interruptNumber() throws(Status) -> UInt32 {
+    guard irq != 0 else { throw .notFound }
+    return try borrowed(irq) { (h: borrowing Handle) throws(Status) in UInt32(truncatingIfNeeded: try Resource.info(h).base) }
+  }
+
+  /// The device's interrupt object.
+  public func interrupt() throws(Status) -> Handle {
+    guard irq != 0, let mode = interruptMode else { throw .notFound }
+    let number = try interruptNumber()
+    return try borrowed(irq) { (h: borrowing Handle) throws(Status) in
+      try Interrupt.create(resource: h, number: number, mode: mode)
+    }
   }
 
   /// The BARs it may use.

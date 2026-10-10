@@ -94,6 +94,7 @@ import Sys
   /// What ACPI found, and how long each part took.
   struct ACPIResult {
     var devices: [Device.ACPIDevice] = []
+    var routes: [InterruptRoute] = []
     var summary = "no ACPI tables\n"
   }
 
@@ -107,6 +108,8 @@ import Sys
     var loadFailures = 0
     for t in aml where (try? ns.load(t, host: host)) == nil { loadFailures += 1 }
     let t1 = Clock.monotonic()
+    // The APIC model, before _INI and _PRT (whose answers depend on it).
+    let picFailed = (try? ns.useAPIC(host: host)) == nil
     let initFailed = ns.initializeDevices(host: host)
     let initFailures = initFailed.count
     let t2 = Clock.monotonic()
@@ -120,10 +123,20 @@ import Sys
       result.devices.append(Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
                                               status: status))
     }
+    let t4 = Clock.monotonic()
+    let routesFailed: Bool
+    do throws(ACPIError) {
+      result.routes = try ns.interruptRoutes(host: host)
+      routesFailed = false
+    } catch {
+      routesFailed = true
+    }
+    let t5 = Clock.monotonic()
     let bytes = aml.reduce(0) { $0 + $1.length }
     result.summary = "\(set.tables.count) tables, \(aml.count) with AML (\(bytes) bytes), \(ns.nodes.count) nodes\n"
       + "load \((t1 - t0) / 1000) us (\(loadFailures) failed), _INI \((t2 - t1) / 1000) us (\(initFailures) failed)\n"
       + "_STA on \(nodes.count) devices \((t3 - t2) / 1000) us, \(result.devices.count) present\n"
+      + "_PIC(1) \(picFailed ? "failed" : "ok"), _PRT \(result.routes.count) routes \((t5 - t4) / 1000) us\(routesFailed ? " (failed)" : "")\n"
       + initFailed.map { "_INI failed: \(String(decoding: ns.path($0.device), as: UTF8.self)) \($0.error.name)\n" }.joined()
       + statuses.filter { $0.status & 1 == 0 }.map { "absent: \(String(decoding: ns.path($0.node), as: UTF8.self))\n" }
       .joined()
@@ -151,6 +164,7 @@ import Sys
       fail("no MMIO resource (manifest: resource mmio)")
     }
     let ioRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.ioport))) ?? 0
+    let irqRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.irq))) ?? 0
     let boot = Boot()
     let memory = PhysicalMemory(mmioRoot: mmioRaw)
     let ports = ioRaw != 0 ? PortSpace(ioportRoot: ioRaw) : nil
@@ -251,9 +265,15 @@ import Sys
       guard let e = entries.first(where: { $0.service == service }), let f = e.device.pci else { return [] }
       let mmio = Handle(raw: mmioRaw)
       let io: Handle? = ioRaw != 0 ? Handle(raw: ioRaw) : nil
-      let made = try? grants(for: f, ecam: ecamBase, startBus: 0, mmio: mmio, ioports: io)
+      let irqs: Handle? = irqRaw != 0 ? Handle(raw: irqRaw) : nil
+      // The root bus's slots, through _PRT.
+      let route = f.address.bus == startBus
+        ? acpi.routes.first { $0.slot == f.address.device && $0.pin == f.interruptPin } : nil
+      let made = try? grants(for: f, ecam: ecamBase, startBus: startBus, mmio: mmio, ioports: io, interrupt: route,
+                             irqs: irqs)
       _ = mmio.release()
       if let io { _ = io.release() }
+      if let irqs { _ = irqs.release() }
       return made ?? []
     }
     for e in entries {

@@ -5,6 +5,7 @@ service devmgr
 program devmgr
 resource mmio
 resource ioport
+resource irq
 bootdata
 programs
 export

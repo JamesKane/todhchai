@@ -198,6 +198,12 @@ set_target_properties(Console PROPERTIES Swift_MODULE_NAME Console)
 target_include_directories(Console INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Console)
 
+# virtio over PCI (M3i): the transport, split queues, virtio-blk.
+add_library(Virtio STATIC lib/virtio/Block.swift lib/virtio/Queue.swift lib/virtio/Transport.swift)
+set_target_properties(Virtio PROPERTIES Swift_MODULE_NAME Virtio)
+target_include_directories(Virtio INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(Virtio)
+
 # PCI configuration space and enumeration, and devmgr's model (M3g).
 # Device registers are read through _Volatile.
 add_library(PCI STATIC lib/pci/Config.swift lib/pci/ECAM.swift lib/pci/Enumerate.swift)
@@ -206,7 +212,7 @@ target_include_directories(PCI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(PCI PRIVATE "SHELL:-enable-experimental-feature Volatile")
 todhchai_tier0(PCI)
 
-add_library(DevMgr STATIC lib/devmgr/Devices.swift lib/devmgr/Firmware.swift lib/devmgr/Grants.swift lib/devmgr/Rules.swift)
+add_library(DevMgr STATIC lib/devmgr/Devices.swift lib/devmgr/Firmware.swift lib/devmgr/Grants.swift lib/devmgr/Routing.swift lib/devmgr/Rules.swift)
 set_target_properties(DevMgr PROPERTIES Swift_MODULE_NAME DevMgr)
 target_include_directories(DevMgr INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(DevMgr PRIVATE "SHELL:-enable-experimental-feature Volatile")
@@ -252,6 +258,8 @@ if(TODHCHAI_NATIVE)
   # The framebuffer console (M3j).
   todhchai_program(console boot/programs/console/Main.swift)
   target_link_libraries(console PRIVATE Console ZBI Launch Node IPC Sys)
+  todhchai_program(virtio-blk boot/programs/virtio-blk/Main.swift)
+  target_link_libraries(virtio-blk PRIVATE DevMgr Virtio Launch Node IPC Sys)
   todhchai_program(edu boot/programs/edu/Main.swift)
   target_link_libraries(edu PRIVATE DevMgr Launch Node IPC Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.

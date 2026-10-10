@@ -59,6 +59,11 @@ public enum EventPair {
 public enum Port {
   public static func create() throws(Status) -> Handle { Handle(raw: try Kernel.portCreate()) }
 
+  /// A port interrupts may be bound to (croi's PORT_BIND_TO_INTERRUPT).
+  public static func create(bindToInterrupt: Bool) throws(Status) -> Handle {
+    bindToInterrupt ? Handle(raw: try Kernel.portCreate(options: 1)) : try create()
+  }
+
   /// Queues a user packet.
   public static func queue(_ port: borrowing Handle, _ packet: Packet) throws(Status) {
     try Kernel.portQueue(port.raw, packet)
@@ -219,6 +224,54 @@ public enum Debuglog {
   /// The next record, or `shouldWait` if there is none; the handle is
   /// READABLE (`Signals.readable`) while one is.
   public static func read(_ log: borrowing Handle) throws(Status) -> Record { try Kernel.debuglogRead(log.raw) }
+}
+
+/// Interrupt objects (croi K9c, Zircon's): a device's interrupt, by its
+/// number (amd64 and rv64 a GSI, arm64 an INTID) under an IRQ resource
+/// covering it, or a virtual one. Taken by a thread in `wait`, or as port
+/// packets (`bind`, the port made with `bindToInterrupt`) re-armed by
+/// `ack`. A level interrupt is masked from when it fires until then.
+public enum Interrupt {
+  /// How the line signals (interrupt_create's mode).
+  public enum Mode: UInt32, Sendable {
+    /// What firmware says (amd64: MADT overrides, else ISA edge-high, PCI level-low).
+    case `default` = 0
+    case edgeLow = 2
+    case edgeHigh = 4
+    case levelLow = 6
+    case levelHigh = 8
+  }
+
+  /// A port packet's type for an interrupt: payload.0 is its timestamp.
+  public static let packetType: UInt32 = 7
+
+  public static func create(resource: borrowing Handle, number: UInt32, mode: Mode = .default) throws(Status) -> Handle {
+    Handle(raw: try Kernel.interruptCreate(resource.raw, number, mode.rawValue))
+  }
+
+  /// One fired by `trigger`, not a device.
+  public static func virtual() throws(Status) -> Handle {
+    Handle(raw: try Kernel.interruptCreate(0, 0, 0x10))
+  }
+
+  /// Packets to `port` with `key`, one an interrupt.
+  public static func bind(_ interrupt: borrowing Handle, port: borrowing Handle, key: UInt64) throws(Status) {
+    try Kernel.interruptBind(interrupt.raw, port.raw, key)
+  }
+
+  public static func ack(_ interrupt: borrowing Handle) throws(Status) { try Kernel.interruptAck(interrupt.raw) }
+
+  /// Waits for the next interrupt; its timestamp (monotonic ns).
+  public static func wait(_ interrupt: borrowing Handle) throws(Status) -> Int64 { try Kernel.interruptWait(interrupt.raw) }
+
+  public static func trigger(_ interrupt: borrowing Handle, timestamp: Int64) throws(Status) {
+    try Kernel.interruptTrigger(interrupt.raw, timestamp)
+  }
+
+  /// Routes it to a CPU of `cpus` (bit n, CPU n): croi's, as policy sets it.
+  public static func setAffinity(_ interrupt: borrowing Handle, cpus: UInt64) throws(Status) {
+    try Kernel.interruptSetAffinity(interrupt.raw, cpus)
+  }
 }
 
 /// Timers: SIGNALED at a deadline.

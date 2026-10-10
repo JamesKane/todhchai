@@ -55,7 +55,7 @@ extension Namespace {
   }
 
   /// A method or object under `device`, evaluated; nil if it isn't there.
-  mutating func childValue<H: ACPIHost>(_ device: Int, _ name: StaticString, host: H) throws(ACPIError) -> Datum? {
+  public mutating func childValue<H: ACPIHost>(_ device: Int, _ name: StaticString, host: H) throws(ACPIError) -> Datum? {
     guard let c = child(device, NameSeg.make(name)) else { return nil }
     return try evaluate(c, host: host)
   }
