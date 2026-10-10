@@ -1,14 +1,17 @@
 # What Todhchai needs from croi
 
-croi (`../croi`) boots on amd64, arm64 and rv64 under QEMU. Its K1 and K2
-milestones are done: handoff, cache policy, PMM, kernel heap, SMP,
-interrupt controllers, IPIs, the monotonic clock and tickless timers.
-It has no threads, user mode, syscalls or kernel objects yet. croi's own
-plan is `../croi/docs/roadmap.md`. It maps every item here onto its
-milestones, records which items already have a Zircon design to follow,
-and tracks each item's status.
-The full assessment, with Zircon sizes for each component, is in
-[research/croi-assessment.md](research/croi-assessment.md).
+croi (`../croi`) boots on amd64, arm64 and rv64 under QEMU and, since
+K8b (2026-10-10), reaches user space: userboot starts a program from
+bootfs. Items 1–12 are in; M2's exit test and kernel budgets (K8c) are
+croi's work in progress. croi's own plan is `../croi/docs/roadmap.md`. It
+maps every item here onto its milestones and records which items already
+have a Zircon design to follow. Its milestone sections are current, but
+its status table lags them. Status as of the last re-sync is
+[below](#status-2026-10-10).
+The first assessment, with Zircon sizes for each component, is in
+[research/croi-assessment.md](research/croi-assessment.md), and the
+re-sync is in
+[research/croi-assessment-2026-10-10.md](research/croi-assessment-2026-10-10.md).
 
 This file lists what Todhchai requires, in the order it needs them. Items
 marked **(ext)** go beyond Zircon and should be designed in, not bolted on.
@@ -54,6 +57,7 @@ because the VM's eviction, compression and accounting can wait.
 | 17 | IOB or a simpler SPSC ring-VMO convention with futex doorbells | Standard shared-memory rings for input, audio, GPU submit and block I/O |
 | 18 | ktrace and sampler. **The core is needed with §1** (M2): per-CPU rings of fixed-size records written only by the kernel and read through a capability; categories for scheduling (with the waker), IPC (with flow ids from the channel and transaction id), IRQs, faults, futex waits and VMO commits; marks from user space; sampling on the tick everywhere and on PMU overflow where there is a PMU, with kernel and user frame-pointer stacks read by fault-safe copies; per-thread PMU counters. A disabled probe costs one load and one branch, an enabled event < 30 ns | Feeds the system tracer and `td bench`. Every budget in [performance.md](performance.md) is measured from it. NeoVectra's equivalent (its ADR-0049 and ADR-0050) is the model |
 | 19 | Debug syscalls: read/write thread state, exception channels, process memory access, start a process suspended, keep a crashed process frozen for post-mortem attach | `debugd` (architecture §16) |
+| 20 | **Firmware data for user space**: the ACPI tables and AML's operation regions (SystemMemory over firmware ranges, SystemIO, PCI config), and the GOP framebuffer, each behind a resource | Our AML interpreter (A0) runs in devmgr, not the kernel, and the framebuffer is M3's console. A physical VMO over RAM or firmware ranges is refused, which is the right default, so these need a route that a resource grants. Found at the 2026-10-10 re-sync |
 
 ## 3. Extensions for a low-latency game desktop (ext)
 
@@ -158,3 +162,54 @@ From the arm64 boards ([research/hardware-targets.md](research/hardware-targets.
 
 How croi itself is written (including its use of Zircon as a reference)
 follows croi's own directives, not Todhchai's principle 29.
+
+## Status (2026-10-10)
+
+Checked against croi at `7c93414` (K8b), with K8c in its working tree.
+"Kernel only" means built and self-tested in the kernel, with no syscall
+for user space yet.
+
+| # | Status |
+|---|---|
+| 1 | **Done.** Handoff v3; bootfs in Zircon's format (no ZBI); the DBG2 console. Not yet: the GENI UART (Q8B) |
+| 2 | **Done.** ARAT is detected; no always-on broadcast timer yet. The SBSA watchdog is done, unverified on hardware |
+| 3 | **Done.** Contiguous VMOs take an address limit and come from a boot pool (8 MiB by default, below 4 GiB). Not yet: page loaning; ACPI-reclaim memory stays wired |
+| 4 | **Done** (K3a/K3b): owned wait queues with Zircon's inheritance rules |
+| 5 | **Done** (K3c): fair plus EDF, budgets in capacity-scaled time, admission with reasons and a per-user budget; admitted threads don't migrate. Capacity comes from core types until the power service sets it |
+| 6 | **Done** |
+| 7 | **Done** for phase A (K4): VMARs, anonymous, physical and contiguous VMOs, faults, cache policy and operations. Kernel only: physical and contiguous VMOs, cache policy, cache operations. Not yet: copy-on-write clones (phase B) |
+| 8 | **Done** (K5) |
+| 9 | **Done** (K6): null syscall ~40 ns under KVM, vDSO clock ~13 ns. Not yet: lazy AMX (XFD), SME, per-thread SVE length |
+| 10 | **Done** (K7b/K7c) |
+| 11 | **Done** (K7a/K7d) |
+| 12 | **Done** (K8b): userboot starts `userboot.next` (default `bin/launcher`) with processargs |
+| 13 | **Partial:** root, tracing and debuglog resources. Not yet: MMIO, IRQ, IO port and SMC resources; interrupt objects |
+| 14 | Not yet |
+| 15 | **Partial:** debuglog. Not yet: FIFO, counter, stream, socket, clock |
+| 16 | Not yet |
+| 17 | Nothing needed from croi: VMOs with eventpairs or futexes (N0's `BlockRing`) |
+| 18 | **Done** for the core (K3–K7): per-CPU rings, `sched`, `irq`, `vm`, `syscall`, `ipc` with flow ids, `futex`, marks, tick and PMU sampling, per-thread PMU counters. The Intel PMU backend is unverified |
+| 19 | **Partial:** exception channels, thread state while in an exception. Not yet: debugger channels, process memory access, suspended start |
+| 20 | Not yet |
+
+| ext | Status |
+|---|---|
+| 1 Display timeline | Not yet; the observers leave room for it, and the vblank page joins the shared pages |
+| 2 IPC deadline donation | **Done** (K7b), through owned call queues |
+| 3 Overrun notification | Kernel only (K5); reaches user space with profile objects (K8c) |
+| 4 Admission with a reason | Kernel only (K3c); `object_set_profile` returns the refusal (K8c) |
+| 5 IRQ-to-thread | The hook only, until interrupt objects |
+| 6 GPU memory accounting | Kernel only (K4c): accounts, device-local VMOs, pressure packets |
+| 7 Views and JIT | Kernel only (K4c), as described above |
+| 8 CPU isolation | Kernel only (`reserve`) |
+| 9 Topology and power page | **Done** (K6c) |
+| 10 Frame intent | Stored only |
+| 11 Deadline-aware idle | Each CPU publishes its wake-latency bound; no governor yet |
+| 12 Frequency floor | Published with the power hints; not enforced yet |
+
+**Differences from what Todhchai assumed:**
+- croi's default rights give channels `duplicate` and ports `wait`.
+  Zircon's don't, and Todhchai's hosted kernel follows Zircon. croi should
+  follow Zircon here.
+- croi has rights Todhchai's `Sys` lacks: `getPolicy`, `setPolicy`,
+  `applyProfile`, `manageVmo`. Todhchai's `Sys` should add them.

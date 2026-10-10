@@ -31,6 +31,10 @@ is further along.
 - **Still open:** no decisions in [roadmap.md](roadmap.md). The last,
   the C++ runtime under the full Swift runtime, was decided after M0h:
   LLVM's libc++ as toolchain.
+- **Re-synced with croi on 2026-10-10** (at K8b, M2 nearly closed):
+  [research/croi-assessment-2026-10-10.md](research/croi-assessment-2026-10-10.md)
+  and the status table in [croi-requirements.md](croi-requirements.md).
+  The paragraph below is the 2026-10-09 state.
 - **croi at the time of writing:** it boots on amd64, arm64 and rv64,
   builds its own page tables, installs exception vectors and halts. It has
   no PMM, threads, user mode, syscalls or kernel objects yet

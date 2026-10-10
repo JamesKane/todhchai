@@ -253,8 +253,12 @@ func nextChange(_ c: inout Client, ms: Int64 = 2000) -> NodeIPC.Change? {
   for _ in 0..<50 { _ = try root.open("data/hello") }
   _ = try root.stat(0)
   _ = consume root
+  // The closes are served on the dispatcher's thread, so wait for them
+  // before stopping it: root's wait is re-armed after its last reply is
+  // written, so its close can be noticed after a stop queued at once.
+  let deadline = Clock.monotonic() + 5_000_000_000
+  while s.dispatcher.count > 0 && Clock.monotonic() < deadline { usleep(1000) }
   s.stop()
-  // Each close queued its packet before the stop's.
   #expect(s.dispatcher.count == 0)
 }
 

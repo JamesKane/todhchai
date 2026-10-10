@@ -47,6 +47,8 @@ public struct Rights: OptionSet, Equatable, Sendable {
   public static let setProperty = Rights(rawValue: 1 << 7)
   public static let enumerate = Rights(rawValue: 1 << 8)
   public static let destroy = Rights(rawValue: 1 << 9)
+  public static let getPolicy = Rights(rawValue: 1 << 10)
+  public static let setPolicy = Rights(rawValue: 1 << 11)
   public static let signal = Rights(rawValue: 1 << 12)
   public static let signalPeer = Rights(rawValue: 1 << 13)
   public static let wait = Rights(rawValue: 1 << 14)
@@ -54,12 +56,15 @@ public struct Rights: OptionSet, Equatable, Sendable {
   public static let manageJob = Rights(rawValue: 1 << 16)
   public static let manageProcess = Rights(rawValue: 1 << 17)
   public static let manageThread = Rights(rawValue: 1 << 18)
+  public static let applyProfile = Rights(rawValue: 1 << 19)
+  public static let manageVmo = Rights(rawValue: 1 << 24)
   /// handle_duplicate and handle_replace: the same rights as the source.
   public static let sameRights = Rights(rawValue: 1 << 31)
 
   static let basic: Rights = [.transfer, .duplicate, .wait, .inspect]
   static let io: Rights = [.read, .write]
   static let property: Rights = [.getProperty, .setProperty]
+  static let policy: Rights = [.getPolicy, .setPolicy]
 
   public static let channelDefault: Rights = [.transfer, .wait, .inspect, .read, .write, .signal, .signalPeer]
   public static let eventDefault: Rights = basic.union(.signal)
@@ -67,7 +72,7 @@ public struct Rights: OptionSet, Equatable, Sendable {
   public static let portDefault: Rights = [.transfer, .duplicate, .inspect, .read, .write]
   public static let vmoDefault: Rights = basic.union(io).union(property).union([.map, .signal])
   public static let timerDefault: Rights = basic.union([.write, .signal])
-  public static let jobDefault: Rights = basic.union(io).union(property)
+  public static let jobDefault: Rights = basic.union(io).union(property).union(policy)
     .union([.enumerate, .destroy, .signal, .manageJob, .manageProcess, .manageThread])
   public static let processDefault: Rights = basic.union(io).union(property)
     .union([.enumerate, .destroy, .signal, .manageProcess, .manageThread])
@@ -100,9 +105,14 @@ public enum ObjectType {
   public static let channel: UInt32 = 4
   public static let event: UInt32 = 5
   public static let port: UInt32 = 6
+  public static let log: UInt32 = 12
+  public static let resource: UInt32 = 15
   public static let eventPair: UInt32 = 16
   public static let job: UInt32 = 17
+  public static let vmar: UInt32 = 18
   public static let timer: UInt32 = 22
+  public static let profile: UInt32 = 25
+  public static let exception: UInt32 = 29
 }
 
 /// A port packet (zx_port_packet_t): key, type, status and 32 bytes.
