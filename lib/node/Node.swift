@@ -42,6 +42,12 @@ public enum NodeIPC {
     public var path: UInt64
     public var version: UInt32
     public var kind: NodeKind
+
+    public init(path: UInt64, version: UInt32, kind: NodeKind) {
+      self.path = path
+      self.version = version
+      self.kind = kind
+    }
   }
 
   /// A typed attribute, Taisce's way: `kind` is Taisce's AttributeKind
@@ -51,6 +57,12 @@ public enum NodeIPC {
     public var name: String
     public var kind: UInt8
     public var value: [UInt8]
+
+    public init(name: String, kind: UInt8, value: [UInt8]) {
+      self.name = name
+      self.kind = kind
+      self.value = value
+    }
   }
 
   /// What stat and readdir report. Fields not asked for are zero or empty.
@@ -61,6 +73,14 @@ public enum NodeIPC {
     /// Nanoseconds since the Unix epoch; 0 if unknown.
     public var modified: Int64
     public var attributes: [Attribute]
+
+    public init(qid: Qid, name: String, size: UInt64, modified: Int64, attributes: [Attribute]) {
+      self.qid = qid
+      self.name = name
+      self.size = size
+      self.modified = modified
+      self.attributes = attributes
+    }
   }
 
   public struct DirBatch: Equatable, Sendable {
@@ -68,6 +88,12 @@ public enum NodeIPC {
     /// The cursor to continue from.
     public var next: UInt64
     public var done: Bool
+
+    public init(entries: [Stat], next: UInt64, done: Bool) {
+      self.entries = entries
+      self.next = next
+      self.done = done
+    }
   }
 
   /// A walk's result: a qid for each name walked, and a channel to the last
@@ -75,6 +101,11 @@ public enum NodeIPC {
   public struct Walked: ~Copyable {
     public var qids: [Qid]
     public var node: Handle?
+
+    public init(qids: [Qid], node: consuming Handle?) {
+      self.qids = qids
+      self.node = node
+    }
   }
 
   public enum ChangeKind: UInt8, Sendable {
@@ -91,6 +122,12 @@ public enum NodeIPC {
     public var seq: UInt64
     public var kind: ChangeKind
     public var name: String
+
+    public init(seq: UInt64, kind: ChangeKind, name: String) {
+      self.seq = seq
+      self.kind = kind
+      self.name = name
+    }
   }
 
   public protocol Node {

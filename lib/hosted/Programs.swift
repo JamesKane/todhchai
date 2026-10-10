@@ -4,15 +4,18 @@
 // `program`. Natively, these are images in bootfs (M3).
 
 import Block
+import Fs
 import Glibc
 import IPC
 import Launch
 import Node
+import Taisce
 
 /// Every hosted program, by name.
 public let hostedPrograms: [String: ProgramEntry] = [
   "hello": hello,
   "block": block,
+  "fs": fsProgram,
 ]
 
 /// A small service: `status` says who it is and what its namespace holds.
@@ -79,5 +82,47 @@ func makeDirectories(containing path: String) {
   while let slash = path[at...].dropFirst().firstIndex(of: "/") {
     mkdir(String(path[..<slash]), 0o755)
     at = slash
+  }
+}
+
+/// The fs service over a block device in its namespace:
+///
+///     fs [--format LABEL] DEVICE      # DEVICE: /svc/block/device
+///
+/// --format makes a volume labelled LABEL if the device holds none.
+let fsProgram = ProgramEntry { handle in
+  do {
+    var start = try Startup(handle)
+    var path: String?, label: String?
+    var args = start.args[...]
+    while let arg = args.popFirst() {
+      if arg == "--format" {
+        guard let l = args.popFirst() else { Process.exit(code: 2) }
+        label = l
+      } else {
+        path = arg
+      }
+    }
+    guard let path else { Process.exit(code: 2) }
+    let device = try RingDevice(try BlockClient(try start.namespace.connect(path)))
+    var fs: FileSystem<RingDevice>
+    do throws(TaisceError) {
+      fs = try FileSystem.mount(device)
+    } catch .notAVolume where label != nil {
+      var uuid = [UInt8](repeating: 0, count: 16)
+      var random = SystemRandomNumberGenerator()
+      for i in uuid.indices { uuid[i] = random.next() }
+      fs = try FileSystem.format(device, label: Array(label!.utf8), uuid: uuid, now: FsService.now)
+    }
+    let dispatcher = try IPCDispatcher()
+    let tree = NodeTree(dispatcher: dispatcher)
+    let service = try FsService(fs, device: path, dispatcher: dispatcher)
+    service.publish(in: tree)
+    try tree.serve(try start.export())
+    try start.ready()
+    try dispatcher.run()
+    withExtendedLifetime(service) {}
+  } catch {
+    Process.exit(code: 1)
   }
 }

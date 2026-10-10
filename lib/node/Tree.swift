@@ -30,6 +30,8 @@ public final class TreeNode: @unchecked Sendable {
     case remote(Remote)
     /// A typed protocol: a walk to it gets a channel `connect` serves.
     case service(connect: (consuming Handle) throws(Status) -> Void)
+    /// A directory the service serves itself: walks into it go to `walk`.
+    case delegated(walk: ([String]) throws(NodeError) -> NodeIPC.Walked)
   }
 
   public let name: String
@@ -57,7 +59,7 @@ public final class TreeNode: @unchecked Sendable {
 
   var kind: NodeIPC.NodeKind {
     switch content {
-    case .directory, .remote: .directory
+    case .directory, .remote, .delegated: .directory
     case .bytes, .text: .file
     case .service: .service
     }
@@ -154,6 +156,15 @@ public final class NodeTree: @unchecked Sendable {
   @discardableResult
   public func service(_ path: String, connect: @escaping (consuming Handle) throws(Status) -> Void) -> TreeNode {
     place(path, .service(connect: connect))
+  }
+
+  /// A directory at `path` that the service serves with its own code (a
+  /// volume's files): a walk that reaches it calls `walk` with the names
+  /// left (none: a channel to the directory itself), on the dispatcher's
+  /// thread, and the qids it gives follow the tree's.
+  @discardableResult
+  public func delegate(_ path: String, walk: @escaping ([String]) throws(NodeError) -> NodeIPC.Walked) -> TreeNode {
+    place(path, .delegated(walk: walk))
   }
 
   /// Another service's node at `path`: walks into it are forwarded there.
@@ -328,7 +339,12 @@ struct Session: NodeIPC.NodeHandler {
       var at = try current()
       var qids: [NodeIPC.Qid] = []
       for (i, name) in names.enumerated() {
-        if case .remote = at.content, i > 0 { return (qids, at, Array(names[i...])) }
+        if i > 0 {
+          switch at.content {
+          case .remote, .delegated: return (qids, at, Array(names[i...]))
+          default: break
+          }
+        }
         let next: TreeNode?
         if name == ".." {
           next = at.parent ?? at
@@ -351,6 +367,16 @@ struct Session: NodeIPC.NodeHandler {
     switch end.content {
     case .remote(let remote): return try forward(rest, to: remote, at: end, after: qids)
     case .service(let connect): return NodeIPC.Walked(qids: qids, node: try connection(connect))
+    case .delegated(let walk):
+      do throws(NodeError) {
+        let walked = try walk(rest)
+        let node = walked.node
+        return NodeIPC.Walked(qids: qids + walked.qids, node: node)
+      } catch {
+        // Its first name failed: the walk ends at the delegated directory.
+        if qids.isEmpty { throw error }
+        return NodeIPC.Walked(qids: qids, node: nil)
+      }
     default: return NodeIPC.Walked(qids: qids, node: try channel(to: end))
     }
   }
@@ -433,7 +459,7 @@ struct Session: NodeIPC.NodeHandler {
     let content = try tree.locked { () throws(NodeError) in try current().content }
     let bytes: [UInt8]
     switch content {
-    case .directory, .remote: throw .isDirectory
+    case .directory, .remote, .delegated: throw .isDirectory
     case .service: throw .unsupported
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
@@ -447,7 +473,7 @@ struct Session: NodeIPC.NodeHandler {
     guard data.count <= NodeIPC.maxIO else { throw .invalid }
     let content = try tree.locked { () throws(NodeError) in try current().content }
     switch content {
-    case .directory, .remote:
+    case .directory, .remote, .delegated:
       throw .isDirectory
     case .service:
       throw .unsupported

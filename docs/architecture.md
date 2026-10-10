@@ -160,6 +160,14 @@ enum DisplayIPC {
 - Messages that carry handles are `~Copyable`, so a handle moves with
   `consuming`. Decoded requests are `~Escapable` views into the receive
   buffer, which makes decoding zero-copy.
+- **Composition**, FIDL's `compose`: `protocol Directory: NodeIPC.Node`
+  gives Directory all of Node's methods, with Node's ordinals, so a Node
+  client works on a Directory channel. As in FIDL (RFC-0023) it is a
+  mixin, not "is a": a Directory client has the calls of composed
+  protocols of its own library, and lends its connection to a client of
+  another library's (`dir.node { try $0.walk(names) }`). Event streams a
+  generic client couldn't read go on channels of their own (a live
+  query's).
 - **`idlc`** is a standalone swift-syntax tool that reads the same files. It
   emits C headers and encoders (for C game engines and other languages),
   checks evolution against a recorded API baseline, and produces protocol

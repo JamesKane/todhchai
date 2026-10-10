@@ -57,6 +57,12 @@ library `todhchai.node` is `todhchai.node.Node`. A method's ordinal is the
 Ordinals with bit 63 set are reserved for the system. The `@IPCLibrary`
 macro and `idlc` reject a protocol in which two methods' ordinals collide.
 
+A protocol may compose others (`protocol Directory: NodeIPC.Node`, FIDL's
+`compose`). A composed method keeps the ordinal of the protocol that
+declares it, so `walk` has the same ordinal on a Directory channel as on
+a Node channel, and a Node client works on either. `idlc` rejects a
+composition whose methods' names or ordinals collide.
+
 ### Cancellation
 
 A client may send `cancel` for any call it has in flight. The server then

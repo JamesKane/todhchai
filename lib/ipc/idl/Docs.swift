@@ -6,7 +6,8 @@
 
 import IPCModel
 
-public func markdown(_ p: ProtocolModel, _ library: LibraryModel, source: String) -> String {
+public func markdown(_ p: ProtocolModel, _ library: LibraryModel, source: String,
+                     composed: [Interface.ComposedMethod] = []) -> String {
   let types = library.types
   var out = """
     # \(p.name)
@@ -27,6 +28,26 @@ public func markdown(_ p: ProtocolModel, _ library: LibraryModel, source: String
     let parameters = m.parameters.map { "`\($0.name): \($0.type.swiftName)`" }.joined(separator: ", ")
     out += "| `\(m.name)` | \(kind) | \(m.since) | `\(hex(m.ordinal))` | \(parameters.isEmpty ? "—" : parameters) "
       + "| \(m.result.map { "`\($0.type.swiftName)`" } ?? "—") | \(m.errorType.map { "`\($0)`" } ?? "—") |\n"
+  }
+  if !composed.isEmpty {
+    let ids = composed.map(\.origin.id).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+    out += """
+
+      It composes \(ids.map { "`\($0)`" }.joined(separator: ", ")): their methods are its methods, with
+      their own ordinals, and are described with their protocols.
+
+      | Method | From | Kind | Ordinal |
+      |---|---|---|---|
+
+      """
+    for c in composed {
+      let kind = switch c.method.kind {
+      case .call: "call"
+      case .oneway: "one-way"
+      case .event: "event"
+      }
+      out += "| `\(c.method.name)` | `\(c.origin.id)` | \(kind) | `\(hex(c.method.ordinal))` |\n"
+    }
   }
   for m in p.methods {
     out += "\n## \(m.name)\n\n"

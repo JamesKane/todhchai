@@ -1,0 +1,6 @@
+# API baseline for todhchai.fs.Attributes, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.fs.Attributes version 1
+struct Attribute (String,UInt8,[UInt8])
+method getAttribute call since 1 params (String) result Attribute throws FsError
+method removeAttribute call since 1 params (String) result - throws FsError
+method setAttribute call since 1 params (Attribute) result - throws FsError

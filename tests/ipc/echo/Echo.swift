@@ -52,6 +52,12 @@ public enum TestIPC {
     @since(3) func many(_ shapes: [Shaped], nested: [[UInt32]], maybe: [Point]?) -> [Shaped]
     @since(3) func optionals(_ text: String?, bytes: [UInt8]?, point: Point?, handle: consuming Handle?) -> Handle?
   }
+
+  /// Echo, composed, and louder.
+  public protocol Loud: Echo {
+    func shout(_ text: String) -> String
+    @event func shouted(_ text: String)
+  }
 }
 
 public typealias EchoError = TestIPC.EchoError
@@ -109,6 +115,45 @@ public struct EchoImpl: TestIPC.EchoHandler {
 }
 
 /// Starts a server on its own thread; it sends one event, then serves.
+/// Echo's methods, and shouting.
+public struct LoudImpl: TestIPC.LoudHandler {
+  var echo = EchoImpl()
+
+  public init() {}
+
+  public mutating func shout(_ text: String) -> String { text.uppercased() }
+
+  public mutating func say(_ text: String, times: UInt32) throws(EchoError) -> String { try echo.say(text, times: times) }
+  public mutating func note(_ value: UInt64, loud: Bool) { echo.note(value, loud: loud) }
+  public mutating func swap(_ handle: consuming Handle) -> Handle { handle }
+  public mutating func noted() -> UInt64 { echo.noted() }
+  public mutating func reflect(_ s: TestIPC.Shaped) -> TestIPC.Shaped { s }
+  public mutating func carry(_ c: consuming TestIPC.Carried) -> TestIPC.Carried { echo.carry(c) }
+  public mutating func many(_ shapes: [TestIPC.Shaped], nested: [[UInt32]], maybe: [TestIPC.Point]?) -> [TestIPC.Shaped] {
+    echo.many(shapes, nested: nested, maybe: maybe)
+  }
+  public mutating func optionals(_ text: String?, bytes: [UInt8]?, point: TestIPC.Point?, handle: consuming Handle?)
+    -> Handle?
+  {
+    echo.optionals(text, bytes: bytes, point: point, handle: handle)
+  }
+}
+
+/// Serves Loud, after sending one event of Echo's and one of its own.
+public func startLoudServer(_ raw: UInt32) -> Task<IPCError<Never>?, Never> {
+  Task.detached {
+    var server = TestIPC.LoudServer(channel: Handle(raw: raw), impl: LoudImpl())
+    do throws(IPCError<Never>) {
+      try TestIPC.EchoEventSender.sendTicked(1, label: "composed", on: server.connection)
+      try server.sendShouted("hey")
+      try server.serve()
+      return nil
+    } catch {
+      return error
+    }
+  }
+}
+
 public func startServer(_ raw: UInt32) -> Task<IPCError<Never>?, Never> {
   Task.detached {
     var server = TestIPC.EchoServer(channel: Handle(raw: raw), impl: EchoImpl())

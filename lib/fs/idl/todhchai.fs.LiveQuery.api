@@ -1,0 +1,5 @@
+# API baseline for todhchai.fs.LiveQuery, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.fs.LiveQuery version 1
+struct QueryChange (QueryChangeKind,UInt64,String,UInt64)
+enum QueryChangeKind UInt8 (1,2,3,4,5)
+method changed event since 1 params (QueryChange) result - throws -

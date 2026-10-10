@@ -400,6 +400,9 @@ struct CHeader {
       let upper = snakeCase(p.name).uppercased()
       emit("\n#define \(upper)_PROTOCOL_ID \"\(p.id)\"\n#define \(upper)_VERSION \(p.version)")
       for m in p.methods { emit("#define \(ordinalName(p, m)) UINT64_C(\(hex(m.ordinal)))") }
+      if !p.composes.isEmpty {
+        emit("// \(p.name) composes \(p.composes.joined(separator: ", ")): their functions work on its channels too.")
+      }
     }
 
     for e in library.errors {

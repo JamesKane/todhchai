@@ -200,8 +200,14 @@ let package = Package(
             exclude: ["ring", "idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "BlockTests", dependencies: ["Block", "BlockRing", "HostedPrograms", "Launch", "Node", "IPC", "IDL"],
                 path: "tests/block", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    // The fs service (filesystem.md §7): Taisce as Directory and File
+    // channels that compose Node, over a block service session.
+    .target(name: "Fs", dependencies: ["Block", "BlockRing", "Node", "IPC", "Taisce"], path: "lib/fs",
+            exclude: ["idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "FsTests", dependencies: ["Fs", "Block", "HostedPrograms", "Launch", "Node", "IPC", "IDL", "Taisce"],
+                path: "tests/fs", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The hosted boot and the programs it can start.
-    .target(name: "HostedPrograms", dependencies: ["Block", "BlockRing", "Launch", "Node", "IPC"], path: "lib/hosted",
+    .target(name: "HostedPrograms", dependencies: ["Block", "BlockRing", "Fs", "Launch", "Node", "IPC", "Taisce"], path: "lib/hosted",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .executableTarget(name: "hostboot", dependencies: ["HostedPrograms", "Launch", "Sys"], path: "tools/hostboot"),
     // The test protocol and its server, shared by the tests below.

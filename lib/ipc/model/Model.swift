@@ -226,7 +226,12 @@ public struct ProtocolModel: Sendable {
   /// The library's id and the protocol's name: "todhchai.node.Node".
   public var id: String
   public var version: Int
+  /// Its own methods.
   public var methods: [Method]
+  /// The protocols it composes, as written: "Attributes" in this library,
+  /// "NodeIPC.Node" in another. Their methods are its methods too, with
+  /// their own ordinals (FIDL's `compose`, a mixin: no "is a").
+  public var composes: [String] = []
 
   /// The named types its methods use.
   public func used(_ types: Types) -> (structs: [StructModel], enums: [EnumModel]) {

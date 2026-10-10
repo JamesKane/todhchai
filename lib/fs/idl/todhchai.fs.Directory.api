@@ -1,0 +1,28 @@
+# API baseline for todhchai.fs.Directory, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.fs.Directory version 1
+struct Attribute (String,UInt8,[UInt8])
+struct Entry (String,UInt64,UInt8,UInt64,Int64,[Attribute])
+struct IndexInfo (String,UInt8,Bool,Bool)
+struct Listing ([Entry],UInt64,Bool)
+struct Match (UInt64,String)
+compose todhchai.fs.Attributes
+compose todhchai.node.Node
+method changed event since 1 params (Change) result - throws - from todhchai.node.Node
+method create call since 1 params (String,NodeKind) result Walked throws NodeError from todhchai.node.Node
+method declareIndex call since 1 params (String,UInt8,Bool) result - throws FsError
+method getAttribute call since 1 params (String) result Attribute throws FsError from todhchai.fs.Attributes
+method indices call since 1 params () result [IndexInfo] throws -
+method list call since 1 params (UInt64,UInt32,[String]) result Listing throws FsError
+method live call since 1 params (String,Bool) result Handle throws FsError
+method query call since 1 params (String,Bool) result [Match] throws FsError
+method read call since 1 params (UInt64,UInt32) result [UInt8] throws NodeError from todhchai.node.Node
+method readdir call since 1 params (UInt64,UInt32,UInt32) result DirBatch throws NodeError from todhchai.node.Node
+method remove call since 1 params () result - throws NodeError from todhchai.node.Node
+method removeAttribute call since 1 params (String) result - throws FsError from todhchai.fs.Attributes
+method rename call since 1 params (String,String) result - throws FsError
+method setAttribute call since 1 params (Attribute) result - throws FsError from todhchai.fs.Attributes
+method stat call since 1 params (UInt32) result Stat throws NodeError from todhchai.node.Node
+method sync call since 1 params () result - throws FsError
+method walk call since 1 params ([String]) result Walked throws NodeError from todhchai.node.Node
+method watch call since 1 params (UInt64) result UInt64 throws NodeError from todhchai.node.Node
+method write call since 1 params (UInt64,[UInt8]) result UInt32 throws NodeError from todhchai.node.Node

@@ -51,7 +51,13 @@ protocols' pages and baselines, and commit them:
     .build/debug/idlc ... --update-baseline FILE                         # record
 
 `idlc` exits 1 if the change would break a client of the recorded
-baseline. The test library's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
+baseline. A protocol composes others by naming them as it would inherit
+(`protocol Directory: NodeIPC.Node`, FIDL's `compose`); for another
+library's, pass its file to idlc with `--with lib/node/Node.swift`. A
+composed client lends its connection for another library's calls:
+`dir.node { (c: inout NodeIPC.NodeClient) throws(...) in try c.walk(names) }`.
+A public library's structs that other modules build need an explicit
+public memberwise `init` (labels as the fields, in order). The test library's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
 Calls go through `channel_call` and record FLOW records with croi's flow
 ids (category `ipc`).
 
@@ -86,6 +92,16 @@ not Node: it opens the ring and attaches buffer VMOs, and the data goes
 through the ring. Hosted, `FileBackend` is an image file; the hosted
 boot's `block` program makes `.build/hosted/block.img`. idlc's outputs are
 in `lib/block/idl`.
+
+## The fs service
+
+`lib/fs` serves a Taisce volume over a block session (`RingDevice`):
+`FsIPC.Directory` and `File` compose Node and `Attributes`, so `cat` and
+`ls` work through any Node client, and add listings with attributes,
+rename, queries, live queries (a channel of their own), indices and sync.
+The service's tree is `status` and `volume` (the root; a manifest mounts
+it with `mount /data fs/volume`). The hosted boot's `fs` program formats
+the block image if it holds no volume. Conveniences: `lib/fs/Client.swift`.
 
 ## Sys
 

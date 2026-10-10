@@ -1,0 +1,18 @@
+# API baseline for todhchai.fs.File, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.fs.File version 1
+compose todhchai.fs.Attributes
+compose todhchai.node.Node
+method changed event since 1 params (Change) result - throws - from todhchai.node.Node
+method create call since 1 params (String,NodeKind) result Walked throws NodeError from todhchai.node.Node
+method getAttribute call since 1 params (String) result Attribute throws FsError from todhchai.fs.Attributes
+method read call since 1 params (UInt64,UInt32) result [UInt8] throws NodeError from todhchai.node.Node
+method readdir call since 1 params (UInt64,UInt32,UInt32) result DirBatch throws NodeError from todhchai.node.Node
+method remove call since 1 params () result - throws NodeError from todhchai.node.Node
+method removeAttribute call since 1 params (String) result - throws FsError from todhchai.fs.Attributes
+method resize call since 1 params (UInt64) result - throws FsError
+method setAttribute call since 1 params (Attribute) result - throws FsError from todhchai.fs.Attributes
+method stat call since 1 params (UInt32) result Stat throws NodeError from todhchai.node.Node
+method sync call since 1 params () result - throws FsError
+method walk call since 1 params ([String]) result Walked throws NodeError from todhchai.node.Node
+method watch call since 1 params (UInt64) result UInt64 throws NodeError from todhchai.node.Node
+method write call since 1 params (UInt64,[UInt8]) result UInt32 throws NodeError from todhchai.node.Node

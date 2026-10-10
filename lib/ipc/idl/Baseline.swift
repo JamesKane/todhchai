@@ -17,8 +17,11 @@ public struct BaselineMethod: Equatable {
   public var parameters: [String]  // Swift types, in order
   public var result: String  // "-" for none
   public var error: String  // "-" for none
+  /// The protocol that declares it, if it comes by composition.
+  public var from: String?
 
-  init(_ m: Method) {
+  init(_ m: Method, from: String? = nil) {
+    self.from = from
     name = m.name
     kind = switch m.kind {
     case .call: "call"
@@ -32,9 +35,9 @@ public struct BaselineMethod: Equatable {
   }
 
   init?(line: String) {
-    // method NAME KIND since N params (A,B) result R throws E
+    // method NAME KIND since N params (A,B) result R throws E [from ID]
     let f = line.split(separator: " ").map(String.init)
-    guard f.count == 11, f[0] == "method", f[3] == "since", f[5] == "params", f[7] == "result",
+    guard f.count == 11 || (f.count == 13 && f[11] == "from"), f[0] == "method", f[3] == "since", f[5] == "params", f[7] == "result",
       f[9] == "throws", let since = Int(f[4]), f[6].hasPrefix("("), f[6].hasSuffix(")")
     else { return nil }
     name = f[1]
@@ -44,10 +47,12 @@ public struct BaselineMethod: Equatable {
     parameters = inner.isEmpty ? [] : inner.split(separator: ",").map(String.init)
     result = f[8]
     error = f[10]
+    from = f.count == 13 ? f[12] : nil
   }
 
   var line: String {
     "method \(name) \(kind) since \(since) params (\(parameters.joined(separator: ","))) result \(result) throws \(error)"
+      + (from.map { " from \($0)" } ?? "")
   }
 }
 
@@ -83,21 +88,26 @@ public struct Baseline: Equatable {
   public var id: String
   public var version: Int
   public var types: [BaselineType]
+  /// The ids of the protocols it composes, directly or not. Their types
+  /// are in their own baselines.
+  public var composes: [String] = []
   public var methods: [BaselineMethod]
 
-  public init(_ p: ProtocolModel, _ library: LibraryModel) {
+  public init(_ p: ProtocolModel, _ library: LibraryModel, composed: [Interface.ComposedMethod] = []) {
     id = p.id
     version = p.version
     let used = p.used(library.types)
     types = used.structs.map(BaselineType.init) + used.enums.map(BaselineType.init)
     types.sort { $0.name < $1.name }
-    methods = p.methods.map(BaselineMethod.init).sorted { $0.name < $1.name }
+    composes = composed.map(\.origin.id).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }.sorted()
+    methods = (p.methods.map { BaselineMethod($0) } + composed.map { BaselineMethod($0.method, from: $0.origin.id) })
+      .sorted { $0.name < $1.name }
   }
 
   /// The baseline file's text.
   public var text: String {
     (["# API baseline for \(id), written by idlc. Commit it; idlc checks changes against it.",
-      "protocol \(id) version \(version)"] + types.map(\.line) + methods.map(\.line))
+      "protocol \(id) version \(version)"] + types.map(\.line) + composes.map { "compose \($0)" } + methods.map(\.line))
       .joined(separator: "\n") + "\n"
   }
 
@@ -106,11 +116,14 @@ public struct Baseline: Equatable {
     var version: Int?
     var methods: [BaselineMethod] = []
     var types: [BaselineType] = []
+    var composes: [String] = []
     for line in text.split(separator: "\n").map(String.init) where !line.hasPrefix("#") {
       let f = line.split(separator: " ")
       if f.first == "protocol", f.count == 4, f[2] == "version" {
         id = String(f[1])
         version = Int(f[3])
+      } else if f.first == "compose", f.count == 2 {
+        composes.append(String(f[1]))
       } else if let t = BaselineType(line: line) {
         types.append(t)
       } else if let m = BaselineMethod(line: line) {
@@ -123,6 +136,7 @@ public struct Baseline: Equatable {
     self.id = id
     self.version = version
     self.types = types
+    self.composes = composes
     self.methods = methods
   }
 }
@@ -148,8 +162,12 @@ public func compatibility(old: Baseline, new: Baseline) -> [String] {
     }
     if now != m { problems.append("'\(m.name)' changed: was `\(m.line)`, now `\(now.line)`") }
   }
+  for c in old.composes where !new.composes.contains(c) {
+    problems.append("it no longer composes \(c)")
+  }
+  // A composed protocol's methods follow that protocol's versions.
   let known = Set(old.methods.map(\.name))
-  let added = new.methods.filter { !known.contains($0.name) }
+  let added = new.methods.filter { !known.contains($0.name) && $0.from == nil }
   for m in added where m.since <= old.version {
     problems.append("'\(m.name)' is new, so it needs @since(\(old.version + 1)) or later")
   }

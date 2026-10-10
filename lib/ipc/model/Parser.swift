@@ -21,6 +21,7 @@ public struct LibraryModel: Sendable {
   public var types = Types()
   public var errors: [ErrorEnumModel] = []
   public var protocols: [ProtocolModel] = []
+  var protocolNames: [String] = []
 
   /// Reads `library`, whose @IPCLibrary attribute is `attribute`.
   public init(_ library: EnumDeclSyntax, attribute: AttributeSyntax) throws(ModelError) {
@@ -63,6 +64,7 @@ public struct LibraryModel: Sendable {
         }
       }
     }
+    protocolNames = protocolDecls.map { $0.name.text }
     for p in protocolDecls { protocols.append(try protocolModel(p, resolver)) }
   }
 
@@ -191,9 +193,11 @@ public struct LibraryModel: Sendable {
     let name = s.name.text
     let copyable = !(s.inheritanceClause?.inheritedTypes.contains { $0.type.trimmedDescription == "~Copyable" } ?? false)
     var fields: [(String, String, WireType)] = []
+    var initializers: [InitializerDeclSyntax] = []
     for member in s.memberBlock.members {
-      if member.decl.is(InitializerDeclSyntax.self) {
-        throw ModelError("struct '\(name)': decoding uses the memberwise initializer, so declare others in an extension")
+      if let i = member.decl.as(InitializerDeclSyntax.self) {
+        initializers.append(i)
+        continue
       }
       guard let v = member.decl.as(VariableDeclSyntax.self) else { continue }
       if v.modifiers.contains(where: { $0.name.text == "static" }) { continue }
@@ -212,6 +216,15 @@ public struct LibraryModel: Sendable {
       }
     }
     guard !fields.isEmpty else { throw ModelError("struct '\(name)' has no stored properties") }
+    // Decoding calls the memberwise initializer. One may be written out (to
+    // make it public, for other modules), with the fields' labels in order;
+    // others go in an extension.
+    for i in initializers {
+      let labels = i.signature.parameterClause.parameters.map { $0.firstName.text }
+      guard labels == fields.map(\.0) else {
+        throw ModelError("struct '\(name)': decoding uses the memberwise initializer, so declare others in an extension")
+      }
+    }
     return StructModel(name: name, isCopyable: copyable, fields: fields)
   }
 
@@ -268,7 +281,24 @@ public struct LibraryModel: Sendable {
       }
       seen.append((m.ordinal, m.name))
     }
-    return ProtocolModel(name: p.name.text, id: protocolID, version: version, methods: methods)
+    // `protocol Directory: NodeIPC.Node, Attributes` composes those.
+    var composes: [String] = []
+    for inherited in p.inheritanceClause?.inheritedTypes ?? [] {
+      let name = inherited.type.trimmedDescription
+      let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+      guard (1...2).contains(parts.count), parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" } })
+      else { throw ModelError("protocol '\(p.name.text)' composes '\(name)': name a protocol, as Name or Library.Name") }
+      if parts.count == 1 && !protocolNames.contains(name) {
+        throw ModelError("protocol '\(p.name.text)' composes '\(name)', which the library doesn't declare")
+      }
+      if composes.contains(name) || name == p.name.text {
+        throw ModelError("protocol '\(p.name.text)' composes '\(name)' twice, or itself")
+      }
+      composes.append(name)
+    }
+    var model = ProtocolModel(name: p.name.text, id: protocolID, version: version, methods: methods)
+    model.composes = composes
+    return model
   }
 
   func method(_ f: FunctionDeclSyntax, protocolID: String, _ resolver: Resolver) throws(ModelError) -> Method {

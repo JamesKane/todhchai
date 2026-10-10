@@ -37,6 +37,11 @@ func echoProtocol() throws -> ProtocolModel {
   #expect(markdown(echo, library, source: source) == (try read("tests/ipc/docs/Echo.md")))
   #expect(Baseline(echo, library).text == (try read("tests/ipc/baselines/todhchai.test.Echo.api")))
   #expect(library.errors.first?.cases.first?.code == 1)
+  let interface = try echoInterface()
+  let loud = try #require(library.protocols.first { $0.name == "Loud" })
+  let composed = try interface.composedMethods(loud, in: library)
+  #expect(markdown(loud, library, source: source, composed: composed) == (try read("tests/ipc/docs/Loud.md")))
+  #expect(Baseline(loud, library, composed: composed).text == (try read("tests/ipc/baselines/todhchai.test.Loud.api")))
 }
 
 // MARK: C and Swift agree on the bytes
@@ -196,4 +201,70 @@ func baseline(_ body: String, version: Int, types: String = "") throws -> Baseli
     let problems = compatibility(old: old, new: try baseline("func f(_ s: S) -> K", version: 1, types: changed))
     #expect(problems.contains { $0.contains("changed") }, "\(changed): \(problems)")
   }
+}
+
+// MARK: Composition
+
+/// Libraries in files of their own: `L` (id "t") and `M` (id "m").
+func composing(_ l: String, _ m: String) throws(IDLError) -> Interface {
+  try scan([("L.swift", "@IPCLibrary(id: \"t\", version: 1)\nenum L {\n\(l)\n}")],
+           references: [("M.swift", "@IPCLibrary(id: \"m\", version: 1)\nenum M {\n\(m)\n}")])
+}
+
+func composedNames(_ i: Interface, _ name: String) throws -> [String] {
+  let l = try #require(i.libraries.first)
+  let p = try #require(l.protocols.first { $0.name == name })
+  return try i.composedMethods(p, in: l).map { "\($0.origin.id).\($0.method.name)" }
+}
+
+@Test func compositionFlattensAcrossLibrariesOnce() throws {
+  let i = try composing(
+    "protocol A: M.Base { func a() }\nprotocol B: A, M.Base { func b() }",
+    "protocol Base { func base()\n@event func happened() }")
+  #expect(try composedNames(i, "A") == ["m.Base.base", "m.Base.happened"])
+  // Base comes once, through A and directly.
+  #expect(try composedNames(i, "B") == ["t.A.a", "m.Base.base", "m.Base.happened"])
+  // Composed methods keep the ordinals of the protocol that declares them.
+  let base = try #require(i.references.first?.protocols.first)
+  let l = try #require(i.libraries.first)
+  let a = try #require(l.protocols.first)
+  #expect(try i.composedMethods(a, in: l).map(\.method.ordinal) == base.methods.map(\.ordinal))
+}
+
+@Test func compositionErrorsSayWhatIsMissingOrClashes() throws {
+  func error(_ l: String, _ m: String = "protocol Base { func base() }") -> String {
+    do {
+      let i = try composing(l, m)
+      let lib = try #require(i.libraries.first)
+      for p in lib.protocols { _ = try i.composedMethods(p, in: lib) }
+      return "none"
+    } catch {
+      return "\(error)"
+    }
+  }
+  #expect(error("protocol A: N.Base { func a() }")
+    == "t.A composes N.Base, which no file given declares (pass its file with --with)")
+  #expect(error("protocol A: M.Base { func base() }") == "t.A: 'base' of m.Base clashes with 'base' of t.A")
+  #expect(error("protocol A: Nope { func a() }").contains("composes 'Nope', which the library doesn't declare"))
+  #expect(error("protocol A: B { func a() }\nprotocol B: A { func b() }").contains("composes itself"))
+}
+
+@Test func baselinesRecordCompositionAndItsBreaks() throws {
+  func baseline(_ l: String, version: Int = 1) throws -> Baseline {
+    let i = try scan([("L.swift", "@IPCLibrary(id: \"t\", version: \(version))\nenum L {\n\(l)\n}")],
+                     references: [("M.swift", "@IPCLibrary(id: \"m\", version: 2)\nenum M {\nprotocol Base { func base()\n@since(2) func later() }\n}")])
+    let lib = try #require(i.libraries.first)
+    let p = try #require(lib.protocols.first)
+    return Baseline(p, lib, composed: try i.composedMethods(p, in: lib))
+  }
+  let old = try baseline("protocol A: M.Base { func a() }")
+  #expect(old.text.contains("compose m.Base\n"))
+  #expect(old.text.contains("method later call since 2 params () result - throws - from m.Base\n"))
+  // The baseline reads back as written.
+  #expect(Baseline(text: old.text) == old)
+  // Methods that come with a composed protocol follow its versions, not A's.
+  #expect(compatibility(old: try #require(Baseline(text: old.text.replacing("method later call since 2 params () result - throws - from m.Base\n", with: ""))), new: old).isEmpty)
+  // Composing no longer breaks clients that used its methods.
+  let alone = try baseline("protocol A { func a() }")
+  #expect(compatibility(old: old, new: alone).contains("it no longer composes m.Base"))
 }

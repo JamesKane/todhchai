@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The fs service, over the block service's device: a volume labelled
+# "main", made if the device holds none. Its tree: /svc/fs/status, and
+# the volume at /svc/fs/volume.
+service fs
+program fs
+arg --format main /svc/block/device
+use block
+export
+restart on-failure

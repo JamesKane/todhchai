@@ -138,7 +138,7 @@ final class Buffer {
 
 /// One channel's session: its ring and buffers.
 final class Session {
-  unowned let service: BlockService
+  let service: BlockService
   var open: OpenRing?
   var watch: UInt64?
   var buffers: [UInt32: Buffer] = [:]

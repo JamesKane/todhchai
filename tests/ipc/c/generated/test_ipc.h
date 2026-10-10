@@ -31,6 +31,12 @@ extern "C" {
 #define ECHO_MANY_ORDINAL UINT64_C(0x55aaef8b58009fb1)
 #define ECHO_OPTIONALS_ORDINAL UINT64_C(0x1bc1b45678c999e7)
 
+#define LOUD_PROTOCOL_ID "todhchai.test.Loud"
+#define LOUD_VERSION 3
+#define LOUD_SHOUT_ORDINAL UINT64_C(0x4667eb16fbf911a6)
+#define LOUD_SHOUTED_ORDINAL UINT64_C(0x34a4960e592991a7)
+// Loud composes Echo: their functions work on its channels too.
+
 // EchoError: codes in error replies (td_wire_call returns TD_ERR_REMOTE).
 #define ECHO_ERROR_TOO_LONG 1
 
@@ -555,6 +561,52 @@ static inline td_status_t echo_optionals(td_handle_t channel, uint32_t txid, td_
   if (s != TD_OK) return s;
   if ((s = td_wire_call(channel, buf, txid, buf, error_code)) != TD_OK) return s;
   return echo_optionals_decode_reply(buf, result);
+}
+
+// shout: encodes the request. txid is the caller's, nonzero.
+static inline td_status_t loud_shout_encode(td_wire_msg_t *m, uint32_t txid, const char *text, uint32_t text_len) {
+  td_status_t s = td_wire_begin(m, txid, TD_WIRE_REQUEST, 0, LOUD_SHOUT_ORDINAL, 16);
+  if (s != TD_OK) return s;
+  if ((s = td_wire_store_bytes(m, 0, (((td_wire_str_t){ text, text_len })).data, (((td_wire_str_t){ text, text_len })).len)) != TD_OK) return s;
+  return TD_OK;
+}
+
+// shout: decodes the reply.
+static inline td_status_t loud_shout_decode_reply(const td_wire_msg_t *m, const char **result, uint32_t *result_len) {
+  td_wire_reader_t rd, *r = &rd;
+  td_status_t s = TD_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  td_wire_arena_t *a = NULL;
+  (void)a;
+  if (td_wire_read_begin(r, m, 16) != TD_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, 0, result, result_len) != TD_OK) return TD_ERR_PROTOCOL;
+  return td_wire_read_end(r);
+}
+
+// shout: calls the method and waits for its reply. buf holds the
+// request, then the reply. Returns TD_ERR_REMOTE with *error_code set if
+// the method failed.
+static inline td_status_t loud_shout(td_handle_t channel, uint32_t txid, td_wire_msg_t *buf, int32_t *error_code, const char *text, uint32_t text_len, const char **result, uint32_t *result_len) {
+  td_status_t s = loud_shout_encode(buf, txid, text, text_len);
+  if (s != TD_OK) return s;
+  if ((s = td_wire_call(channel, buf, txid, buf, error_code)) != TD_OK) return s;
+  return loud_shout_decode_reply(buf, result, result_len);
+}
+
+// shouted (event): decodes it.
+static inline td_status_t loud_shouted_decode(const td_wire_msg_t *m, const char **text, uint32_t *text_len) {
+  td_wire_reader_t rd, *r = &rd;
+  td_status_t s = TD_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  td_wire_arena_t *a = NULL;
+  (void)a;
+  if (td_wire_read_begin(r, m, 16) != TD_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, 0, text, text_len) != TD_OK) return TD_ERR_PROTOCOL;
+  return td_wire_read_end(r);
 }
 
 #ifdef __cplusplus

@@ -6,18 +6,20 @@
 import Bench
 import FoundationEssentials
 
-/// Protocol files and the directory holding their API baselines.
-let protocols: [(file: String, baselines: String)] = [
-  ("tests/ipc/echo/Echo.swift", "tests/ipc/baselines"),
-  ("lib/node/Node.swift", "lib/node/idl"),
-  ("lib/node/Srv.swift", "lib/node/idl"),
-  ("lib/launch/Startup.swift", "lib/launch/idl"),
-  ("lib/block/Block.swift", "lib/block/idl"),
+/// Protocol files, the directory holding their API baselines, and the
+/// files of libraries they compose protocols from.
+let protocols: [(file: String, baselines: String, with: [String])] = [
+  ("tests/ipc/echo/Echo.swift", "tests/ipc/baselines", []),
+  ("lib/node/Node.swift", "lib/node/idl", []),
+  ("lib/node/Srv.swift", "lib/node/idl", []),
+  ("lib/launch/Startup.swift", "lib/launch/idl", []),
+  ("lib/block/Block.swift", "lib/block/idl", []),
+  ("lib/fs/Fs.swift", "lib/fs/idl", ["lib/node/Node.swift"]),
 ]
 
 /// idlc's C headers, which must compile cleanly.
 let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h", "lib/node/idl/srv_ipc.h", "lib/launch/idl/launch_ipc.h",
-                      "lib/block/idl/block_ipc.h"]
+                      "lib/block/idl/block_ipc.h", "lib/fs/idl/fs_ipc.h"]
 
 func ci(bench benchOptions: BenchOptions?) -> Bool {
   let logs = "bench/out/ci"
@@ -31,7 +33,8 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
   ]
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))
   for p in protocols {
-    steps.append(("baseline \(p.file)", [["swift", "run", "idlc", "--baseline", p.baselines, p.file]]))
+    steps.append(("baseline \(p.file)",
+                  [["swift", "run", "idlc", "--baseline", p.baselines] + p.with.flatMap { ["--with", $0] } + [p.file]]))
   }
   steps.append(("hostboot", [["swift", "build", "--product", "hostboot"], [".build/debug/hostboot", "--check"]]))
   steps.append(("c-headers", protocolHeaders.map { h in

@@ -5,7 +5,10 @@
 // reference page and an API baseline checked against the recorded one
 // (architecture §4).
 //
-//   idlc [--c-out DIR] [--doc-out DIR] [--baseline DIR [--update-baseline]] FILE...
+//   idlc [--c-out DIR] [--doc-out DIR] [--baseline DIR [--update-baseline]] [--with FILE]... FILE...
+//
+// --with reads a library only so FILE's protocols can compose its
+// protocols (`protocol Directory: NodeIPC.Node`); nothing is written for it.
 //
 // Exits 1 if a library can't be read or a protocol breaks its baseline.
 
@@ -37,6 +40,7 @@ var docOut: String?
 var baselineDir: String?
 var updateBaseline = false
 var files: [String] = []
+var withFiles: [String] = []
 var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
   switch arg {
@@ -44,6 +48,7 @@ while let arg = args.popFirst() {
   case "--doc-out": docOut = need(args.popFirst(), "--doc-out needs a directory")
   case "--baseline": baselineDir = need(args.popFirst(), "--baseline needs a directory")
   case "--update-baseline": updateBaseline = true
+  case "--with": withFiles.append(need(args.popFirst(), "--with needs a file"))
   default:
     if arg.hasPrefix("-") { fail("unknown option \(arg)") }
     files.append(arg)
@@ -54,9 +59,12 @@ if files.isEmpty { fail("no input files") }
 let sources = files.map { path in
   (path: path, text: need(try? String(contentsOfFile: path, encoding: .utf8), "can't read \(path)"))
 }
+let references = withFiles.map { path in
+  (path: path, text: need(try? String(contentsOfFile: path, encoding: .utf8), "can't read \(path)"))
+}
 let interface: Interface
 do {
-  interface = try scan(sources)
+  interface = try scan(sources, references: references)
 } catch {
   fail(error.description)
 }
@@ -74,10 +82,12 @@ for l in interface.libraries {
   if let cOut { save(cHeader(l, source: source), to: cOut, "\(snakeName(l)).h") }
 }
 for (l, p) in interface.protocols {
-  if let docOut { save(markdown(p, l, source: source), to: docOut, "\(p.name).md") }
+  let composed: [Interface.ComposedMethod]
+  do { composed = try interface.composedMethods(p, in: l) } catch { fail(error.description) }
+  if let docOut { save(markdown(p, l, source: source, composed: composed), to: docOut, "\(p.name).md") }
   if let baselineDir {
     let path = join(baselineDir, "\(p.id).api")
-    let new = Baseline(p, l)
+    let new = Baseline(p, l, composed: composed)
     if let text = try? String(contentsOfFile: path, encoding: .utf8) {
       guard let old = Baseline(text: text) else { fail("\(path) is not a baseline") }
       let problems = compatibility(old: old, new: new)
