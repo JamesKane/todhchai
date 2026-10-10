@@ -9,7 +9,11 @@ import FoundationEssentials
 /// Protocol files and the directory holding their API baselines.
 let protocols: [(file: String, baselines: String)] = [
   ("tests/ipc/echo/Echo.swift", "tests/ipc/baselines"),
+  ("lib/node/Node.swift", "lib/node/idl"),
 ]
+
+/// idlc's C headers, which must compile cleanly.
+let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h"]
 
 func ci(bench benchOptions: BenchOptions?) -> Bool {
   let logs = "bench/out/ci"
@@ -25,6 +29,10 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
   for p in protocols {
     steps.append(("baseline \(p.file)", [["swift", "run", "idlc", "--baseline", p.baselines, p.file]]))
   }
+  steps.append(("c-headers", protocolHeaders.map { h in
+    ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-Ilib/sys/host/c/include",
+     "-Ilib/ipc/c/include", "-include", h, "-x", "c", "/dev/null"]
+  }))
   var passed = true
   for (name, commands) in steps {
     let log = "\(logs)/\(String(name.map { $0 == "/" || $0 == " " ? "_" : $0 })).log"

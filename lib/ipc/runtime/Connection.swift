@@ -168,12 +168,13 @@ public struct IPCServerConnection: ~Copyable {
     try send(message)
   }
 
-  /// The next request, or `nil` once the client has closed its end.
-  public func nextRequest() throws(IPCError<Never>) -> (MessageHeader, IPCMessage)? {
+  /// The next request, or `nil` once the client has closed its end; throws
+  /// `timedOut` if none comes before `deadline`.
+  public func nextRequest(deadline: Int64 = infiniteDeadline) throws(IPCError<Never>) -> (MessageHeader, IPCMessage)? {
     while true {
       let message: IPCMessage
       do throws(IPCError<Never>) {
-        message = try receive(on: channel, deadline: infiniteDeadline, Never.self)
+        message = try receive(on: channel, deadline: deadline, Never.self)
       } catch .transport(.peerClosed) {
         return nil
       }

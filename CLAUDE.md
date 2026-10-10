@@ -55,6 +55,14 @@ baseline. The test library's outputs live in `tests/ipc/{c/generated,docs,baseli
 Calls go through `channel_call` and record FLOW records with croi's flow
 ids (category `ipc`).
 
+## Node
+
+`lib/node` is the Node protocol every service serves (architecture §6)
+and `NodeTree`, the helper that publishes an in-memory tree with text
+leaves (`status`, `ctl`). A service serves all its channels from one
+thread with `IPCDispatcher` (lib/ipc/runtime); change the tree from any
+thread and watchers hear. idlc's outputs for it are in `lib/node/idl`.
+
 ## Sys
 
 `Sys` (`lib/sys`, tier 0) is how services reach the kernel: croi's object

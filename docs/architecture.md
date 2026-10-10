@@ -226,16 +226,17 @@ attach messages exist for.
 ```swift
 @IPCLibrary(id: "todhchai.node", version: 1)
 enum NodeIPC {
-// Qid, Stat, StatMask, DirBatch, NodeKind, NodeError...: declared here too
+// Qid, Stat, Attribute, DirBatch, Walked, Change, NodeKind, NodeError: declared here too
 protocol Node {
-    func walk(_ names: borrowing NameList) throws(NodeError) -> WalkResult   // ≤ 16 names; partial results show where it stopped
-    func stat(_ fields: StatMask) throws(NodeError) -> Stat                  // typed attributes, Taisce style
-    func readdir(cursor: UInt64, max: UInt32, fields: StatMask) throws(NodeError) -> DirBatch
-    func read(offset: UInt64, max: UInt32) throws(NodeError) -> Bytes
-    func write(offset: UInt64, _ data: borrowing Bytes) throws(NodeError) -> UInt32
-    func watch(since seq: UInt64) -> NodeEvents                              // change stream; no polling
-    @since(2) func create(_ name: borrowing Name, kind: NodeKind) throws(NodeError) -> NodeChannel
-    @since(2) func remove() throws(NodeError)
+    func walk(_ names: [String]) throws(NodeError) -> Walked   // ≤ 16 names; partial results show where it stopped
+    func stat(_ fields: UInt32) throws(NodeError) -> Stat      // typed attributes, Taisce style
+    func readdir(cursor: UInt64, max: UInt32, fields: UInt32) throws(NodeError) -> DirBatch
+    func read(offset: UInt64, max: UInt32) throws(NodeError) -> [UInt8]
+    func write(offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32
+    func watch(since seq: UInt64) throws(NodeError) -> UInt64  // then `changed` events; no polling
+    @event func changed(_ change: Change)
+    func create(_ name: String, kind: NodeKind) throws(NodeError) -> Walked
+    func remove() throws(NodeError)
 }
 }
 ```

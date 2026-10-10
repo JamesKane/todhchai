@@ -181,6 +181,12 @@ let package = Package(
       "IPCMacros",
       .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
     ], path: "tests/ipc/macros"),
+    // Node (architecture §6): the protocol every service serves, and the
+    // helper that publishes an in-memory tree over it.
+    .target(name: "Node", dependencies: ["IPC"], path: "lib/node", exclude: ["idl"],
+            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "tests/node",
+                swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The test protocol and its server, shared by the tests below.
     .target(name: "Echo", dependencies: ["IPC"], path: "tests/ipc/echo",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),

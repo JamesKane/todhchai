@@ -1,0 +1,19 @@
+# API baseline for todhchai.node.Node, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.node.Node version 1
+struct Attribute (String,UInt8,[UInt8])
+struct Change (UInt64,ChangeKind,String)
+enum ChangeKind UInt8 (1,2,3,4)
+struct DirBatch ([Stat],UInt64,Bool)
+enum NodeKind UInt8 (1,2)
+struct Qid (UInt64,UInt32,NodeKind)
+struct Stat (Qid,String,UInt64,Int64,[Attribute])
+struct Walked ([Qid],Handle?)
+method changed event since 1 params (Change) result - throws -
+method create call since 1 params (String,NodeKind) result Walked throws NodeError
+method read call since 1 params (UInt64,UInt32) result [UInt8] throws NodeError
+method readdir call since 1 params (UInt64,UInt32,UInt32) result DirBatch throws NodeError
+method remove call since 1 params () result - throws NodeError
+method stat call since 1 params (UInt32) result Stat throws NodeError
+method walk call since 1 params ([String]) result Walked throws NodeError
+method watch call since 1 params (UInt64) result UInt64 throws NodeError
+method write call since 1 params (UInt64,[UInt8]) result UInt32 throws NodeError
