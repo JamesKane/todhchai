@@ -91,9 +91,12 @@ that can be checked.
 - The SDK's native backend for `Loop`, `Window`, `CPUSurface`, `Input` and
   `Audio`.
 - The display-timeline object and admission control ([croi-requirements.md](croi-requirements.md) §3, items 1 and 4).
+- The compositor's `windows` service, and crash survival: the SDK replays
+  its windows to a restarted compositor ([desktop.md](desktop.md) §1).
 - **Exit:** the M1 minimal and synth programs, unchanged, run natively and
   meet their M1 numbers in QEMU (audio within virtualization limits). The
-  compositor runs nested inside itself, two levels deep.
+  compositor runs nested inside itself, two levels deep, and the programs
+  keep running when it is killed.
 
 ### M5: Vulkan (N)
 - Our libc (F track): pthreads over futexes, ELF TLS, the dynamic linker.
@@ -117,6 +120,9 @@ that can be checked.
 - The router (plumber) with rules, the keyring with the shell's trusted
   confirmation prompt, and app scripting (properties, intent streams,
   claim and decline).
+- The compositor's privileged services (`capture`, `inject`, `shortcuts`,
+  `observe`, `a11y`) with the in-use indicator and the trusted path's
+  secure surfaces ([desktop.md](desktop.md) §1).
 - **Exit:** a usable desktop session in QEMU. The text-editor, terminal and
   file-browser reference programs meet their criteria.
 

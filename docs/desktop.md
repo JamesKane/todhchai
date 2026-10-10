@@ -16,6 +16,12 @@ The compositor is **Radharc** (Irish for "view, scene").
   carries an acquire fence (a timeline counter value). The compositor returns
   release fences and a **present credit**, so a client can never queue more
   frames than its latency setting allows.
+- Release is a **counter value** on the buffer's own timeline, never a
+  fence handle per frame (cheaper, and events carry no handles).
+- Layer and buffer ids are allocated by the client and never reused until
+  the server confirms the removal, so an event crossing a removal is
+  harmless. Each object being its own channel removes Wayland's destruction
+  races everywhere else; ids inside a session are where they could return.
 - **View tokens** let one client embed another's surface. Replicants, the
   file chooser, IME candidate windows and system dialogs drawn inside an app
   (Vita-style) all work this way, out of process.
@@ -56,6 +62,56 @@ and lets an IDE or terminal host GUI tools in a pane by passing them a
 compositor-shaped endpoint (acme does this for its children over
 `/mnt/wsys`).
 
+### Privileged services
+Wayland isolates every client and leaves capture, synthetic input, global
+shortcuts and assistive technology to portals and daemons that each
+desktop implements differently. X11 gives them to every client. Radharc
+serves each as its own typed protocol on its own channel, a service node
+in its tree, so granting one grants nothing else
+([research/wayland-alternatives-review.md](research/wayland-alternatives-review.md)):
+
+| Service | Gives | Typical holder |
+|---|---|---|
+| `capture` | buffer objects for an output, a window or a view subtree, with damage, through the present-queue ring in reverse | recorder, magnifier, remote desktop |
+| `inject` | synthetic key, pointer, touch and pen records, entering before or after focus routing | automation, switch access, dwell click |
+| `shortcuts` | registered chords, matched and consumed by the compositor; the holder sees no other keys | hotkey tools, push-to-talk |
+| `observe` | a read-only input feed (keys with modifiers, pointer position) | screen readers (key echo), on-screen keyboards |
+| `windows` | the window list (geometry, focus, workspace, owner signature) with typed `wctl` verbs, multi-subscriber: the control-only handle above | Deskbar, tiling scripts, `hey` |
+| `a11y` | every window's accessibility tree (sdk.md §10) in screen coordinates, following focus | screen readers |
+
+- **Grants** work as other direct grants do (architecture §5): the manifest
+  asks, the user approves once through the trusted prompt, the grant is a
+  recorded attribute, and revoking it closes the channel. A handle is
+  already unforgeable, so there are no tokens.
+- **Visible while in use.** Deskbar names every holder of an open
+  `capture`, `inject` or `observe` channel. The compositor serves them, so
+  it knows.
+- **Trusted path.** The keyring's confirmation prompt and the login screen
+  are secure surfaces: blacked out in `capture` and `a11y` (a screen reader
+  reads the prompt over the prompt's own channel), skipped by `observe`,
+  and deaf to injected input. Otherwise `inject` could approve its own
+  grant.
+- **Injected input is marked** with its source. Apps may ignore the mark,
+  so accessibility works everywhere; the trusted path refuses it.
+- **Nesting:** a nested compositor forwards these to its parent, as it does
+  clipboard and IME.
+
+Each one is built against a reference program (principle 8): `windows`
+with Deskbar, `capture` with a recorder, `inject` with a dwell-click tool.
+
+### Crash survival
+Radharc holds the scene, but each client's SDK holds the same state: its
+windows, their last geometry, its retained layer tree and its buffers
+(VMOs). When the compositor's channel closes, the launcher restarts
+Radharc, and the SDK reconnects, reopens each window, replays its layer
+tree and re-presents its last buffers. The app sees one `configure` and
+perhaps a late frame. Embedders re-establish their view tokens. The
+display mode survives too, since it belongs to the display driver
+(architecture §10). CI kills the compositor under the nested run and
+checks that the reference programs keep running. Window policy can later
+move to a client of `windows` if that proves worth it; input routing and
+the move and resize loop stay with the scene.
+
 ### Frame scheduling: plane first, latch late
 On every vblank, the compositor tries these in order:
 1. **Direct scanout.** A fullscreen surface whose buffer suits the display
@@ -93,7 +149,11 @@ frame (F-101).
 ### Game mode
 - A focused fullscreen game turns off every desktop effect and is scanned out
   directly.
-- Tearing is allowed when the client asks (async flip).
+- Tearing is allowed when the client asks (async flip). Only a surface on
+  a plane can tear: a composited window's present waits for the next
+  latch, and present feedback says so. A focused windowed game is
+  promoted to an overlay plane when the hardware allows, so it can tear
+  too (Windows' Independent Flip).
 - VRR follows the game's present rate, with low-framerate compensation below
   the VRR floor.
 - Color transforms use the display engine's degamma, CTM and gamma LUTs

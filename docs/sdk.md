@@ -167,6 +167,10 @@ int main(void) {
     overlay plane or composition, so an engine can see why it missed, and
     whether its times are measured at vblank or estimated (a firmware
     framebuffer has no vblank interrupt; see [desktop.md](desktop.md) §1).
+    An async (tearing) present is honored only on a plane; otherwise the
+    feedback says it waited for the next latch.
+  - If the compositor restarts, the SDK reconnects and replays the
+    window; the app sees a `configure`, not an error.
 - **Surfaces:**
   - `CPUSurface: ~Copyable` gives `pixels: MutableRawSpan` and `age` (buffer
     age, for partial redraw).

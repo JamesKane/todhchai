@@ -113,7 +113,9 @@ UEFI ──► croi loader ──► croi kernel ──► userboot (from bootfs
   services a process gets, and that is all it gets.
 - A service crash is contained. The launcher restarts it according to its
   manifest. Clients see the channel close and reconnect through the SDK.
-  Driver hosts and the GPU system driver are designed to be restartable.
+  Driver hosts and the GPU system driver are designed to be restartable,
+  and so is the compositor: the SDK replays each window to the new one
+  ([desktop.md](desktop.md) §1, "Crash survival").
   That covers software faults. A driver that touches hardware in the wrong
   state (a register block whose power domain is off, a GPU before its power
   sequence) can hang the bus or reset the SoC, and no process boundary
@@ -566,6 +568,14 @@ Full design: [filesystem.md](filesystem.md).
 - Pointer events carry high-rate unaccelerated and accelerated deltas. Pointer
   lock and confinement are server-side (F-213). Pen fields come from HID
   digitizer usages (F-212).
+- **Touchpads** are most of what libinput exists for, and ours to write:
+  acceleration curves, palm and thumb detection, tap and clickfinger,
+  gestures, and per-device quirks. libinput's quirks database can be used
+  as data under its license (principle 29); its code can't. A laptop
+  touchpad joins the hardware list before M8.
+- Capture, synthetic input, global shortcuts and input observation are
+  the compositor's privileged services, granted one handle each
+  ([desktop.md](desktop.md) §1).
 - The **IME** runs beside the compositor. Apps get preedit, commit and
   delete-surrounding events, and report a caret rectangle and surrounding text
   (F-211).
@@ -622,7 +632,9 @@ unit of effort):
    extensions).
 3. A **Wayland "core+"** server built into the compositor (core plus 16
    extensions), written from the protocol XML, for GTK, Qt and
-   Wayland-native apps.
+   Wayland-native apps. Shell extensions (`wlr-layer-shell` and the like)
+   stay out: panels are native replicants, and Wayland panels are not a
+   porting goal.
 4. The F-218 memory APIs that emulators and translation layers depend on:
    reservations, atomic views, and JIT code through dual views, with
    per-thread W^X by protection keys as an amd64 fast path (§7).
@@ -695,6 +707,11 @@ and Metal compatibility are explicitly out of scope.
 - **Replicants** (BeOS desktop widgets) run out of process and embed their
   surface through a view token, in a sealed namespace (§5). They never load
   code into Tracker or Deskbar.
+- **Desktop privileges** (screen capture, synthetic input, global
+  shortcuts, input observation, the window list, accessibility trees) are
+  separate compositor services, each a granted handle, with an indicator
+  while in use. The trusted prompt is a secure surface that capture can't
+  see and injected input can't press ([desktop.md](desktop.md) §1).
 - **Encryption:** each volume has its own key. The key hierarchy starts with
   the user's key.
 - **keyring** is the authentication agent, modeled on Plan 9's factotum.
@@ -785,7 +802,14 @@ client mounts it into its own namespace.
     session;
   - the compositor protocol, until a dedicated remote-display design exists
     (the layer-tree protocol makes that easier than sending pixels, but it
-    needs its own design).
+    needs its own design). Nesting gives most of it: a compositor whose
+    `/svc/display` is a remote display service (one that encodes and
+    sends frames) is a remote desktop, and one window can be forwarded
+    through `capture` and `inject` ([desktop.md](desktop.md) §1). No
+    compositor protocol crosses the network. Arcan's A12 is the design
+    to study (X25519, ChaCha, BLAKE3); a first version sends damage
+    rectangles losslessly, and video codecs wait for hardware codec
+    drivers.
 - **Authentication:** a keyring session. Its session secret becomes the
   transport key, so your own machines need no certificates. This is the
   Plan 9 pattern (`tlsclient` uses factotum's secret as a TLS pre-shared
