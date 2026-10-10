@@ -25,10 +25,11 @@ public struct IPCMessage {
 /// Encoding and decoding for generated code.
 public enum IPCCodec {
   /// Encodes a message: the header, then (with `inlineSize`) a body that
-  /// `body` fills. `closing` lists raw handles the caller has released into
-  /// the message; they are closed if encoding fails.
+  /// `body` fills. Handles move into the message as they are stored; if
+  /// encoding fails, those are closed (and any not yet stored close as
+  /// their owners drop them).
   public static func encode<E: IPCErrorCode>(
-    _ header: MessageHeader, inlineSize: Int?, closing: [UInt32] = [], _: E.Type,
+    _ header: MessageHeader, inlineSize: Int?, _: E.Type,
     _ body: (inout Encoder) throws(WireError) -> Void = { _ in }
   ) throws(IPCError<E>) -> IPCMessage {
     var bytes = [UInt8](repeating: 0, count: maxMessageBytes)
@@ -44,25 +45,33 @@ public enum IPCCodec {
       }
       sizes = e.finish()
     } catch {
-      for h in closing { Sys.close(raw: h) }
+      // Handle 0 is never valid, and the buffer starts zeroed.
+      for h in handles where h != 0 { Sys.close(raw: h) }
       throw .wire(error)
     }
     return IPCMessage(bytes: Array(bytes[..<sizes.byteCount]), handles: Array(handles[..<sizes.handleCount]))
   }
 
   /// Decodes a message's body, which must be consumed exactly. On failure
-  /// the message's handles are closed.
-  public static func decode<E: IPCErrorCode, R>(
+  /// the handles not yet decoded are closed; those decoded close with the
+  /// values that own them.
+  public static func decode<E: IPCErrorCode, R: ~Copyable>(
     _ message: IPCMessage, inlineSize: Int, _: E.Type, _ body: (inout Decoder) throws(WireError) -> R
   ) throws(IPCError<E>) -> R {
+    var d: Decoder
     do throws(WireError) {
-      var d = try Decoder(bytes: message.bytes.span.bytes, handles: message.handles.span)
+      d = try Decoder(bytes: message.bytes.span.bytes, handles: message.handles.span)
+    } catch {
+      message.closeHandles()
+      throw .wire(error)
+    }
+    do throws(WireError) {
       try d.beginBody(inlineSize: inlineSize)
       let result = try body(&d)
       try d.finish()
       return result
     } catch {
-      message.closeHandles()
+      for h in message.handles[d.handlesTaken...] { Sys.close(raw: h) }
       throw .wire(error)
     }
   }
@@ -76,6 +85,12 @@ extension Encoder {
     try storeBytes(utf8.span.bytes, at: offset)
   }
 
+  /// Stores a byte array (docs/wire-format.md: byte strings).
+  @_lifetime(self: copy self)
+  public mutating func storeByteArray(_ bytes: [UInt8], at offset: Int) throws(WireError) {
+    try storeBytes(bytes.span.bytes, at: offset)
+  }
+
   /// Stores a Bool as one byte, 0 or 1.
   @_lifetime(self: copy self)
   public mutating func storeBool(_ value: Bool, at offset: Int) throws(WireError) {
@@ -87,12 +102,33 @@ extension Decoder {
   /// A string, which must be valid UTF-8.
   @_lifetime(self: copy self)
   public mutating func loadString(at offset: Int) throws(WireError) -> String {
-    let bytes = try loadBytes(at: offset)
-    var utf8: [UInt8] = []
-    utf8.reserveCapacity(bytes.byteCount)
-    for i in 0..<bytes.byteCount { utf8.append(bytes.load(fromByteOffset: i, as: UInt8.self)) }
+    guard let string = try loadOptionalString(at: offset) else { throw .badPresence }
+    return string
+  }
+
+  /// A string that may be absent.
+  @_lifetime(self: copy self)
+  public mutating func loadOptionalString(at offset: Int) throws(WireError) -> String? {
+    guard let utf8 = try loadOptionalByteArray(at: offset) else { return nil }
     guard let string = String(validating: utf8, as: UTF8.self) else { throw .invalidUTF8 }
     return string
+  }
+
+  /// A byte string, copied out of the message.
+  @_lifetime(self: copy self)
+  public mutating func loadByteArray(at offset: Int) throws(WireError) -> [UInt8] {
+    guard let bytes = try loadOptionalByteArray(at: offset) else { throw .badPresence }
+    return bytes
+  }
+
+  /// A byte string that may be absent.
+  @_lifetime(self: copy self)
+  public mutating func loadOptionalByteArray(at offset: Int) throws(WireError) -> [UInt8]? {
+    guard let bytes = try loadOptionalBytes(at: offset) else { return nil }
+    var out: [UInt8] = []
+    out.reserveCapacity(bytes.byteCount)
+    for i in 0..<bytes.byteCount { out.append(bytes.load(fromByteOffset: i, as: UInt8.self)) }
+    return out
   }
 
   /// A Bool, which must be 0 or 1.

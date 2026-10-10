@@ -2,18 +2,22 @@
 
 @_exported import Sys
 @_exported import IPCWire
+@_exported import Trace
 
-/// Declares an IPC protocol. From the protocol it generates:
-/// - `<Name>Client`: calls the methods over a channel;
-/// - `<Name>Handler`: what a server implements (every method but events);
-/// - `<Name>Server`: reads requests, calls a handler, replies, sends events;
-/// - `<Name>Event`: the events, as an enum.
+/// Declares an IPC library: an enum holding structs, integer-backed enums,
+/// error enums (`Int32`, `IPCErrorCode`) and protocols. For each protocol
+/// `P` it generates, as members of the enum:
+/// - `PClient`: calls the methods over a channel;
+/// - `PHandler`: what a server implements (every method but events);
+/// - `PServer`: reads requests, calls a handler, replies, sends events;
+/// - `PEvent`: the events, as an enum.
 ///
-/// `id` names the protocol on the wire; method ordinals are hashed from it
-/// (docs/wire-format.md). `version` is the protocol's current version.
-@attached(peer, names: suffixed(Client), suffixed(Server), suffixed(Handler), suffixed(Event))
-public macro IPCProtocol(id: String, version: Int) =
-  #externalMacro(module: "IPCMacros", type: "IPCProtocolMacro")
+/// `id` names the library on the wire: protocol `P`'s id is "<id>.P", and
+/// method ordinals are hashed from it (docs/wire-format.md). `version` is
+/// the library's current version.
+@attached(member, names: arbitrary)
+public macro IPCLibrary(id: String, version: Int) =
+  #externalMacro(module: "IPCMacros", type: "IPCLibraryMacro")
 
 /// A request with no reply.
 @attached(peer) public macro oneway() = #externalMacro(module: "IPCMacros", type: "MarkerMacro")

@@ -133,21 +133,29 @@ UEFI ──► croi loader ──► croi kernel ──► userboot (from bootfs
 
 ### Interface definition: Swift as the IDL
 FIDL is replaced. Protocols are written as ordinary Swift files that are
-annotated and checked by a macro:
+annotated and checked by a macro. A library declares its protocols
+together with the structs and enums they use:
 
 ```swift
-@IPCProtocol(id: "todhchai.display.Surface", version: 1)
-protocol Surface {
-    func present(_ frame: borrowing FrameDesc, acquire: consuming Event)
-        throws(SurfaceError) -> PresentToken
-    @oneway func setTitle(_ title: borrowing InlineString<128>)
-    @event func released(_ buffer: BufferID)
-    @since(2) func setLatency(_ frames: UInt8)
+@IPCLibrary(id: "todhchai.display", version: 1)
+enum DisplayIPC {
+    struct FrameDesc { var buffer: BufferID; var damage: [Rect]; var flags: FrameFlags }
+    // BufferID, Rect, FrameFlags, PresentToken, SurfaceError: declared here too
+
+    protocol Surface {
+        func present(_ frame: FrameDesc, acquire: consuming Handle)
+            throws(SurfaceError) -> PresentToken
+        @oneway func setTitle(_ title: String)
+        @event func released(_ buffer: BufferID)
+        @since(2) func setLatency(_ frames: UInt8)
+    }
 }
 ```
 
-- The **macro** generates `SurfaceClient` and `SurfaceServer` with encode and
-  decode over `RawSpan`/`MutableRawSpan`. They allocate nothing and use no
+- The **macro** sees the whole library, so every layout is fixed when code
+  is generated. It generates `DisplayIPC.SurfaceClient` and
+  `DisplayIPC.SurfaceServer` with encode and decode over
+  `RawSpan`/`MutableRawSpan`. They allocate nothing and use no
   existentials, so they work in Embedded Swift.
 - Messages that carry handles are `~Copyable`, so a handle moves with
   `consuming`. Decoded requests are `~Escapable` views into the receive
@@ -216,7 +224,9 @@ its typed protocols are opened from there. It is shaped like
 attach messages exist for.
 
 ```swift
-@IPCProtocol(id: "todhchai.node.Node", version: 1)
+@IPCLibrary(id: "todhchai.node", version: 1)
+enum NodeIPC {
+// Qid, Stat, StatMask, DirBatch, NodeKind, NodeError...: declared here too
 protocol Node {
     func walk(_ names: borrowing NameList) throws(NodeError) -> WalkResult   // ≤ 16 names; partial results show where it stopped
     func stat(_ fields: StatMask) throws(NodeError) -> Stat                  // typed attributes, Taisce style
@@ -226,6 +236,7 @@ protocol Node {
     func watch(since seq: UInt64) -> NodeEvents                              // change stream; no polling
     @since(2) func create(_ name: borrowing Name, kind: NodeKind) throws(NodeError) -> NodeChannel
     @since(2) func remove() throws(NodeError)
+}
 }
 ```
 
@@ -683,10 +694,13 @@ and Metal compatibility are explicitly out of scope.
   or channel key) and the peer's identity, never a long-term key.
 
   ```swift
-  @IPCProtocol(id: "todhchai.auth.Keyring", version: 1)
-  protocol Keyring {
-      func startSession(_ pattern: borrowing KeyPattern, role: Role) throws(AuthError) -> AuthSessionChannel
-      func sign(_ digest: borrowing Digest, key: borrowing KeyPattern) throws(AuthError) -> Signature
+  @IPCLibrary(id: "todhchai.auth", version: 1)
+  enum AuthIPC {
+      // KeyPattern, Role, Digest, Signature, AuthError: declared here too
+      protocol Keyring {
+          func startSession(_ pattern: KeyPattern, role: Role) throws(AuthError) -> Handle  // an AuthSession channel
+          func sign(_ digest: Digest, key: KeyPattern) throws(AuthError) -> Signature
+      }
   }
   // AuthSession: next() -> .send(bytes) | .need(count) | .needKey(pattern) | .needConfirm | .done(AuthInfo); feed(bytes)
   ```

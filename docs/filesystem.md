@@ -213,7 +213,7 @@ services read the same tree.
 - The `fs` service is a tier 0 Embedded Swift process. It sits on the
   `block` service, which provides shared-memory submission and completion
   rings to the storage drivers.
-- **Protocol:** a Todhchai-native `@IPCProtocol` that replaces `fuchsia.io`.
+- **Protocol:** a Todhchai-native `@IPCLibrary` protocol that replaces `fuchsia.io`.
   It extends the generic Node protocol (architecture §6) with `Directory`
   (batched listing with stat fields and requested attributes, streamed),
   `File`, `Attributes`, `Query`, `Index`, `Watch` (change journal) and

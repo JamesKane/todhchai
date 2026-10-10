@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// idlc: reads Swift files that declare @IPCProtocol protocols and writes, for
-// each protocol, a C header, a Markdown reference page, and an API baseline
-// checked against the recorded one (architecture §4).
+// idlc: reads Swift files that declare @IPCLibrary libraries and writes a C
+// header for each library, and for each of its protocols a Markdown
+// reference page and an API baseline checked against the recorded one
+// (architecture §4).
 //
 //   idlc [--c-out DIR] [--doc-out DIR] [--baseline DIR [--update-baseline]] FILE...
 //
-// Exits 1 if a protocol can't be read or breaks its baseline.
+// Exits 1 if a library can't be read or a protocol breaks its baseline.
 
 // FoundationEssentials only, as principle 29 allows for tier 1.
 import FoundationEssentials
@@ -59,7 +60,7 @@ do {
 } catch {
   fail(error.description)
 }
-if interface.protocols.isEmpty { fail("no @IPCProtocol protocols in \(files.joined(separator: ", "))") }
+if interface.libraries.isEmpty { fail("no @IPCLibrary libraries in \(files.joined(separator: ", "))") }
 
 func save(_ text: String, to dir: String, _ name: String) {
   try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -69,12 +70,14 @@ func save(_ text: String, to dir: String, _ name: String) {
 
 var broken = false
 let source = files.count == 1 ? files[0] : "\(files.count) files"
-for p in interface.protocols {
-  if let cOut { save(cHeader(p, errors: interface.errors, source: source), to: cOut, "\(snakeName(p)).h") }
-  if let docOut { save(markdown(p, errors: interface.errors, source: source), to: docOut, "\(p.name).md") }
+for l in interface.libraries {
+  if let cOut { save(cHeader(l, source: source), to: cOut, "\(snakeName(l)).h") }
+}
+for (l, p) in interface.protocols {
+  if let docOut { save(markdown(p, l, source: source), to: docOut, "\(p.name).md") }
   if let baselineDir {
     let path = join(baselineDir, "\(p.id).api")
-    let new = Baseline(p)
+    let new = Baseline(p, l)
     if let text = try? String(contentsOfFile: path, encoding: .utf8) {
       guard let old = Baseline(text: text) else { fail("\(path) is not a baseline") }
       let problems = compatibility(old: old, new: new)

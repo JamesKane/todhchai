@@ -68,7 +68,7 @@ let package = Package(
     .executableTarget(name: "idlc", dependencies: ["IDL"], path: "tools/idlc"),
     .target(name: "IDLCTests", dependencies: ["TDWire"], path: "tests/ipc/c", exclude: ["generated"],
             cSettings: [.headerSearchPath("generated")]),
-    .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC"], path: "tests/ipc/idl",
+    .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC", "Echo"], path: "tests/ipc/idl",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
 
     // The F track's libc (architecture §20), tier 0, tested against the host's.
@@ -81,7 +81,7 @@ let package = Package(
     .target(name: "TDTraceCPU", path: "lib/trace/c"),
     .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer"),
     .target(name: "TraceReader", dependencies: ["TraceFormat"], path: "lib/trace/reader"),
-    .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader"], path: "tests/trace"),
+    .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader", "IPC", "Echo"], path: "tests/trace"),
     .executableTarget(name: "trace-cost", dependencies: ["Trace"], path: "tools/trace-cost"),
 
     // Wayland, spoken directly (architecture §18): wlgen turns the protocol
@@ -175,7 +175,7 @@ let package = Package(
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // td_wire.h: the wire format in C, for idlc's headers.
     .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
-    .target(name: "IPC", dependencies: ["IPCWire", "Sys", "IPCMacros"], path: "lib/ipc/runtime",
+    .target(name: "IPC", dependencies: ["IPCWire", "Sys", "Trace", "IPCMacros"], path: "lib/ipc/runtime",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "IPCMacrosTests", dependencies: [
       "IPCMacros",

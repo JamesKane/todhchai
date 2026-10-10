@@ -15,6 +15,10 @@ public struct Decoder: ~Copyable, ~Escapable {
   var inlineSize = 0
   var next = MessageHeader.size
 
+  /// How many handles have been taken from the side array: on a failed
+  /// decode, the rest are still the caller's to close.
+  public var handlesTaken: Int { nextHandle }
+
   @_lifetime(copy bytes, copy handles)
   public init(bytes: RawSpan, handles: Span<UInt32>) throws(WireError) {
     guard bytes.byteCount <= maxMessageBytes, bytes.byteCount % wireAlignment == 0 else {
@@ -34,17 +38,18 @@ public struct Decoder: ~Copyable, ~Escapable {
     next += self.inlineSize
   }
 
-  /// An integer in the inline part, at `offset` from its start.
+  /// An integer at `offset` from the body's start, in the inline part or an
+  /// out-of-line object already taken.
   public func load<T: FixedWidthInteger & ConvertibleFromBytes>(_: T.Type, at offset: Int)
     throws(WireError) -> T
   {
-    guard offset >= 0, offset + MemoryLayout<T>.size <= inlineSize else { throw .outOfBounds }
+    guard offset >= 0, bodyStart + offset + MemoryLayout<T>.size <= next else { throw .outOfBounds }
     return bytes.load(fromByteOffset: bodyStart + offset, as: T.self, .littleEndian)
   }
 
-  /// Checks that the inline part's padding in `offset..<offset+count` is zero.
+  /// Checks that the padding in `offset..<offset+count` is zero.
   public func checkPadding(at offset: Int, count: Int) throws(WireError) {
-    guard offset >= 0, offset + count <= inlineSize else { throw .outOfBounds }
+    guard offset >= 0, count >= 0, bodyStart + offset + count <= next else { throw .outOfBounds }
     for i in 0..<count where bytes.load(fromByteOffset: bodyStart + offset + i, as: UInt8.self) != 0 {
       throw .nonzeroPadding
     }
@@ -54,18 +59,57 @@ public struct Decoder: ~Copyable, ~Escapable {
   /// line data must be taken in the order it was stored.
   @_lifetime(copy self)
   public mutating func loadBytes(at offset: Int) throws(WireError) -> RawSpan {
+    guard let bytes = try loadOptionalBytes(at: offset) else { throw .badPresence }
+    return bytes
+  }
+
+  /// A byte string that may be absent (marker zero, count zero).
+  @_lifetime(copy self)
+  public mutating func loadOptionalBytes(at offset: Int) throws(WireError) -> RawSpan? {
+    guard let (count, base) = try loadVector(at: offset, elementSize: 1) else { return nil }
+    return bytes.extracting((bodyStart + base)..<(bodyStart + base + count))
+  }
+
+  /// A vector's count, and the offset of its element block, which is taken
+  /// now (element `i` starts at `base + i * elementSize`); nil if absent.
+  @_lifetime(self: copy self)
+  public mutating func loadVector(at offset: Int, elementSize: Int) throws(WireError) -> (count: Int, base: Int)? {
+    guard elementSize > 0 else { throw .invalidValue }
     let count = try load(UInt64.self, at: offset)
-    guard try load(UInt64.self, at: offset + 8) == presentMarker else { throw .badPresence }
-    guard count <= UInt64(bytes.byteCount - next) else { throw .truncated }
-    let start = next
-    let padded = wireAligned(Int(count))
-    guard start + padded <= bytes.byteCount else { throw .truncated }
-    for i in (start + Int(count))..<(start + padded)
-    where bytes.load(fromByteOffset: i, as: UInt8.self) != 0 {
+    switch try load(UInt64.self, at: offset + 8) {
+    case 0:
+      guard count == 0 else { throw .badPresence }
+      return nil
+    case presentMarker:
+      guard count <= UInt64((bytes.byteCount - next) / elementSize) else { throw .truncated }
+      return (Int(count), try claim(Int(count) * elementSize))
+    default:
+      throw .badPresence
+    }
+  }
+
+  /// A box's value: the offset of its `size` bytes, taken now; nil if absent.
+  @_lifetime(self: copy self)
+  public mutating func loadBox(at offset: Int, size: Int) throws(WireError) -> Int? {
+    switch try load(UInt64.self, at: offset) {
+    case 0: return nil
+    case presentMarker: return try claim(size)
+    default: throw .badPresence
+    }
+  }
+
+  /// Takes the next out-of-line object, `size` bytes padded to 8 with zeros:
+  /// the offset it starts at.
+  @_lifetime(self: copy self)
+  mutating func claim(_ size: Int) throws(WireError) -> Int {
+    let padded = wireAligned(size)
+    guard size >= 0, padded <= bytes.byteCount - next else { throw .truncated }
+    for i in (next + size)..<(next + padded) where bytes.load(fromByteOffset: i, as: UInt8.self) != 0 {
       throw .nonzeroPadding
     }
+    let base = next - bodyStart
     next += padded
-    return bytes.extracting(start..<(start + Int(count)))
+    return base
   }
 
   /// The handle whose presence marker is at `offset`: the next one in the

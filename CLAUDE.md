@@ -41,15 +41,19 @@ quiet, dedicated build server runs `--enforce`.
 
 ## IPC protocols
 
-A protocol is a Swift file with an `@IPCProtocol` protocol (architecture §4,
-`docs/wire-format.md`). After changing one, regenerate its C header, page
-and baseline, and commit them:
+A library is a Swift file with an `@IPCLibrary` enum holding structs,
+enums and protocols (architecture §4, `docs/wire-format.md`); the macro
+generates each protocol's client, handler, server and events inside it.
+After changing one, regenerate its C header (one per library), its
+protocols' pages and baselines, and commit them:
 
-    swift run idlc --c-out DIR --doc-out DIR --baseline DIR FILE      # check
-    swift run idlc ... --update-baseline FILE                         # record
+    .build/debug/idlc --c-out DIR --doc-out DIR --baseline DIR FILE      # check
+    .build/debug/idlc ... --update-baseline FILE                         # record
 
 `idlc` exits 1 if the change would break a client of the recorded
-baseline. The test protocol's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
+baseline. The test library's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
+Calls go through `channel_call` and record FLOW records with croi's flow
+ids (category `ipc`).
 
 ## Sys
 

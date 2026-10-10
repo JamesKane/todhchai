@@ -19,7 +19,7 @@ The compositor is **Radharc** (Irish for "view, scene").
 - **View tokens** let one client embed another's surface. Replicants, the
   file chooser, IME candidate windows and system dialogs drawn inside an app
   (Vita-style) all work this way, out of process.
-- The protocol is an `@IPCProtocol`, and its fast path is a shared-memory
+- The protocol is an `@IPCLibrary` protocol, and its fast path is a shared-memory
   present queue. The Wayland core+ server translates Wayland into this
   protocol. Translation never runs the other way.
 

@@ -14,7 +14,7 @@ public enum WireError: Error, Equatable {
   case unknownKind
   /// Reserved header flags are set.
   case reservedFlags
-  /// A body field lies outside the inline part.
+  /// A field lies outside the space reserved or taken so far.
   case outOfBounds
   /// A presence marker is neither "absent" nor "present".
   case badPresence

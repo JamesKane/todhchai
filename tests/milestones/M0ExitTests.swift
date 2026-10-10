@@ -15,7 +15,7 @@ import Testing
   do {
     let ends = try Channel.create()
     let server = startServer(ends.b.release())
-    var client = EchoClient(channel: ends.a)
+    var client = TestIPC.EchoClient(channel: ends.a)
     let said = try client.say("hi", times: 3)
     #expect(said == "hihihi")
 

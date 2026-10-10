@@ -3,6 +3,7 @@
 import FoundationEssentials
 import IDL
 import IDLCTests
+@testable import Echo
 import IPC
 import IPCModel
 import Testing
@@ -23,15 +24,19 @@ func echoInterface() throws -> Interface {
   return try scan([(path, try read(path))])
 }
 
+func echoProtocol() throws -> ProtocolModel {
+  try #require(try echoInterface().protocols.first?.protocol)
+}
+
 @Test func checkedInOutputsMatchIdlc() throws {
-  let interface = try echoInterface()
-  let echo = try #require(interface.protocols.first)
+  let library = try #require(try echoInterface().libraries.first)
+  let echo = try echoProtocol()
   let source = "tests/ipc/echo/Echo.swift"
-  #expect(cHeader(echo, errors: interface.errors, source: source) == (try read("tests/ipc/c/generated/echo.h")),
-          "regenerate: swift run idlc --c-out tests/ipc/c/generated \(source)")
-  #expect(markdown(echo, errors: interface.errors, source: source) == (try read("tests/ipc/docs/Echo.md")))
-  #expect(Baseline(echo).text == (try read("tests/ipc/baselines/todhchai.test.Echo.api")))
-  #expect(interface.errors["EchoError"]?.cases.first?.code == 1)
+  #expect(cHeader(library, source: source) == (try read("tests/ipc/c/generated/test_ipc.h")),
+          "regenerate: .build/debug/idlc --c-out tests/ipc/c/generated \(source)")
+  #expect(markdown(echo, library, source: source) == (try read("tests/ipc/docs/Echo.md")))
+  #expect(Baseline(echo, library).text == (try read("tests/ipc/baselines/todhchai.test.Echo.api")))
+  #expect(library.errors.first?.cases.first?.code == 1)
 }
 
 // MARK: C and Swift agree on the bytes
@@ -39,7 +44,7 @@ func echoInterface() throws -> Interface {
 @Test func cEncodesWhatSwiftEncodes() throws {
   var c = [UInt8](repeating: 0, count: 256)
   let n = idl_c_encode_say(&c, UInt32(c.count))
-  let say = try #require(try echoInterface().protocols.first?.methods.first { $0.name == "say" })
+  let say = try #require(try echoProtocol().methods.first { $0.name == "say" })
   let swift = try IPCCodec.encode(
     MessageHeader(txid: 1, kind: .request, ordinal: say.ordinal), inlineSize: say.request.size, Never.self
   ) { (e: inout Encoder) throws(WireError) in
@@ -49,8 +54,69 @@ func echoInterface() throws -> Interface {
   #expect(Array(c[..<Int(n)]) == swift.bytes)
 }
 
+@Test func cEncodesStructsAsSwiftDoes() throws {
+  var c = [UInt8](repeating: 0, count: 1024)
+  let n = idl_c_encode_reflect(&c, UInt32(c.count))
+  let (library, echo) = try #require(try echoInterface().protocols.first)
+  _ = library
+  let reflect = try #require(echo.methods.first { $0.name == "reflect" })
+  // The same Shaped, encoded by the generated Swift coder.
+  let sample = TestIPC.Shaped(
+    shape: .triangle, at: TestIPC.Point(x: -3, y: 4), label: "tri", tags: ["a", "", "ccc"],
+    path: [TestIPC.Point(x: 1, y: 2), TestIPC.Point(x: Int32.min, y: Int32.max)], weight: 513, data: [0, 255, 7],
+    flag: true)
+  let swift = try IPCCodec.encode(
+    MessageHeader(txid: 1, kind: .request, ordinal: reflect.ordinal), inlineSize: reflect.request.size, Never.self
+  ) { (e: inout Encoder) throws(WireError) in try TestIPC._encode_Shaped(sample, &e, at: 0) }
+  #expect(n > 0 && Array(c[..<Int(n)]) == swift.bytes)
+}
+
+/// Swift's and C's decoders accept exactly the same messages: Shaped
+/// replies with bytes changed or cut, seeded so a failure repeats.
+@Test func swiftAndCAgreeOnHostileReplies() throws {
+  let (_, echo) = try #require(try echoInterface().protocols.first)
+  let reflect = try #require(echo.methods.first { $0.name == "reflect" })
+  let sample = TestIPC.Shaped(
+    shape: .square, at: TestIPC.Point(x: 1, y: -1), label: "l", tags: ["xy", "z"],
+    path: [TestIPC.Point(x: 5, y: 6)], weight: 7, data: [1, 2, 3, 4, 5, 6, 7, 8, 9], flag: false)
+  let reply = try IPCCodec.encode(
+    MessageHeader(txid: 1, kind: .reply, ordinal: reflect.ordinal), inlineSize: reflect.reply.size, Never.self
+  ) { (e: inout Encoder) throws(WireError) in try TestIPC._encode_Shaped(sample, &e, at: 0) }
+
+  func swiftAccepts(_ bytes: [UInt8]) -> Bool {
+    (try? IPCCodec.decode(IPCMessage(bytes: bytes, handles: []), inlineSize: reflect.reply.size, Never.self) {
+      (d: inout Decoder) throws(WireError) -> TestIPC.Shaped in try TestIPC._decode_Shaped(&d, at: 0)
+    }) != nil
+  }
+  #expect(swiftAccepts(reply.bytes) && idl_c_decode_reflect_reply(reply.bytes, UInt32(reply.bytes.count)) == 0)
+
+  var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+  func next() -> Int {
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    return Int(truncatingIfNeeded: state >> 1)
+  }
+  var accepted = 0
+  for round in 0..<20_000 {
+    var bytes = reply.bytes
+    for _ in 0...(next() % 3) {
+      let i = 16 + next() % (bytes.count - 16)
+      bytes[i] = [0, 1, 0xff, 0x80, UInt8(truncatingIfNeeded: next())][next() % 5]
+    }
+    if next() % 8 == 0 { bytes.removeLast(8 * (1 + next() % 3)) }
+    let swift = swiftAccepts(bytes)
+    let c = idl_c_decode_reflect_reply(bytes, UInt32(bytes.count)) == 0
+    #expect(swift == c, "round \(round): Swift \(swift ? "accepts" : "rejects"), C \(c ? "accepts" : "rejects") \(bytes)")
+    if swift != c { break }
+    if swift { accepted += 1 }
+  }
+  // Some mutations are harmless (a label's byte, a coordinate): both see them.
+  #expect(accepted > 100)
+}
+
 @Test func cDecodesWhatSwiftEncodes() throws {
-  let say = try #require(try echoInterface().protocols.first?.methods.first { $0.name == "say" })
+  let say = try #require(try echoProtocol().methods.first { $0.name == "say" })
   let reply = try IPCCodec.encode(
     MessageHeader(txid: 1, kind: .reply, ordinal: say.ordinal), inlineSize: say.reply.size, Never.self
   ) { (e: inout Encoder) throws(WireError) in try e.storeString("hihihi", at: 0) }
@@ -80,10 +146,10 @@ func echoInterface() throws -> Interface {
 
 // MARK: Evolution
 
-func baseline(_ body: String, version: Int) throws -> Baseline {
-  let source = "@IPCProtocol(id: \"t.P\", version: \(version))\nprotocol P {\n\(body)\n}"
-  let p = try #require(try scan([("P.swift", source)]).protocols.first)
-  return Baseline(p)
+func baseline(_ body: String, version: Int, types: String = "") throws -> Baseline {
+  let source = "@IPCLibrary(id: \"t\", version: \(version))\nenum L {\n\(types)\nprotocol P {\n\(body)\n}\n}"
+  let (l, p) = try #require(try scan([("P.swift", source)]).protocols.first)
+  return Baseline(p, l)
 }
 
 @Test func compatibleChangesPass() throws {
@@ -113,4 +179,21 @@ func baseline(_ body: String, version: Int) throws -> Baseline {
   var lowered = older
   lowered.version = 0
   #expect(compatibility(old: older, new: lowered).contains { $0.contains("went down") })
+}
+
+@Test func typesKeepTheirShape() throws {
+  let types = "struct S { var a: UInt32\nvar b: [String]? }\nenum K: UInt8 { case x = 1, y }"
+  let old = try baseline("func f(_ s: S) -> K", version: 1, types: types)
+  #expect(old.text.contains("struct S (UInt32,[String]?)") && old.text.contains("enum K UInt8 (1,2)"))
+  #expect(Baseline(text: old.text) == old)
+  let renamed = try baseline("func f(_ s: S) -> K", version: 1, types: types.replacing("var a", with: "var z"))
+  #expect(compatibility(old: old, new: renamed).isEmpty)
+  for changed in [
+    types.replacing("[String]?", with: "[String]"),
+    types.replacing("case x = 1, y", with: "case x = 1, y, w"),
+    types.replacing("UInt8", with: "UInt16"),
+  ] {
+    let problems = compatibility(old: old, new: try baseline("func f(_ s: S) -> K", version: 1, types: changed))
+    #expect(problems.contains { $0.contains("changed") }, "\(changed): \(problems)")
+  }
 }

@@ -41,19 +41,30 @@ func errorReply<E: IPCErrorCode>(_ reply: IPCMessage, _: E.Type) -> IPCError<E> 
   return .wire(.invalidValue)
 }
 
+/// A channel's id for flow ids: the smaller of its two ends' koids, which
+/// both ends see (docs/trace-format.md, "IPC flow ids").
+func channelID(_ channel: borrowing Handle) -> UInt64 {
+  guard let info = try? channel.info() else { return 0 }
+  return min(info.koid, info.relatedKoid)
+}
+
 /// The client's end of a protocol: calls, and the events that arrive
 /// meanwhile. Generated `<Name>Client` types wrap one.
 public struct IPCClientConnection: ~Copyable {
   public let channel: Handle
-  var lastTxid: UInt32 = 0
+  let channelID: UInt64
+  /// Events read while looking for an epitaph, for `nextEvent`.
   var events: [IPCMessage] = []
+  /// How long a call waits for its reply, in nanoseconds; nil waits until
+  /// the server answers or goes. A reply that comes after its call gave up
+  /// is dropped.
+  public var timeout: Int64? = nil
+  /// The flow id of the last call that got a reply (docs/trace-format.md).
+  public private(set) var lastFlow: UInt64 = 0
 
-  public init(channel: consuming Handle) { self.channel = channel }
-
-  /// A fresh transaction id for a call (never 0, which marks one-way).
-  public mutating func takeTxid() -> UInt32 {
-    lastTxid = lastTxid == UInt32.max ? 1 : lastTxid + 1
-    return lastTxid
+  public init(channel: consuming Handle) {
+    channelID = IPC.channelID(channel)
+    self.channel = channel
   }
 
   /// Sends a one-way request.
@@ -61,29 +72,52 @@ public struct IPCClientConnection: ~Copyable {
     try IPC.send(request, on: channel, E.self)
   }
 
-  /// Sends a call and waits for its reply. Events that arrive first are
-  /// queued for `nextEvent`. An error reply is thrown.
-  public mutating func call<E: IPCErrorCode>(_ request: IPCMessage, txid: UInt32, _: E.Type)
+  /// Calls: sends `request` with channel_call, which gives it a txid and
+  /// waits for the reply that echoes it. Events that arrive meanwhile stay
+  /// queued for `nextEvent`. An error reply is thrown. Records the call's
+  /// write and its reply's read as one flow, named `trace`.
+  public mutating func call<E: IPCErrorCode>(_ request: IPCMessage, _: E.Type, trace: TraceName)
     throws(IPCError<E>) -> IPCMessage
   {
-    try IPC.send(request, on: channel, E.self)
-    while true {
-      let message = try receive(on: channel, deadline: infiniteDeadline, E.self)
-      let header = try ipcWire(E.self) { () throws(WireError) in try message.header() }
-      switch header.kind {
-      case .reply where header.txid == txid:
-        if header.flags & HeaderFlags.error != 0 { throw errorReply(message, E.self) }
-        if header.flags & HeaderFlags.canceled != 0 { throw .transport(.canceled) }
-        return message
-      case .event:
-        events.append(message)
-      case .epitaph:
-        throw .transport(epitaphStatus(message))
-      default:
-        message.closeHandles()
-        throw .wire(.unexpectedMessage)
+    let sent = Trace.now()
+    let deadline = timeout.map { Clock.monotonic() + $0 } ?? infiniteDeadline
+    let answer: Channel.Message
+    do throws(Status) {
+      answer = try Channel.call(channel, bytes: request.bytes, handles: request.handles, deadline: deadline)
+    } catch .peerClosed {
+      throw .transport(closingStatus())
+    } catch {
+      throw .transport(error)
+    }
+    let reply = IPCMessage(bytes: answer.bytes, handles: answer.handles)
+    let header = try ipcWire(E.self) { () throws(WireError) in try reply.header() }
+    let flow = flowID(channel: channelID, txid: header.txid)
+    lastFlow = flow
+    if Trace.enabled(.ipc) {
+      Trace.flow(flow, trace, .ipc, at: sent)
+      Trace.flow(flow, trace, .ipc)
+    }
+    guard header.kind == .reply else {
+      reply.closeHandles()
+      throw .wire(.unexpectedMessage)
+    }
+    if header.flags & HeaderFlags.error != 0 { throw errorReply(reply, E.self) }
+    if header.flags & HeaderFlags.canceled != 0 { throw .transport(.canceled) }
+    return reply
+  }
+
+  /// Why the channel closed: an epitaph's status if one is queued (keeping
+  /// the events before it), or `peerClosed`.
+  mutating func closingStatus() -> Status {
+    while let m = try? Channel.read(channel) {
+      let message = IPCMessage(bytes: m.bytes, handles: m.handles)
+      switch try? message.header().kind {
+      case .epitaph: return epitaphStatus(message)
+      case .event: events.append(message)
+      default: message.closeHandles()
       }
     }
+    return .peerClosed
   }
 
   /// The next event: a queued one, or the next to arrive before `deadline`.
@@ -95,6 +129,9 @@ public struct IPCClientConnection: ~Copyable {
       switch header.kind {
       case .event: return (header, message)
       case .epitaph: throw .transport(epitaphStatus(message))
+      case .reply:
+        // A reply that came after its call gave up.
+        message.closeHandles()
       default:
         message.closeHandles()
         throw .wire(.unexpectedMessage)
@@ -112,8 +149,24 @@ func epitaphStatus(_ message: IPCMessage) -> Status {
 /// The server's end of a protocol. Generated `<Name>Server` types wrap one.
 public struct IPCServerConnection: ~Copyable {
   public let channel: Handle
+  let channelID: UInt64
 
-  public init(channel: consuming Handle) { self.channel = channel }
+  public init(channel: consuming Handle) {
+    channelID = IPC.channelID(channel)
+    self.channel = channel
+  }
+
+  /// Records a call's read, on its flow.
+  public func received(_ header: MessageHeader, trace: TraceName) {
+    guard header.txid != 0, Trace.enabled(.ipc) else { return }
+    Trace.flow(flowID(channel: channelID, txid: header.txid), trace, .ipc)
+  }
+
+  /// Sends a call's reply, recording its write on the call's flow.
+  public func reply(_ message: IPCMessage, to request: MessageHeader, trace: TraceName) throws(IPCError<Never>) {
+    if Trace.enabled(.ipc) { Trace.flow(flowID(channel: channelID, txid: request.txid), trace, .ipc) }
+    try send(message)
+  }
 
   /// The next request, or `nil` once the client has closed its end.
   public func nextRequest() throws(IPCError<Never>) -> (MessageHeader, IPCMessage)? {

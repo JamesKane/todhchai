@@ -212,6 +212,15 @@ public enum Trace {
     write(.flow, time: td_trace_ticks(), a: id, b: name.id)
   }
 
+  /// Records a step of flow `id` that happened at `time` (from `now()`):
+  /// for a step whose id is known only later, such as a call's write, whose
+  /// txid comes with its reply.
+  @inlinable
+  public static func flow(_ id: UInt64, _ name: TraceName, _ category: TraceCategory = .app, at time: UInt64) {
+    guard enabled(category) else { return }
+    write(.flow, time: time, a: id, b: name.id)
+  }
+
   /// Records a counter's value.
   @inlinable
   public static func counter(_ name: TraceName, _ value: Int64, _ category: TraceCategory = .app) {

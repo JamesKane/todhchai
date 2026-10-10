@@ -1,99 +1,233 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Writes the generated types as Swift source. Every encode and decode
-// follows the method's Layout, field by field, so the code is the wire
-// format spelled out (docs/wire-format.md).
+// Writes a library's generated members as Swift source. Every encode and
+// decode follows the model's layouts, field by field, so the code is the
+// wire format spelled out (docs/wire-format.md).
 
 import IPCModel
 import SwiftSyntax
 
 struct Generator {
-  let name: String
-  let access: String
-  let methods: [Method]
+  let library: LibraryModel
+  var types: Types { library.types }
+  var access: String { library.isPublic ? "public " : "" }
 
   func declarations() -> [DeclSyntax] {
-    [client(), handler(), server(), events()].map { DeclSyntax(stringLiteral: $0) }
+    var out: [String] = []
+    for s in types.structs { out += [structEncoder(s), structDecoder(s)] }
+    for p in library.protocols {
+      out += p.methods.map { "static let \(traceName(p, $0)) = TraceName(\"\(p.name).\($0.name)\")" }
+      out += p.methods.map { argumentsStruct(p, $0) }
+      out += [client(p), handler(p), server(p), events(p)]
+    }
+    return out.map { DeclSyntax(stringLiteral: $0) }
   }
 
-  // MARK: Pieces shared by client and server
+  // MARK: Names
 
   func hex(_ value: UInt64) -> String { "0x" + String(value, radix: 16) }
-
+  func traceName(_ p: ProtocolModel, _ m: Method) -> String { "_trace_\(p.name)_\(m.name)" }
+  func argumentsName(_ p: ProtocolModel, _ m: Method) -> String { "_\(p.name)_\(m.name)_Arguments" }
   func errorType(_ m: Method) -> String { m.errorType ?? "Never" }
-
-  /// Statements that store `layout`'s fields, which are named by `valueName`.
-  func stores(_ layout: Layout, _ valueName: (Field) -> String) -> String {
-    layout.fields.map { f in
-      let v = valueName(f)
-      switch f.type {
-      case .integer: return "try e.store(\(v), at: \(f.offset))"
-      case .bool: return "try e.storeBool(\(v), at: \(f.offset))"
-      case .string: return "try e.storeString(\(v), at: \(f.offset))"
-      case .handle: return "try e.storeHandle(\(v), at: \(f.offset))"
-      }
-    }.joined(separator: "\n")
-  }
-
-  /// An expression that loads `f`.
-  func load(_ f: Field) -> String {
-    switch f.type {
-    case .integer(let swiftType, _): "try d.load(\(swiftType).self, at: \(f.offset))"
-    case .bool: "try d.loadBool(at: \(f.offset))"
-    case .string: "try d.loadString(at: \(f.offset))"
-    case .handle: "try d.loadRequiredHandle(at: \(f.offset))"
-    }
-  }
-
-  /// A closure body that loads every field of `layout`, checks its padding
-  /// and returns the values (a tuple, one value, or nothing).
-  func loads(_ layout: Layout) -> String {
-    let checks = layout.padding.map { "try d.checkPadding(at: \($0.offset), count: \($0.count))" }
-    // Loads run in field order, which out-of-line data requires.
-    let bindings = layout.fields.indices.map { "let v\($0) = \(load(layout.fields[$0]))" }
-    let tuple = layout.fields.indices.map { "v\($0)" }
-    return (checks + bindings + [
-      tuple.isEmpty ? "return ()" : tuple.count == 1 ? "return v0" : "return (\(tuple.joined(separator: ", ")))"
-    ]).joined(separator: "\n")
-  }
-
-  /// The parameter list as declared, for the handler protocol and client.
-  func parameterList(_ m: Method, handlesConsumed: Bool = true) -> String {
-    m.parameters.map { p in
-      let label = p.label.map { $0 == p.name ? $0 : "\($0) \(p.name)" } ?? "_ \(p.name)"
-      let type = p.type == .handle && handlesConsumed ? "consuming Handle" : p.swiftType
-      return "\(label): \(type)"
-    }.joined(separator: ", ")
-  }
-
-  func throwsClause(_ m: Method) -> String {
-    m.errorType.map { " throws(\($0))" } ?? ""
-  }
-
-  func resultClause(_ m: Method) -> String {
-    m.result.map { " -> \($0.swiftType)" } ?? ""
-  }
-
   /// "ticked" → "Ticked"
   func capitalized(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
 
+  /// The Swift type of a wire type, as generated code spells it.
+  func swiftType(_ t: WireType) -> String { t.swiftName }
+
+  // MARK: Encoding
+
+  /// Statements that encode `value` (an expression, consumed if it isn't
+  /// copyable) of type `t` at offset `at` from the body's start.
+  func encode(_ t: WireType, _ value: String, at: String, _ depth: Int = 0) -> [String] {
+    switch t {
+    case .integer: return ["try e.store(\(value), at: \(at))"]
+    case .bool: return ["try e.storeBool(\(value), at: \(at))"]
+    case .string: return ["try e.storeString(\(value), at: \(at))"]
+    case .bytes: return ["try e.storeByteArray(\(value), at: \(at))"]
+    case .handle: return ["try e.storeHandle(\(value).release(), at: \(at))"]
+    case .enumeration: return ["try e.store(\(value).rawValue, at: \(at))"]
+    case .structure(let n): return ["try _encode_\(n)(\(value), &e, at: \(at))"]
+    case .vector(let element):
+      let items = "items\(depth)", base = "base\(depth)", i = "i\(depth)", x = "x\(depth)"
+      return [
+        "do {",
+        "let \(items) = \(value)",
+        "let \(base) = try e.storeVector(count: \(items).count, elementSize: \(types.size(element)), at: \(at))",
+        "for (\(i), \(x)) in \(items).enumerated() {",
+      ] + encode(element, x, at: "\(base) + \(i) * \(types.size(element))", depth + 1) + ["}", "}"]
+    case .optional(let w):
+      let x = "x\(depth)"
+      // An absent value leaves its marker zero, as reserved.
+      let present = w.hasOwnPresence
+        ? encode(w, x, at: at, depth + 1)
+        : ["let box\(depth) = try e.storeBox(size: \(types.size(w)), at: \(at))"]
+          + encode(w, x, at: "box\(depth)", depth + 1)
+      if types.isCopyable(w) {
+        return ["if let \(x) = \(value) {"] + present + ["}"]
+      }
+      // `consume` takes a local, so the value moves into one first.
+      return ["let o\(depth) = \(value)", "switch consume o\(depth) {", "case .some(let \(x)):"] + present
+        + ["case .none: break", "}"]
+    }
+  }
+
+  func structEncoder(_ s: StructModel) -> String {
+    let ownership = s.isCopyable ? "borrowing" : "consuming"
+    // A consumed struct is taken apart field by field.
+    let take = s.isCopyable ? [] : ["let v = v"]
+    let body = s.fields.enumerated().flatMap { i, f in
+      encode(f.type, "v.\(f.name)", at: "o + \(s.layout.fields[i].offset)")
+    }
+    return """
+      @_lifetime(e: copy e)
+      static func _encode_\(s.name)(_ v: \(ownership) \(s.name), _ e: inout Encoder, at o: Int) throws(WireError) {
+      \((take + body).joined(separator: "\n"))
+      }
+      """
+  }
+
+  // MARK: Decoding
+
+  /// Statements that decode a value of type `t` at offset `at` into a new
+  /// constant `name`.
+  func decode(_ t: WireType, into name: String, at: String, _ depth: Int = 0) -> [String] {
+    switch t {
+    case .integer(let type, _): return ["let \(name) = try d.load(\(type).self, at: \(at))"]
+    case .bool: return ["let \(name) = try d.loadBool(at: \(at))"]
+    case .string: return ["let \(name) = try d.loadString(at: \(at))"]
+    case .bytes: return ["let \(name) = try d.loadByteArray(at: \(at))"]
+    case .handle: return ["let \(name) = Handle(raw: try d.loadRequiredHandle(at: \(at)))"]
+    case .enumeration(let n):
+      let raw = types.enumeration(n)!.rawType
+      return ["guard let \(name) = \(n)(rawValue: try d.load(\(raw).self, at: \(at))) else { throw .invalidValue }"]
+    case .structure(let n): return ["let \(name) = try _decode_\(n)(&d, at: \(at))"]
+    case .vector(let element):
+      return ["guard let vec\(depth) = try d.loadVector(at: \(at), elementSize: \(types.size(element))) else { throw .badPresence }"]
+        + vectorElements(element, into: name, depth)
+    case .optional(let w):
+      switch w {
+      case .string: return ["let \(name) = try d.loadOptionalString(at: \(at))"]
+      case .bytes: return ["let \(name) = try d.loadOptionalByteArray(at: \(at))"]
+      case .handle:
+        return ["let \(name): Handle? = if let raw = try d.loadHandle(at: \(at)) { Handle(raw: raw) } else { nil }"]
+      case .vector(let element):
+        return [
+          "var \(name): \(swiftType(t)) = nil",
+          "if let vec\(depth) = try d.loadVector(at: \(at), elementSize: \(types.size(element))) {",
+        ] + vectorElements(element, into: "a\(depth)", depth) + ["\(name) = a\(depth)", "}"]
+      default:
+        return [
+          "var \(name): \(swiftType(t)) = nil",
+          "if let box\(depth) = try d.loadBox(at: \(at), size: \(types.size(w))) {",
+        ] + decode(w, into: "x\(depth)", at: "box\(depth)", depth + 1) + ["\(name) = x\(depth)", "}"]
+      }
+    default:
+      fatalError("unreachable")
+    }
+  }
+
+  /// Decodes vector `vec<depth>`'s elements into a new array `name`.
+  func vectorElements(_ element: WireType, into name: String, _ depth: Int) -> [String] {
+    let i = "i\(depth)", x = "x\(depth)"
+    return [
+      "var \(name): [\(swiftType(element))] = []",
+      "\(name).reserveCapacity(vec\(depth).count)",
+      "for \(i) in 0..<vec\(depth).count {",
+    ] + decode(element, into: x, at: "vec\(depth).base + \(i) * \(types.size(element))", depth + 1)
+      + ["\(name).append(\(x))", "}"]
+  }
+
+  func paddingChecks(_ layout: Layout, base: String) -> [String] {
+    layout.padding.map { "try d.checkPadding(at: \(base)\($0.offset), count: \($0.count))" }
+  }
+
+  func structDecoder(_ s: StructModel) -> String {
+    let body = paddingChecks(s.layout, base: "o + ")
+      + s.fields.enumerated().flatMap { i, f in decode(f.type, into: "f\(i)", at: "o + \(s.layout.fields[i].offset)") }
+    let arguments = s.fields.enumerated().map { i, f in "\(f.name): f\(i)" }.joined(separator: ", ")
+    return """
+      @_lifetime(d: copy d)
+      static func _decode_\(s.name)(_ d: inout Decoder, at o: Int) throws(WireError) -> \(s.name) {
+      \(body.joined(separator: "\n"))
+      return \(s.name)(\(arguments))
+      }
+      """
+  }
+
+  /// A closure body that decodes `layout` (a message body) and returns
+  /// `result`, built from the decoded fields `f0`, `f1`...
+  func bodyDecoder(_ layout: Layout, returning result: String) -> String {
+    (paddingChecks(layout, base: "")
+      + layout.fields.enumerated().flatMap { i, f in decode(f.type, into: "f\(i)", at: "\(f.offset)") }
+      + ["return \(result)"]).joined(separator: "\n")
+  }
+
+  /// A closure body that encodes `layout`, the field at `i` from `value(i)`.
+  func bodyEncoder(_ layout: Layout, _ value: (Int) -> String) -> String {
+    layout.fields.enumerated().flatMap { i, f in encode(f.type, value(i), at: "\(f.offset)") }
+      .joined(separator: "\n")
+  }
+
+  // MARK: Signatures
+
+  /// A parameter's type in a signature: values that move are consumed.
+  func parameterType(_ p: Parameter) -> String {
+    types.isCopyable(p.type) ? p.swiftType : "consuming \(p.swiftType)"
+  }
+
+  func parameterList(_ m: Method) -> String {
+    m.parameters.map { p in
+      let label = p.label.map { $0 == p.name ? $0 : "\($0) \(p.name)" } ?? "_ \(p.name)"
+      return "\(label): \(parameterType(p))"
+    }.joined(separator: ", ")
+  }
+
+  func throwsClause(_ m: Method) -> String { m.errorType.map { " throws(\($0))" } ?? "" }
+  func resultClause(_ m: Method) -> String { m.result.map { " -> \($0.swiftType)" } ?? "" }
+
+  /// Statements that move values the encoder will consume into optionals
+  /// it can take them from: a closure can't consume what it captures.
+  func movable(_ items: [(name: String, swiftType: String, copyable: Bool)]) -> [String] {
+    items.filter { !$0.copyable }.map { "var m_\($0.name): \($0.swiftType)? = \($0.name)" }
+  }
+
+  func valueExpression(_ name: String, copyable: Bool) -> String { copyable ? name : "m_\(name).take()!" }
+
+  // MARK: Arguments
+
+  /// A request's decoded arguments: a struct, since a tuple can't hold
+  /// values that aren't copyable.
+  func argumentsStruct(_ p: ProtocolModel, _ m: Method) -> String {
+    let fields = m.parameters.enumerated().map { i, p in "var a\(i): \(p.swiftType)" }.joined(separator: "\n")
+    return """
+      struct \(argumentsName(p, m)): ~Copyable {
+      \(fields)
+      }
+      """
+  }
+
+  /// The decoded fields of a request, as its arguments struct.
+  func argumentsValue(_ p: ProtocolModel, _ m: Method) -> String {
+    let fields = m.parameters.indices.map { "a\($0): f\($0)" }.joined(separator: ", ")
+    return "\(argumentsName(p, m))(\(fields))"
+  }
+
   // MARK: Client
 
-  func client() -> String {
-    let calls = methods.filter { $0.kind != .event }.map(clientMethod).joined(separator: "\n\n")
-    let hasEvents = methods.contains { $0.kind == .event }
-    let nextEvent = hasEvents ? """
+  func client(_ p: ProtocolModel) -> String {
+    let calls = p.methods.filter { $0.kind != .event }.map { clientMethod(p, $0) }.joined(separator: "\n\n")
+    let nextEvent = p.methods.contains { $0.kind == .event } ? """
 
-      /// The next event: one that arrived during a call, or the next to
-      /// arrive before `deadline` (monotonic nanoseconds).
-      public mutating func nextEvent(deadline: Int64 = infiniteDeadline) throws(IPCError<Never>) -> \(name)Event {
+      /// The next event, waiting until `deadline` (monotonic nanoseconds).
+      public mutating func nextEvent(deadline: Int64 = infiniteDeadline) throws(IPCError<Never>) -> \(p.name)Event {
         let (header, message) = try connection.nextEvent(deadline: deadline)
-        return try \(name)Event.decode(header, message)
+        return try \(p.name)Event.decode(header, message)
       }
       """ : ""
     return """
-      /// Calls `\(name)` over a channel. Generated by @IPCProtocol.
-      \(access)struct \(name)Client: ~Copyable {
+      /// Calls `\(p.name)` over a channel. Generated by @IPCLibrary.
+      \(access)struct \(p.name)Client: ~Copyable {
         public var connection: IPCClientConnection
 
         public init(channel: consuming Handle) {
@@ -106,25 +240,16 @@ struct Generator {
       """
   }
 
-  func clientMethod(_ m: Method) -> String {
+  func clientMethod(_ p: ProtocolModel, _ m: Method) -> String {
     let e = errorType(m)
-    let req = m.request
-    let handles = m.parameters.filter { $0.type == .handle }
-    // Handles are released first: the message owns them from here on.
-    let releases = handles.map { "let h_\($0.name) = \($0.name).release()" }.joined(separator: "\n")
-    let closing = "[" + handles.map { "h_\($0.name)" }.joined(separator: ", ") + "]"
-    let body = stores(req) { f in
-      let p = String(f.name.dropFirst(2))
-      return f.type == .handle ? "h_\(p)" : p
+    let moves = movable(m.parameters.map { ($0.name, $0.swiftType, types.isCopyable($0.type)) })
+    let body = bodyEncoder(m.request) { i in
+      valueExpression(m.parameters[i].name, copyable: types.isCopyable(m.parameters[i].type))
     }
-    let txid = m.kind == .call ? "connection.takeTxid()" : "UInt32(0)"
-    var lines = [
-      releases,
-      "let txid = \(txid)",
+    var lines = moves + [
       """
       let request = try IPCCodec.encode(
-        MessageHeader(txid: txid, kind: .request, ordinal: \(hex(m.ordinal))),
-        inlineSize: \(req.size), closing: \(closing), \(e).self
+        MessageHeader(txid: 0, kind: .request, ordinal: \(hex(m.ordinal))), inlineSize: \(m.request.size), \(e).self
       ) { (e: inout Encoder) throws(WireError) in
       \(body)
       }
@@ -133,35 +258,30 @@ struct Generator {
     if m.kind == .oneway {
       lines.append("try connection.send(request, \(e).self)")
     } else {
-      let reply = m.reply
-      lines.append("let reply = try connection.call(request, txid: txid, \(e).self)")
+      let resultType = m.result?.swiftType ?? "Void"
+      lines.append("let reply = try connection.call(request, \(e).self, trace: \(library.name).\(traceName(p, m)))")
       lines.append("""
-        let result = try IPCCodec.decode(reply, inlineSize: \(reply.size), \(e).self) { (d: inout Decoder) throws(WireError) in
-        \(loads(reply))
+        return try IPCCodec.decode(reply, inlineSize: \(m.reply.size), \(e).self) { (d: inout Decoder) throws(WireError) -> \(resultType) in
+        \(bodyDecoder(m.reply, returning: m.result == nil ? "()" : "f0"))
         }
         """)
-      if let r = m.result {
-        lines.append(r.type == .handle ? "return Handle(raw: result)" : "return result")
-      } else {
-        lines.append("_ = result")
-      }
     }
     return """
       public mutating func \(m.name)(\(parameterList(m))) throws(IPCError<\(e)>)\(resultClause(m)) {
-      \(lines.filter { !$0.isEmpty }.joined(separator: "\n"))
+      \(lines.joined(separator: "\n"))
       }
       """
   }
 
   // MARK: Handler
 
-  func handler() -> String {
-    let requirements = methods.filter { $0.kind != .event }.map { m in
+  func handler(_ p: ProtocolModel) -> String {
+    let requirements = p.methods.filter { $0.kind != .event }.map { m in
       "mutating func \(m.name)(\(parameterList(m)))\(throwsClause(m))\(resultClause(m))"
     }.joined(separator: "\n")
     return """
-      /// What a `\(name)` server implements. Generated by @IPCProtocol.
-      \(access)protocol \(name)Handler {
+      /// What a `\(p.name)` server implements. Generated by @IPCLibrary.
+      \(access)protocol \(p.name)Handler {
       \(requirements)
       }
       """
@@ -169,12 +289,12 @@ struct Generator {
 
   // MARK: Server
 
-  func server() -> String {
-    let cases = methods.filter { $0.kind != .event }.map(serverCase).joined(separator: "\n")
-    let senders = methods.filter { $0.kind == .event }.map(eventSender).joined(separator: "\n\n")
+  func server(_ p: ProtocolModel) -> String {
+    let cases = p.methods.filter { $0.kind != .event }.map { serverCase(p, $0) }.joined(separator: "\n")
+    let senders = p.methods.filter { $0.kind == .event }.map(eventSender).joined(separator: "\n\n")
     return """
-      /// Serves `\(name)` on a channel, calling a handler. Generated by @IPCProtocol.
-      \(access)struct \(name)Server<Impl: \(name)Handler>: ~Copyable {
+      /// Serves `\(p.name)` on a channel, calling a handler. Generated by @IPCLibrary.
+      \(access)struct \(p.name)Server<Impl: \(p.name)Handler>: ~Copyable {
         public var connection: IPCServerConnection
         public var impl: Impl
 
@@ -204,39 +324,33 @@ struct Generator {
       """
   }
 
-  func serverCase(_ m: Method) -> String {
-    let req = m.request
-    let count = req.fields.count
-    let names = (0..<count).map { "a\($0)" }
-    let bind = count == 0 ? "_" : count == 1 ? "let a0" : "let (" + names.joined(separator: ", ") + ")"
+  func serverCase(_ p: ProtocolModel, _ m: Method) -> String {
+    let trace = "\(library.name).\(traceName(p, m))"
     let arguments = m.parameters.enumerated().map { i, p in
-      let value = p.type == .handle ? "Handle(raw: a\(i))" : "a\(i)"
-      return p.label.map { "\($0): \(value)" } ?? value
+      p.label.map { "\($0): args.a\(i)" } ?? "args.a\(i)"
     }.joined(separator: ", ")
     let invoke = "\(m.errorType == nil ? "" : "try ")impl.\(m.name)(\(arguments))"
-
     var body = """
           try connection.expect(header, twoWay: \(m.kind == .call), message)
-          \(bind) = try IPCCodec.decode(message, inlineSize: \(req.size), Never.self) { (d: inout Decoder) throws(WireError) in
-      \(loads(req))
+          connection.received(header, trace: \(trace))
+          let args = try IPCCodec.decode(message, inlineSize: \(m.request.size), Never.self) { (d: inout Decoder) throws(WireError) -> \(library.name).\(argumentsName(p, m)) in
+      \(bodyDecoder(m.request, returning: "\(library.name).\(argumentsValue(p, m))"))
           }
       """
     if m.kind == .oneway {
       body += "\n\(invoke)"
     } else {
-      let reply = m.reply
-      let resultRelease = m.result?.type == .handle ? "\nlet h_r = r.release()" : ""
-      let closing = m.result?.type == .handle ? "[h_r]" : "[]"
-      let store = stores(reply) { _ in m.result?.type == .handle ? "h_r" : "r" }
-      let send = """
+      let copyable = m.result.map { types.isCopyable($0.type) } ?? true
+      let moves = m.result.map { movable([("r", $0.swiftType, copyable)]) } ?? []
+      let store = bodyEncoder(m.reply) { _ in valueExpression("r", copyable: copyable) }
+      let send = (moves + ["""
         let replyMessage = try IPCCodec.encode(
-          MessageHeader(txid: header.txid, kind: .reply, ordinal: header.ordinal),
-          inlineSize: \(reply.size), closing: \(closing), Never.self
+          MessageHeader(txid: header.txid, kind: .reply, ordinal: header.ordinal), inlineSize: \(m.reply.size), Never.self
         ) { (e: inout Encoder) throws(WireError) in
         \(store)
         }
-        try connection.send(replyMessage)
-        """
+        try connection.reply(replyMessage, to: header, trace: \(trace))
+        """]).joined(separator: "\n")
       if let errorType = m.errorType {
         // The handler's error is caught alone: an error reply, then on to
         // the next request.
@@ -250,11 +364,11 @@ struct Generator {
           } catch {
             try connection.replyError(to: header, code: error.code)
             return true
-          }\(resultRelease)
+          }
           \(send)
           """
       } else {
-        let produce = m.result == nil ? invoke : "let r = \(invoke)\(resultRelease)"
+        let produce = m.result == nil ? invoke : "let r = \(invoke)"
         body += "\n\(produce)\n\(send)"
       }
     }
@@ -265,13 +379,12 @@ struct Generator {
   }
 
   func eventSender(_ m: Method) -> String {
-    let body = stores(m.request) { f in String(f.name.dropFirst(2)) }
+    let body = bodyEncoder(m.request) { i in m.parameters[i].name }
     return """
       /// Sends the `\(m.name)` event.
       public func send\(capitalized(m.name))(\(parameterList(m))) throws(IPCError<Never>) {
         let event = try IPCCodec.encode(
-          MessageHeader(txid: 0, kind: .event, ordinal: \(hex(m.ordinal))),
-          inlineSize: \(m.request.size), Never.self
+          MessageHeader(txid: 0, kind: .event, ordinal: \(hex(m.ordinal))), inlineSize: \(m.request.size), Never.self
         ) { (e: inout Encoder) throws(WireError) in
       \(body)
         }
@@ -282,33 +395,30 @@ struct Generator {
 
   // MARK: Events
 
-  func events() -> String {
-    let events = methods.filter { $0.kind == .event }
+  func events(_ p: ProtocolModel) -> String {
+    let events = p.methods.filter { $0.kind == .event }
     let cases = events.map { m in
-      let associated = m.parameters.map { p in
-        p.label.map { "\($0): \(p.swiftType)" } ?? p.swiftType
-      }.joined(separator: ", ")
+      let associated = m.parameters.map { p in p.label.map { "\($0): \(p.swiftType)" } ?? p.swiftType }
+        .joined(separator: ", ")
       return "case \(m.name)" + (associated.isEmpty ? "" : "(\(associated))")
     }.joined(separator: "\n")
     let decodeCases = events.map { m in
-      let count = m.parameters.count
-      let bind = count == 0 ? "_" : count == 1 ? "let a0" : "let (" + (0..<count).map { "a\($0)" }.joined(separator: ", ") + ")"
-      let args = m.parameters.enumerated().map { i, p in p.label.map { "\($0): a\(i)" } ?? "a\(i)" }
+      let args = m.parameters.enumerated().map { i, p in p.label.map { "\($0): args.a\(i)" } ?? "args.a\(i)" }
         .joined(separator: ", ")
       return """
           case \(hex(m.ordinal)):
-            \(bind) = try IPCCodec.decode(message, inlineSize: \(m.request.size), Never.self) { (d: inout Decoder) throws(WireError) in
-        \(loads(m.request))
+            let args = try IPCCodec.decode(message, inlineSize: \(m.request.size), Never.self) { (d: inout Decoder) throws(WireError) -> \(library.name).\(argumentsName(p, m)) in
+        \(bodyDecoder(m.request, returning: "\(library.name).\(argumentsValue(p, m))"))
             }
-            return .\(m.name)\(count == 0 ? "" : "(\(args))")
+            return .\(m.name)\(m.parameters.isEmpty ? "" : "(\(args))")
         """
     }.joined(separator: "\n")
     return """
-      /// The events of `\(name)`. Generated by @IPCProtocol.
-      \(access)enum \(name)Event {
+      /// The events of `\(p.name)`. Generated by @IPCLibrary.
+      \(access)enum \(p.name)Event {
       \(cases)
 
-        static func decode(_ header: MessageHeader, _ message: IPCMessage) throws(IPCError<Never>) -> \(name)Event {
+        static func decode(_ header: MessageHeader, _ message: IPCMessage) throws(IPCError<Never>) -> \(p.name)Event {
           switch header.ordinal {
       \(decodeCases)
           default:

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The API baseline: each method's wire signature, one line each, sorted, so
-// a change shows in review as a diff. `compatibility` says whether a new
+// The API baseline: each method's wire signature, and the shape of each
+// struct and enum it uses, one line each, so a change shows in review as a
+// diff. `compatibility` says whether a new
 // version of a protocol still serves clients of the recorded one
 // (architecture §4: a change that would break an older client fails the
 // build).
@@ -25,8 +26,8 @@ public struct BaselineMethod: Equatable {
     case .event: "event"
     }
     since = m.since
-    parameters = m.parameters.map(\.swiftType)
-    result = m.result?.swiftType ?? "-"
+    parameters = m.parameters.map { $0.type.swiftName }
+    result = m.result?.type.swiftName ?? "-"
     error = m.errorType ?? "-"
   }
 
@@ -50,33 +51,68 @@ public struct BaselineMethod: Equatable {
   }
 }
 
+/// A struct or enum as the baseline records it: what its values look like
+/// on the wire, not its names.
+///
+///     struct Point (Int32,Int32)
+///     enum Shape UInt8 (1,2,7)
+public struct BaselineType: Equatable {
+  public var name: String
+  public var line: String
+
+  init(_ s: StructModel) {
+    name = s.name
+    line = "struct \(s.name) (\(s.fields.map { $0.type.swiftName }.joined(separator: ",")))"
+  }
+
+  init(_ e: EnumModel) {
+    name = e.name
+    line = "enum \(e.name) \(e.rawType) (\(e.cases.map { String($0.value) }.joined(separator: ",")))"
+  }
+
+  init?(line: String) {
+    let f = line.split(separator: " ")
+    guard f.count >= 3, f[0] == "struct" || f[0] == "enum" else { return nil }
+    name = String(f[1])
+    self.line = line
+  }
+}
+
 /// A protocol's recorded API.
 public struct Baseline: Equatable {
   public var id: String
   public var version: Int
+  public var types: [BaselineType]
   public var methods: [BaselineMethod]
 
-  public init(_ p: ProtocolModel) {
+  public init(_ p: ProtocolModel, _ library: LibraryModel) {
     id = p.id
     version = p.version
+    let used = p.used(library.types)
+    types = used.structs.map(BaselineType.init) + used.enums.map(BaselineType.init)
+    types.sort { $0.name < $1.name }
     methods = p.methods.map(BaselineMethod.init).sorted { $0.name < $1.name }
   }
 
   /// The baseline file's text.
   public var text: String {
     (["# API baseline for \(id), written by idlc. Commit it; idlc checks changes against it.",
-      "protocol \(id) version \(version)"] + methods.map(\.line)).joined(separator: "\n") + "\n"
+      "protocol \(id) version \(version)"] + types.map(\.line) + methods.map(\.line))
+      .joined(separator: "\n") + "\n"
   }
 
   public init?(text: String) {
     var id: String?
     var version: Int?
     var methods: [BaselineMethod] = []
+    var types: [BaselineType] = []
     for line in text.split(separator: "\n").map(String.init) where !line.hasPrefix("#") {
       let f = line.split(separator: " ")
       if f.first == "protocol", f.count == 4, f[2] == "version" {
         id = String(f[1])
         version = Int(f[3])
+      } else if let t = BaselineType(line: line) {
+        types.append(t)
       } else if let m = BaselineMethod(line: line) {
         methods.append(m)
       } else {
@@ -86,6 +122,7 @@ public struct Baseline: Equatable {
     guard let id, let version else { return nil }
     self.id = id
     self.version = version
+    self.types = types
     self.methods = methods
   }
 }
@@ -96,6 +133,12 @@ public func compatibility(old: Baseline, new: Baseline) -> [String] {
   if new.id != old.id { problems.append("the protocol id changed from \(old.id) to \(new.id)") }
   if new.version < old.version {
     problems.append("the version went down from \(old.version) to \(new.version)")
+  }
+  // A type's values must keep their shape: a client would misread them.
+  for t in old.types {
+    if let now = new.types.first(where: { $0.name == t.name }), now != t {
+      problems.append("type '\(t.name)' changed: was `\(t.line)`, now `\(now.line)`")
+    }
   }
   let current = Dictionary(uniqueKeysWithValues: new.methods.map { ($0.name, $0) })
   for m in old.methods {

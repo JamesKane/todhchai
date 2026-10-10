@@ -3,9 +3,12 @@
 /// Writes one message into caller-provided storage, allocating nothing.
 ///
 /// A body has a fixed-size inline part, whose layout the caller (generated
-/// code) knows, followed by out-of-line data in the order it is stored
-/// (FIDL's rule). Every part starts 8-byte aligned, and every padding byte
-/// is zero. Handles go into a side array; the body holds a presence marker.
+/// code) knows, followed by out-of-line objects in the order they are
+/// reserved (depth-first, FIDL's rule). Every object starts 8-byte aligned,
+/// and every padding byte is zero. Offsets are from the body's start, and a
+/// store may go anywhere already reserved: into the inline part, or into an
+/// out-of-line object (a vector's elements, a box). Handles go into a side
+/// array; the body holds a presence marker.
 ///
 ///     var e = Encoder(bytes: buffer, handles: handleBuffer)
 ///     try e.header(MessageHeader(txid: 1, kind: .request, ordinal: o))
@@ -42,12 +45,13 @@ public struct Encoder: ~Copyable, ~Escapable {
     try reserve(self.inlineSize)
   }
 
-  /// Stores an integer in the inline part, at `offset` from its start.
+  /// Stores an integer at `offset` from the body's start, in space already
+  /// reserved.
   @_lifetime(self: copy self)
   public mutating func store<T: FixedWidthInteger & BitwiseCopyable & ConvertibleToBytes>(_ value: T, at offset: Int)
     throws(WireError)
   {
-    guard offset >= 0, offset + MemoryLayout<T>.size <= inlineSize else { throw .outOfBounds }
+    guard offset >= 0, bodyStart + offset + MemoryLayout<T>.size <= end else { throw .outOfBounds }
     bytes.storeBytes(of: value, toByteOffset: bodyStart + offset, as: T.self, .littleEndian)
   }
 
@@ -64,6 +68,26 @@ public struct Encoder: ~Copyable, ~Escapable {
     }
   }
 
+  /// Stores a vector's count and presence marker (16 bytes at `offset`) and
+  /// reserves its element block, zeroed: the offset where element `i`
+  /// starts is the result plus `i * elementSize`.
+  @_lifetime(self: copy self)
+  public mutating func storeVector(count: Int, elementSize: Int, at offset: Int) throws(WireError) -> Int {
+    guard count >= 0, elementSize > 0, count <= maxMessageBytes / elementSize else { throw .tooLarge }
+    try store(UInt64(count), at: offset)
+    try store(presentMarker, at: offset + 8)
+    return try reserveObject(count * elementSize)
+  }
+
+  /// Stores a box's presence marker (8 bytes at `offset`) and reserves the
+  /// boxed value's `size` bytes out of line: the offset they start at. An
+  /// absent box, like an absent vector or byte string, is left zero.
+  @_lifetime(self: copy self)
+  public mutating func storeBox(size: Int, at offset: Int) throws(WireError) -> Int {
+    try store(presentMarker, at: offset)
+    return try reserveObject(size)
+  }
+
   /// Moves a handle into the message: a 4-byte presence marker inline at
   /// `offset`, and the handle in the side array. `nil` stores "absent".
   @_lifetime(self: copy self)
@@ -77,6 +101,15 @@ public struct Encoder: ~Copyable, ~Escapable {
 
   /// The message's size in bytes, and the number of handles it carries.
   public func finish() -> (byteCount: Int, handleCount: Int) { (end, handleCount) }
+
+  /// Reserves an out-of-line object of `size` bytes (padded to 8): the
+  /// offset it starts at.
+  @_lifetime(self: copy self)
+  mutating func reserveObject(_ size: Int) throws(WireError) -> Int {
+    let start = end
+    try reserve(wireAligned(size))
+    return start - bodyStart
+  }
 
   /// Zeroes `count` bytes at the end and moves past them.
   @_lifetime(self: copy self)

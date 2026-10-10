@@ -50,6 +50,35 @@ typedef struct td_wire_msg {
   uint32_t handle_count;
 } td_wire_msg_t;
 
+// A string or byte string: a pointer and a length. Decoded ones point into
+// the message; strings are UTF-8 and not NUL-terminated.
+typedef struct td_wire_str {
+  const char *data;
+  uint32_t len;
+} td_wire_str_t;
+
+typedef struct td_wire_bytes {
+  const uint8_t *data;
+  uint32_t len;
+} td_wire_bytes_t;
+
+// Where decoders put what doesn't fit in the message: vectors' elements and
+// optional values. The caller provides the memory; decoding fails with
+// TD_ERR_BUFFER_TOO_SMALL when it runs out.
+typedef struct td_wire_arena {
+  uint8_t *base;
+  uint32_t size;
+  uint32_t used;
+} td_wire_arena_t;
+
+static inline void *td_wire_alloc(td_wire_arena_t *a, uint32_t size, uint32_t align) {
+  if (!a) return NULL;
+  uint32_t start = (a->used + align - 1) & ~(align - 1);
+  if (start > a->size || size > a->size - start) return NULL;
+  a->used = start + size;
+  return a->base + start;
+}
+
 typedef struct td_wire_header {
   uint32_t txid;
   uint8_t kind;
@@ -87,9 +116,38 @@ static inline td_status_t td_wire_begin(td_wire_msg_t *m, uint32_t txid, uint8_t
   return TD_OK;
 }
 
-// An integer of `size` bytes at inline offset `offset`.
+// An integer of `size` bytes at `offset` from the body's start, in space
+// already reserved: the inline part, or an out-of-line object.
 static inline void td_wire_store(td_wire_msg_t *m, uint32_t offset, uint64_t v, unsigned size) {
   td_wire_put(m->bytes + TD_WIRE_HEADER_SIZE + offset, v, size);
+}
+
+// Reserves an out-of-line object of `size` bytes (padded to 8, zeroed); *base
+// is its offset from the body's start.
+static inline td_status_t td_wire_reserve(td_wire_msg_t *m, uint32_t size, uint32_t *base) {
+  uint32_t padded = td_wire_aligned(size);
+  if (size > sizeof m->bytes || m->byte_count + padded > sizeof m->bytes) return TD_ERR_OUT_OF_RANGE;
+  memset(m->bytes + m->byte_count, 0, padded);
+  *base = m->byte_count - TD_WIRE_HEADER_SIZE;
+  m->byte_count += padded;
+  return TD_OK;
+}
+
+// A vector: count and presence at `offset`, and its element block reserved;
+// element i starts at *base + i * elem_size.
+static inline td_status_t td_wire_store_vector(td_wire_msg_t *m, uint32_t offset, uint32_t count,
+                                               uint32_t elem_size, uint32_t *base) {
+  if (count > sizeof m->bytes / elem_size) return TD_ERR_OUT_OF_RANGE;
+  td_wire_store(m, offset, count, 8);
+  td_wire_store(m, offset + 8, UINT64_MAX, 8);
+  return td_wire_reserve(m, count * elem_size, base);
+}
+
+// A box: its presence at `offset`, and `size` bytes reserved at *base. An
+// absent box, vector or string is left zero.
+static inline td_status_t td_wire_store_box(td_wire_msg_t *m, uint32_t offset, uint32_t size, uint32_t *base) {
+  td_wire_store(m, offset, UINT64_MAX, 8);
+  return td_wire_reserve(m, size, base);
 }
 
 // A byte string: count and presence inline, the bytes out of line.
@@ -150,14 +208,16 @@ static inline td_status_t td_wire_read_begin(td_wire_reader_t *r, const td_wire_
   return r->next <= m->byte_count ? TD_OK : TD_ERR_PROTOCOL;
 }
 
+// An integer at `offset` from the body's start, in the inline part or an
+// out-of-line object already taken.
 static inline td_status_t td_wire_load(const td_wire_reader_t *r, uint32_t offset, unsigned size, uint64_t *v) {
-  if (offset + size > r->inline_size) return TD_ERR_PROTOCOL;
+  if ((uint64_t)TD_WIRE_HEADER_SIZE + offset + size > r->next) return TD_ERR_PROTOCOL;
   *v = td_wire_get(r->m->bytes + TD_WIRE_HEADER_SIZE + offset, size);
   return TD_OK;
 }
 
 static inline td_status_t td_wire_check_padding(const td_wire_reader_t *r, uint32_t offset, uint32_t count) {
-  if (offset + count > r->inline_size) return TD_ERR_PROTOCOL;
+  if ((uint64_t)TD_WIRE_HEADER_SIZE + offset + count > r->next) return TD_ERR_PROTOCOL;
   for (uint32_t i = 0; i < count; i++)
     if (r->m->bytes[TD_WIRE_HEADER_SIZE + offset + i]) return TD_ERR_PROTOCOL;
   return TD_OK;
@@ -170,19 +230,55 @@ static inline td_status_t td_wire_load_bool(const td_wire_reader_t *r, uint32_t 
   return TD_OK;
 }
 
+// Takes the next out-of-line object, `size` bytes padded to 8 with zeros;
+// *base is its offset from the body's start.
+static inline td_status_t td_wire_claim(td_wire_reader_t *r, uint64_t size, uint32_t *base) {
+  uint64_t padded = (size + 7u) & ~(uint64_t)7u;
+  if (padded > r->m->byte_count - r->next) return TD_ERR_PROTOCOL;
+  for (uint64_t i = size; i < padded; i++)
+    if (r->m->bytes[r->next + i]) return TD_ERR_PROTOCOL;
+  *base = r->next - TD_WIRE_HEADER_SIZE;
+  r->next += (uint32_t)padded;
+  return TD_OK;
+}
+
+// The presence of a vector or byte string at `offset`, without taking it: 1
+// present, 0 absent (count zero), -1 malformed.
+static inline int td_wire_presence(const td_wire_reader_t *r, uint32_t offset) {
+  uint64_t n, presence;
+  if (td_wire_load(r, offset, 8, &n) || td_wire_load(r, offset + 8, 8, &presence)) return -1;
+  if (presence == UINT64_MAX) return 1;
+  return presence == 0 && n == 0 ? 0 : -1;
+}
+
+// A vector at `offset`: its count, and its element block taken (element i at
+// *base + i * elem_size). 1 present, 0 absent, -1 malformed.
+static inline int td_wire_load_vector(td_wire_reader_t *r, uint32_t offset, uint32_t elem_size, uint32_t *count,
+                                      uint32_t *base) {
+  uint64_t n;
+  int present = td_wire_presence(r, offset);
+  if (present <= 0) return present;
+  if (td_wire_load(r, offset, 8, &n) || n > (r->m->byte_count - r->next) / elem_size) return -1;
+  *count = (uint32_t)n;
+  return td_wire_claim(r, n * elem_size, base) == TD_OK ? 1 : -1;
+}
+
+// A box at `offset`: its value's `size` bytes taken at *base. 1 present, 0
+// absent, -1 malformed.
+static inline int td_wire_load_box(td_wire_reader_t *r, uint32_t offset, uint32_t size, uint32_t *base) {
+  uint64_t presence;
+  if (td_wire_load(r, offset, 8, &presence)) return -1;
+  if (presence == 0) return 0;
+  if (presence != UINT64_MAX) return -1;
+  return td_wire_claim(r, size, base) == TD_OK ? 1 : -1;
+}
+
 // A byte string, as a pointer into the message (no copy).
 static inline td_status_t td_wire_load_bytes(td_wire_reader_t *r, uint32_t offset, const uint8_t **data,
                                              uint32_t *count) {
-  uint64_t n, presence;
-  if (td_wire_load(r, offset, 8, &n) || td_wire_load(r, offset + 8, 8, &presence)) return TD_ERR_PROTOCOL;
-  if (presence != UINT64_MAX || n > r->m->byte_count - r->next) return TD_ERR_PROTOCOL;
-  uint32_t padded = td_wire_aligned((uint32_t)n);
-  if (r->next + padded > r->m->byte_count) return TD_ERR_PROTOCOL;
-  for (uint32_t i = (uint32_t)n; i < padded; i++)
-    if (r->m->bytes[r->next + i]) return TD_ERR_PROTOCOL;
-  *data = r->m->bytes + r->next;
-  *count = (uint32_t)n;
-  r->next += padded;
+  uint32_t base;
+  if (td_wire_load_vector(r, offset, 1, count, &base) != 1) return TD_ERR_PROTOCOL;
+  *data = r->m->bytes + TD_WIRE_HEADER_SIZE + base;
   return TD_OK;
 }
 
@@ -230,6 +326,17 @@ static inline td_status_t td_wire_load_handle(td_wire_reader_t *r, uint32_t offs
   if (r->next_handle >= r->m->handle_count) return TD_ERR_PROTOCOL;
   *h = r->m->handles[r->next_handle++];
   return TD_OK;
+}
+
+// A handle that may be absent (TD_HANDLE_INVALID).
+static inline td_status_t td_wire_load_handle_opt(td_wire_reader_t *r, uint32_t offset, td_handle_t *h) {
+  uint64_t marker;
+  if (td_wire_load(r, offset, 4, &marker) != TD_OK) return TD_ERR_PROTOCOL;
+  if (marker == 0) {
+    *h = TD_HANDLE_INVALID;
+    return TD_OK;
+  }
+  return td_wire_load_handle(r, offset, h);
 }
 
 // Every byte and handle must have been consumed.
