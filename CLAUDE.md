@@ -66,6 +66,16 @@ to unions of Node channels, resolved in the client; `SrvBoard` is the
 session's `/srv`. idlc's outputs for Node and the board are in
 `lib/node/idl`.
 
+## The launcher
+
+`lib/launch` reads manifests (one directive a line, documented at the top
+of `Manifest.swift`), starts a job and a process per service with only
+what the manifest grants, and restarts by policy. A program reads its
+`Startup` first. The hosted boot runs the manifests in `boot/manifests`
+with the programs registered in `lib/hosted/Programs.swift`:
+
+    swift build --product hostboot && .build/debug/hostboot [--check] [DIR]
+
 ## Sys
 
 `Sys` (`lib/sys`, tier 0) is how services reach the kernel: croi's object

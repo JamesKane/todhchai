@@ -4,6 +4,14 @@
 
 import IPC
 
+extension NodeIPC.Walked {
+  /// The channel the walk ended with, if it went all the way.
+  public consuming func take() -> Handle? {
+    let node = self.node
+    return node
+  }
+}
+
 extension NodeIPC.NodeClient {
   public typealias Failure = IPCError<NodeIPC.NodeError>
 

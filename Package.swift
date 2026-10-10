@@ -187,6 +187,16 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "tests/node",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    // The launcher (architecture §3): manifests, a job and a process per
+    // service, namespaces from grants, restarts.
+    .target(name: "Launch", dependencies: ["Node", "IPC"], path: "lib/launch", exclude: ["idl"],
+            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC", "IDL"], path: "tests/launch",
+                swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    // The hosted boot and the programs it can start.
+    .target(name: "HostedPrograms", dependencies: ["Launch", "Node", "IPC"], path: "lib/hosted",
+            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .executableTarget(name: "hostboot", dependencies: ["HostedPrograms", "Launch", "Sys"], path: "tools/hostboot"),
     // The test protocol and its server, shared by the tests below.
     .target(name: "Echo", dependencies: ["IPC"], path: "tests/ipc/echo",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),

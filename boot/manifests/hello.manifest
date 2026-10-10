@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# A small service, to show the hosted boot working: its status says who
+# it is and what its namespace holds.
+service hello
+program hello
+export
+restart on-failure

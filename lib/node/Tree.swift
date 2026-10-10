@@ -65,9 +65,13 @@ public final class TreeNode: @unchecked Sendable {
 final class Remote: @unchecked Sendable {
   let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
   var client: NodeIPC.NodeClient
+  /// Whether the node goes when the other service does (a post on a
+  /// board), or stays to be given a new channel (a launcher's /svc).
+  let removeWhenGone: Bool
 
-  init(_ channel: consuming Handle) {
+  init(_ channel: consuming Handle, removeWhenGone: Bool) {
     client = NodeIPC.NodeClient(channel: channel)
+    self.removeWhenGone = removeWhenGone
     pthread_mutex_init(mutex, nil)
   }
 
@@ -141,9 +145,24 @@ public final class NodeTree: @unchecked Sendable {
   }
 
   /// Another service's node at `path`: walks into it are forwarded there.
+  /// Mounting again where one is gives it the new channel. If the other
+  /// service goes, the node goes too, unless `removeWhenGone` is false: then
+  /// walks into it fail with `io` until it is mounted again.
   @discardableResult
-  public func mount(_ path: String, _ channel: consuming Handle) -> TreeNode {
-    place(path, .remote(Remote(channel)))
+  public func mount(_ path: String, _ channel: consuming Handle, removeWhenGone: Bool = true) -> TreeNode {
+    let remote = Remote(channel, removeWhenGone: removeWhenGone)
+    if let existing = node(path) {
+      let replaced = locked { () -> [Watcher]? in
+        guard case .remote = existing.content, !existing.detached else { return nil }
+        existing.content = .remote(remote)
+        return modifiedLocked(existing)
+      }
+      if let replaced {
+        wake(replaced)
+        return existing
+      }
+    }
+    return place(path, .remote(remote))
   }
 
   /// The node at `path`, if there is one.
@@ -334,7 +353,8 @@ struct Session: NodeIPC.NodeHandler {
       if qids.isEmpty { throw e }
       return NodeIPC.Walked(qids: qids, node: nil)
     } catch {
-      // The other service is gone: so is its node.
+      // The other service is gone: so is its node, or it waits for another.
+      guard remote.removeWhenGone else { throw .io }
       tree.remove(end)
       if qids.count <= 1 { throw .notFound }
       return NodeIPC.Walked(qids: Array(qids.dropLast()), node: nil)

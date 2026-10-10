@@ -1,0 +1,10 @@
+# API baseline for todhchai.launch.Startup, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.launch.Startup version 1
+struct MountEntry (String,Handle,Placement,Bool)
+enum Placement UInt8 (1,2,3)
+struct StartInfo (String,[String],Bool,UInt32)
+method board call since 1 params () result Handle throws StartupError
+method export call since 1 params () result Handle throws StartupError
+method info call since 1 params () result StartInfo throws -
+method mount call since 1 params (UInt32) result MountEntry throws StartupError
+method ready call since 1 params () result - throws -
