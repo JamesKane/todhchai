@@ -35,11 +35,47 @@ are reserved.
 - **ZONE.** A zone is written once, when it ends, so a crash loses only the
   zones still open. Zones on one thread nest by time.
 - **FLOW.** Joins records across threads and processes. For an IPC call the
-  flow id is computed by both ends from what they share (a hash of the
-  channel's trace id and the transaction id, as croi's CALL and REPLY
-  records do), so nothing extra travels with the message.
+  flow id is computed by both ends from what they share, so nothing extra
+  travels with the message: croi's own function, below, so user records
+  join the kernel's.
 - **MARK.** Labels are UTF-8, NUL-padded, at most 16 bytes. `td bench`
   brackets each measured run with marks.
+
+### IPC flow ids (croi K7b, commit e960f87)
+
+croi defines the flow id for channel messages (`croi_flow_id` in croi's
+`include/ipc.h`, an inline function the kernel and user space share). The
+idlc-generated client and server code (M3) computes the same value, so
+its FLOW records join the kernel's:
+
+- `channel_id` = min(koid, related_koid), from `object_get_info(handle,
+  CROI_INFO_HANDLE_BASIC = 2)`: both ends see the same pair.
+- `txid` = the message's first 4 bytes (0 if it's shorter). `channel_call`
+  writes a kernel txid with the high bit set and the reply echoes it, so a
+  call and its reply share one flow.
+- The splitmix64 finalizer, with 64-bit wrapping arithmetic:
+
+      z = channel_id * 0x9E3779B97F4A7C15 + txid
+      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+      z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+      flow = z ^ (z >> 31)
+
+The kernel's records, in its category CROI_TRACE_IPC (1 << 3, a kernel
+category, not this format's user `ipc` bit):
+
+| Kind | Name | `a` | `b` |
+|---|---|---|---|
+| 80 | CROI_TK_CHANNEL_WRITE | flow | bytes \| handles << 32 |
+| 81 | CROI_TK_CHANNEL_READ | flow | bytes \| handles << 32 |
+| 82 | CROI_TK_DONATE | flow | the caller's trace id (thread: the server) |
+
+A call gives the call's write, the server's read, one DONATE and the
+reply's write, all with one flow. Donation (the server takes the caller's
+profile until it replies) begins once the caller blocks on the call.
+
+Shared-memory rings aren't croi's to define. Ours use the same function
+with the ring VMO's koid as `channel_id` and the slot's sequence number as
+`txid`, as croi suggested.
 
 ## The region
 
