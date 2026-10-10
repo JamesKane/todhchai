@@ -26,7 +26,7 @@ set_target_properties(LibC PROPERTIES Swift_MODULE_NAME LibC)
 target_include_directories(LibC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(LibC)
 
-add_library(TDACPI STATIC lib/acpi/Tables.swift lib/acpi/Namespace.swift lib/acpi/Loader.swift lib/acpi/Objects.swift lib/acpi/Interpreter.swift lib/acpi/Regions.swift lib/acpi/Interfaces.swift)
+add_library(TDACPI STATIC lib/acpi/Tables.swift lib/acpi/Namespace.swift lib/acpi/Loader.swift lib/acpi/Objects.swift lib/acpi/Interpreter.swift lib/acpi/Regions.swift lib/acpi/Interfaces.swift lib/acpi/Resources.swift lib/acpi/Devices.swift)
 set_target_properties(TDACPI PROPERTIES Swift_MODULE_NAME TDACPI)
 target_include_directories(TDACPI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(TDACPI)

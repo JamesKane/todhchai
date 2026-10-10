@@ -37,6 +37,9 @@ public enum ACPIError: Error, Equatable, Sendable {
   case unsupported
   /// Acquire out of sync-level order, or Release of a mutex not held.
   case mutexOrder
+  /// A resource template (§6.4) that doesn't parse: a descriptor cut
+  /// short, an unknown type, no end tag.
+  case badResourceTemplate
 }
 
 /// Little-endian reads from table bytes.
