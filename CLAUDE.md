@@ -125,7 +125,10 @@ interpreter, from ACPI 6.5 with no ACPICA (milestone A0,
     .build/debug/td acpi list
 
 Tests over the corpus skip when it's absent; synthetic AML comes from the
-tests' own encoder (`tests/acpi/AML.swift`).
+tests' own encoder (`tests/acpi/AML.swift`). The fuzzer runs 40 mutants a
+table in `td ci`; `TODHCHAI_ACPI_FUZZ=N swift test --filter mutatedTables`
+runs more, and a crash's seed is the last `fuzz` line on stderr. A0's
+budgets (`acpi-bench`) are in `td bench --programs`.
 
 ## Crypto
 

@@ -67,6 +67,10 @@ public struct Rule: Sendable {
     case "program.taisce.reader_slowdown_4": Rule(tolerance: 0.25, floor: 0.1, window: 5, limit: 1.5, unit: .count)
     case "program.taisce.fsync_p99": Rule(tolerance: 0.5, floor: 200e-6, window: 5, limit: 2e-3)
     case "program.taisce.commit_p99": Rule(tolerance: 0.5, floor: 2e-3, window: 5, limit: 20e-3)
+    // A0: loading the ACPI corpus's largest machine (this one's 587 KiB of
+    // AML, load-time code run) at most 5 ms; _STA on every device, 1 ms.
+    case "program.acpi.load_p99": Rule(tolerance: 0.5, floor: 200e-6, window: 5, limit: 5e-3)
+    case "program.acpi.sta_p99": Rule(tolerance: 0.5, floor: 50e-6, window: 5, limit: 1e-3)
     default:
       if name.hasPrefix("program.") { .perFrame } else if name.hasPrefix("build.clean.") { .cleanBuild } else { .buildTime }
     }

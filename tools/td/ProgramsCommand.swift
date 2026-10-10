@@ -10,6 +10,8 @@
 //             matching write (S0, ahead of M3's QEMU budgets); the read by
 //             a lock-free reader, four readers' slowdown, fsync and a
 //             group commit on the host's disk (S1)
+//   acpi      loading the ACPI corpus's largest machine, and _STA on every
+//             device (A0); only with a corpus (td acpi)
 //   and Swift's retains and allocations per frame in each steady state.
 //
 // They open windows and play (silent) audio, so they need the desktop and
@@ -29,7 +31,7 @@ func programBudgets(out: String) -> [(String, Double)] {
   let traces = "\(out)/programs"
   removeTree(traces)
   makeDirectory(traces)
-  for product in ["minimal", "synth", "gameloop", "taisce-bench"] {
+  for product in ["minimal", "synth", "gameloop", "taisce-bench", "acpi-bench"] {
     guard run(["swift", "build", "-c", "release", "--product", product, "--scratch-path", scratch],
               log: "\(out)/logs/build-\(product).log").ok
     else { fail("building \(product) failed; see \(out)/logs/build-\(product).log") }
@@ -103,5 +105,14 @@ func programBudgets(out: String) -> [(String, Double)] {
   }
   result("program.taisce.fsync_p99", percentile(zones["fs.fsync"] ?? [], 0.99))
   result("program.taisce.commit_p99", percentile(zones["fs.commit"] ?? [], 0.99))
+  // ACPI (A0): loading the corpus's largest machine and _STA on its every
+  // device; nothing without a corpus (td acpi), which stays out of the tree.
+  let acpi = traced("acpi-bench", []).file.zones()
+  if let load = acpi["acpi.load"], let sta = acpi["acpi.sta"] {
+    result("program.acpi.load_p99", percentile(load, 0.99))
+    result("program.acpi.sta_p99", percentile(sta, 0.99))
+  } else {
+    say("  acpi-bench: no corpus (td acpi import, td acpi fetch-qemu); ACPI budgets not measured")
+  }
   return results
 }

@@ -76,6 +76,8 @@ question, recorded in the roadmap's decisions, not a silent change.
 | Reads with four lock-free readers at once, against one alone | at most 1.5× slower each | S1 | Hosted |
 | `fsync` through the intent log, p99 (a 4 KiB write) | < 2 ms on the host's NVMe disk | S1 | Hosted |
 | A group commit of 64 writes, p99 | < 20 ms on the host's NVMe disk | S1 | Hosted |
+| Loading a machine's ACPI tables, load-time code run (587 KiB of AML), p99 | < 5 ms | A0 | Hosted, then QEMU (M3) |
+| `_STA` on every ACPI device (162), p99 | < 1 ms | A0 | Hosted, then QEMU (M3) |
 | Resident memory of all services at the text console | < 32 MiB *(proposed)* | M3 | QEMU |
 | Shutdown to power off | < 500 ms *(proposed)* | M4 | QEMU |
 | Kernel entry to the first desktop frame | < 1 s *(proposed)* | M8 | Hardware |
