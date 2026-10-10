@@ -1,5 +1,7 @@
-# devmgr's test (M3g): a client of devmgr's tree, run to its end.
+# devmgr's and the console's test (M3g, M3j): a client of their trees, run
+# to its end.
 service devices-test
 program devices-test
 use devmgr
+use console
 seal

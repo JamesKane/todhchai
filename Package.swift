@@ -123,6 +123,12 @@ let package = Package(
     .target(name: "TDUnicode", path: "lib/unicode", swiftSettings: tier0),
     .target(name: "UCDGen", path: "lib/unicode-gen"),
     .executableTarget(name: "ucdgen", dependencies: ["UCDGen"], path: "tools/ucdgen"),
+    // The framebuffer console (M3j): its text grid and renderer (tier 0),
+    // and fontgen, which writes its fonts from data/fonts (third-party data).
+    .target(name: "FontGen", path: "lib/font-gen"),
+    .executableTarget(name: "fontgen", dependencies: ["FontGen"], path: "tools/fontgen"),
+    .target(name: "Console", path: "lib/console", swiftSettings: tier0),
+    .testTarget(name: "ConsoleTests", dependencies: ["Console", "FontGen"], path: "tests/console"),
     .testTarget(name: "UnicodeTests", dependencies: ["TDUnicode", "UCDGen"], path: "tests/unicode"),
     // Taisce (filesystem.md): the file system's core is tier 0, built
     // again as Embedded Swift by CMake; the host's devices and tools are not.

@@ -1,0 +1,8 @@
+# The framebuffer console (M3j): the GOP framebuffer from croi's boot data,
+# and the system's log, which the debuglog system resource lets it read.
+service console
+program console
+resource mmio
+resource system
+bootdata
+export

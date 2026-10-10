@@ -102,6 +102,8 @@ enum Kernel {
   static func portIn(_ port: UInt16, _ width: Int) -> UInt32 { UInt32.max >> (32 - 8 * width) }
   static func portOut(_ port: UInt16, _ width: Int, _ value: UInt32) {}
 
+  static func debuglogCreate(_ resource: UInt32, readable: Bool) throws(Status) -> UInt32 { throw .notSupported }
+  static func debuglogRead(_ h: UInt32) throws(Status) -> Debuglog.Record { throw .notSupported }
   static func processSelf() throws(Status) -> UInt32 { try k.processSelf() }
   static func realtime() -> Int64 {
     var ts = timespec()

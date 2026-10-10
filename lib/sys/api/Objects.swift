@@ -193,6 +193,34 @@ public enum IOPorts {
   public static func write(_ port: UInt16, width: Int, _ value: UInt32) { Kernel.portOut(port, width, value) }
 }
 
+/// The kernel's log (croi's debuglog, Zircon's): a ring of records every
+/// process's stdout writes to. Reading needs the debuglog system resource
+/// (system base 12); a reader starts at the oldest record still kept.
+public enum Debuglog {
+  /// The system resource's base that grants reading.
+  public static let systemBase: UInt64 = 12
+
+  /// A record: its sequence (one more than the one before; a gap means
+  /// records were dropped), severity, monotonic time, writer and text.
+  public struct Record: Sendable {
+    public var sequence: UInt64
+    public var severity: UInt8
+    public var timestamp: Int64
+    public var pid: UInt64
+    public var tid: UInt64
+    public var text: [UInt8]
+  }
+
+  /// A log this process reads, with a resource that grants it.
+  public static func reader(resource: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.debuglogCreate(resource.raw, readable: true))
+  }
+
+  /// The next record, or `shouldWait` if there is none; the handle is
+  /// READABLE (`Signals.readable`) while one is.
+  public static func read(_ log: borrowing Handle) throws(Status) -> Record { try Kernel.debuglogRead(log.raw) }
+}
+
 /// Timers: SIGNALED at a deadline.
 public enum Timer {
   public static func create() throws(Status) -> Handle { Handle(raw: try Kernel.timerCreate()) }

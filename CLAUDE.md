@@ -102,6 +102,22 @@ launcher.until=devices-test -- -device edu` (QEMU's edu device and
 bin/acpi-bench --data .cache/acpi/NAME` (`--data DIR` puts files in bootfs
 as `data/NAME`), in `td ci` when the corpus is here.
 
+## The console
+
+`bin/console` (`boot/programs/console`, M3j) maps the GOP framebuffer that
+croi's boot data names (write-combining) and shows the system log from
+croi's debuglog (`resource system` grants reading it; `Debuglog` in Sys),
+plus what is written to its `write` leaf; `screen` reads back the grid.
+`lib/console` (tier 0) is the text grid and renderer, in the desktop's
+colors. Its font is Spleen (third-party data, `data/fonts/spleen`, with
+PROVENANCE.md); after changing the data, regenerate and commit:
+
+    .build/debug/fontgen lib/console/generated/Spleen.swift data/fonts/spleen
+
+`tests/console` fails if the committed table doesn't match the data. To
+look at the screen, boot without `--test` with `-- -monitor
+unix:SOCK,server=on,wait=off` and send `screendump FILE.ppm`.
+
 ## IPC protocols
 
 A library is a Swift file with an `@IPCLibrary` enum holding structs,
@@ -416,7 +432,9 @@ Every source file starts with an SPDX identifier when it is created:
 
 - Generated source (`idlc` output, headers generated for the C ABI, tables
   generated from specifications) carries the identifier too: the generator
-  emits it.
+  emits it. Source generated from third-party data keeps the data's
+  license and notice (`lib/console/generated/Spleen.swift` is
+  BSD-2-Clause, Spleen's).
 - When you edit a source file that lacks the identifier, add it.
 - Third-party data (fonts, standards tables, community databases) keeps its
   own license and is never relabelled. It lives apart from source with its

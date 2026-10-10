@@ -56,6 +56,7 @@ enum Number {
   static let timerSet: UInt64 = 96
   static let timerCancel: UInt64 = 97
   static let debuglogCreate: UInt64 = 110
+  static let debuglogRead: UInt64 = 112
   static let resourceCreate: UInt64 = 130
   static let ioportsRequest: UInt64 = 131
   static let ioportsRelease: UInt64 = 132
@@ -360,6 +361,29 @@ enum Kernel {
     #if arch(x86_64)
       td_port_out(port, UInt32(width), value)
     #endif
+  }
+
+  // MARK: The debuglog
+
+  /// debuglog_create: CROI_LOG_FLAG_READABLE needs the debuglog resource.
+  static func debuglogCreate(_ resource: UInt32, readable: Bool) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.debuglogCreate, UInt64(resource), readable ? 0x4000_0000 : 0, $0) }
+  }
+
+  /// debuglog_read into croi_log_record_t (a 40-byte header, then up to
+  /// 216 bytes of text): sequence, padding, datalen, severity, flags,
+  /// timestamp, pid, tid.
+  static func debuglogRead(_ h: UInt32) throws(Status) -> Debuglog.Record {
+    var buffer = InlineArray<32, UInt64>(repeating: 0)
+    let n = unsafe withUnsafeMutablePointer(to: &buffer) { p in unsafe sys(Number.debuglogRead, UInt64(h), 0, address(p), 256) }
+    try check(n)
+    let length = min(Int(UInt16(truncatingIfNeeded: buffer[1] >> 32)), 216)
+    var text: [UInt8] = []
+    text.reserveCapacity(length)
+    for i in 0..<length { text.append(UInt8(truncatingIfNeeded: buffer[5 + i / 8] >> (8 * UInt64(i % 8)))) }
+    return Debuglog.Record(
+      sequence: buffer[0], severity: UInt8(truncatingIfNeeded: buffer[1] >> 48), timestamp: Int64(bitPattern: buffer[2]),
+      pid: buffer[3], tid: buffer[4], text: text)
   }
 
   // MARK: Futexes and timers

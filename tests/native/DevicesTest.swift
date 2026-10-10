@@ -72,6 +72,24 @@ import Sys
       exit(1)
     }
     for line in acpi.split(separator: "\n") { print("devices-test: acpi: \(line)") }
+    // The console (M3j): text written to it is on the screen, below the
+    // system's log.
+    if var w = try? ns.open("/svc/console/write") { _ = try? w.writeText("dia duit ─ devices-test\n") }
+    // The console reads the log on a thread of its own: give it a moment.
+    var shown: [String] = []
+    var showsLog = false, showsText = false
+    let deadline = Clock.monotonic() + 2_000_000_000
+    while Clock.monotonic() < deadline {
+      shown = (read(ns, "/svc/console/screen") ?? "").split(separator: "\n").map(String.init)
+      showsText = shown.contains("dia duit ─ devices-test")
+      showsLog = shown.contains { $0.utf8.starts(with: "[".utf8) && $0.split(separator: " ").contains("devices-test:") }
+      if showsText && showsLog { break }
+      sleep(until: Clock.monotonic() + 20_000_000)
+    }
+    let cstatus = read(ns, "/svc/console/status") ?? ""
+    for line in cstatus.split(separator: "\n") { print("devices-test: console: \(line)") }
+    check(showsText, "the console shows what is written to it")
+    check(showsLog, "the console shows the log")
     print("devices-test: ok")
   }
 }

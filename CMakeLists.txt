@@ -191,6 +191,13 @@ set_target_properties(ZBI PROPERTIES Swift_MODULE_NAME ZBI)
 target_include_directories(ZBI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(ZBI)
 
+# The framebuffer console's text and renderer, and its fonts (M3j:
+# generated from data/fonts, under the fonts' own license).
+add_library(Console STATIC lib/console/Console.swift lib/console/Font.swift lib/console/generated/Spleen.swift)
+set_target_properties(Console PROPERTIES Swift_MODULE_NAME Console)
+target_include_directories(Console INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(Console)
+
 # PCI configuration space and enumeration, and devmgr's model (M3g).
 # Device registers are read through _Volatile.
 add_library(PCI STATIC lib/pci/Config.swift lib/pci/ECAM.swift lib/pci/Enumerate.swift)
@@ -242,6 +249,9 @@ if(TODHCHAI_NATIVE)
   # devmgr and its first driver (M3g).
   todhchai_program(devmgr boot/programs/devmgr/Main.swift boot/programs/launcher/Boot.swift)
   target_link_libraries(devmgr PRIVATE DevMgr PCI TDACPI ZBI Launch Bootfs Node IPC Sys)
+  # The framebuffer console (M3j).
+  todhchai_program(console boot/programs/console/Main.swift)
+  target_link_libraries(console PRIVATE Console ZBI Launch Node IPC Sys)
   todhchai_program(edu boot/programs/edu/Main.swift)
   target_link_libraries(edu PRIVATE DevMgr Launch Node IPC Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.
