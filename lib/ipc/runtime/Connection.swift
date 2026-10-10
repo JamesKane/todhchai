@@ -67,6 +67,9 @@ public struct IPCClientConnection: ~Copyable {
     self.channel = channel
   }
 
+  /// The channel, to speak something else on it.
+  public consuming func takeChannel() -> Handle { channel }
+
   /// Sends a one-way request.
   public func send<E: IPCErrorCode>(_ request: IPCMessage, _: E.Type) throws(IPCError<E>) {
     try IPC.send(request, on: channel, E.self)

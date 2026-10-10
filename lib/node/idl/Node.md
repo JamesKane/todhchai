@@ -201,6 +201,7 @@ UInt8; receivers reject other values.
 |---|---|
 | `file` | 1 |
 | `directory` | 2 |
+| `service` | 3 |
 
 ## enum ChangeKind
 

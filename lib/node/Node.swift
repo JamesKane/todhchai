@@ -31,6 +31,9 @@ public enum NodeIPC {
   public enum NodeKind: UInt8, Sendable {
     case file = 1
     case directory
+    /// A service's typed protocol: walking to it gives a channel that
+    /// speaks that protocol, not Node (architecture §6).
+    case service
   }
 
   /// A node's identity: `path` is unique in its tree and never reused;

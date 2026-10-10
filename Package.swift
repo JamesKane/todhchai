@@ -193,8 +193,15 @@ let package = Package(
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC", "IDL"], path: "tests/launch",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    // The block service (architecture §11): rings in shared memory (tier
+    // 0), the Device protocol, and the hosted backend over an image file.
+    .target(name: "BlockRing", path: "lib/block/ring", swiftSettings: tier0),
+    .target(name: "Block", dependencies: ["BlockRing", "Node", "IPC", "TDLinux"], path: "lib/block",
+            exclude: ["ring", "idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "BlockTests", dependencies: ["Block", "BlockRing", "HostedPrograms", "Launch", "Node", "IPC", "IDL"],
+                path: "tests/block", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The hosted boot and the programs it can start.
-    .target(name: "HostedPrograms", dependencies: ["Launch", "Node", "IPC"], path: "lib/hosted",
+    .target(name: "HostedPrograms", dependencies: ["Block", "BlockRing", "Launch", "Node", "IPC"], path: "lib/hosted",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .executableTarget(name: "hostboot", dependencies: ["HostedPrograms", "Launch", "Sys"], path: "tools/hostboot"),
     // The test protocol and its server, shared by the tests below.

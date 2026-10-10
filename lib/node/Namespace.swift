@@ -215,6 +215,12 @@ public final class Namespace: @unchecked Sendable {
     }
   }
 
+  /// A channel to the service node at `path`, which speaks its typed
+  /// protocol (`/svc/block/device`).
+  public func connect(_ path: String) throws(NamespaceError) -> Handle {
+    try open(path).takeChannel()
+  }
+
   /// A channel to the node at `path`: from the first member of its union
   /// that has it.
   public func open(_ path: String) throws(NamespaceError) -> NodeIPC.NodeClient {

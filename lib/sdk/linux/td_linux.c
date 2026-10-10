@@ -4,6 +4,7 @@
 #include "td_linux.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <string.h>
@@ -150,3 +151,5 @@ int td_linux_set_rttime_limit(uint64_t microseconds) {
   struct rlimit l = {.rlim_cur = microseconds, .rlim_max = microseconds};
   return setrlimit(RLIMIT_RTTIME, &l) == 0 ? 0 : errno;
 }
+
+int td_linux_open_direct(const char *path, int flags) { return open(path, flags | O_DIRECT | O_CLOEXEC); }

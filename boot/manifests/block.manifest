@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The block service, over an image under .build (made if it isn't there).
+service block
+program block
+arg --create 64M .build/hosted/block.img
+export
+restart on-failure

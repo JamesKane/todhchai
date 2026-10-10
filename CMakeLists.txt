@@ -65,6 +65,12 @@ target_include_directories(Sys INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Sys PUBLIC SysABI)
 todhchai_tier0(Sys)
 
+# The block service's rings.
+add_library(BlockRing STATIC lib/block/ring/Ring.swift)
+set_target_properties(BlockRing PROPERTIES Swift_MODULE_NAME BlockRing)
+target_include_directories(BlockRing INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(BlockRing)
+
 # Embedded test programs, run on the host by ctest.
 add_executable(wire-smoke tests/embedded/WireSmoke.swift)
 set_target_properties(wire-smoke PROPERTIES Swift_MODULE_NAME WireSmoke)
@@ -107,3 +113,9 @@ set_target_properties(sys-smoke PROPERTIES Swift_MODULE_NAME SysSmoke)
 target_link_libraries(sys-smoke PRIVATE Sys)
 todhchai_tier0(sys-smoke)
 add_test(NAME embedded-sys COMMAND sys-smoke)
+
+add_executable(block-ring-smoke tests/embedded/BlockRingSmoke.swift)
+set_target_properties(block-ring-smoke PROPERTIES Swift_MODULE_NAME BlockRingSmoke)
+target_link_libraries(block-ring-smoke PRIVATE BlockRing)
+todhchai_tier0(block-ring-smoke)
+add_test(NAME embedded-block-ring COMMAND block-ring-smoke)

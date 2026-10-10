@@ -13,21 +13,33 @@ import Synchronization
 /// Serves many channels from one thread. A port wakes it when a channel
 /// has a request (wait_async) or when another thread asks it to do
 /// something for a server (`wake`, such as sending queued events), so each
-/// server is only ever touched by the dispatcher's thread.
+/// server is only ever touched by the dispatcher's thread. It can watch
+/// other objects too (`watch`: a ring's eventpair), on the same thread.
 ///
-/// `add`, `wake` and `stop` may be called from any thread.
+/// `add`, `watch`, `unwatch`, `wake` and `stop` may be called from any thread.
 public final class IPCDispatcher: @unchecked Sendable {
   final class Entry: @unchecked Sendable {
-    let channel: UInt32
-    let serve: () throws(IPCError<Never>) -> Bool
+    /// The channel or watched object, which the entry's closures own.
+    let object: UInt32
+    let signals: UInt32
+    /// Given the signals observed; false when the entry is done.
+    let serve: (UInt32) throws(IPCError<Never>) -> Bool
     let wake: () throws(IPCError<Never>) -> Void
 
-    init(channel: UInt32, serve: @escaping () throws(IPCError<Never>) -> Bool,
-         wake: @escaping () throws(IPCError<Never>) -> Void) {
-      self.channel = channel
+    init(object: UInt32, signals: UInt32 = Signals.readable | Signals.peerClosed,
+         serve: @escaping (UInt32) throws(IPCError<Never>) -> Bool,
+         wake: @escaping () throws(IPCError<Never>) -> Void = {}) {
+      self.object = object
+      self.signals = signals
       self.serve = serve
       self.wake = wake
     }
+  }
+
+  /// A watched object, owned by its entry.
+  final class Owned {
+    let handle: Handle
+    init(_ handle: consuming Handle) { self.handle = handle }
   }
 
   /// A server, kept where the entry's closures can reach it.
@@ -58,9 +70,38 @@ public final class IPCDispatcher: @unchecked Sendable {
   ) throws(Status) -> UInt64 {
     let box = Box(server)
     let entry = Entry(
-      channel: box.server.connection.channel.raw,
-      serve: { () throws(IPCError<Never>) -> Bool in try box.server.handleNext(deadline: 0) },
+      object: box.server.connection.channel.raw,
+      serve: { (_: UInt32) throws(IPCError<Never>) -> Bool in try box.server.handleNext(deadline: 0) },
       wake: { () throws(IPCError<Never>) in try wake(&box.server) })
+    return try insert(entry)
+  }
+
+  /// Calls `handler` on the dispatcher's thread with the signals observed
+  /// whenever `object` asserts one of `signals`, until it returns false or
+  /// `unwatch`. The dispatcher owns `object` meanwhile. Returns the watch's id.
+  @discardableResult
+  public func watch(_ object: consuming Handle, signals: UInt32, _ handler: @escaping (UInt32) -> Bool) throws(Status)
+    -> UInt64
+  {
+    let owned = Owned(object)
+    let entry = Entry(object: owned.handle.raw, signals: signals) { (observed: UInt32) -> Bool in
+      withExtendedLifetime(owned) { handler(observed) }
+    }
+    return try insert(entry)
+  }
+
+  /// Stops a watch (dropping its object) or a server (closing its channel).
+  public func unwatch(_ id: UInt64) {
+    let entry = entries.withLock { $0.byID.removeValue(forKey: id) }
+    if let entry {
+      // Cancel the wait while the object is still open: its number may be reused.
+      let object = Handle(raw: entry.object)
+      try? Port.cancel(port, source: object, key: id)
+      _ = object.release()
+    }
+  }
+
+  func insert(_ entry: Entry) throws(Status) -> UInt64 {
     let id = entries.withLock { e in
       e.lastID += 1
       e.byID[e.lastID] = entry
@@ -83,7 +124,12 @@ public final class IPCDispatcher: @unchecked Sendable {
   /// Drops every server, closing their channels: for a service that is
   /// done, once `run` has returned.
   public func removeAll() {
-    entries.withLock { $0.byID = [:] }
+    // Dropped outside the lock: a server's deinit may unwatch.
+    let all = entries.withLock { e in
+      defer { e.byID = [:] }
+      return e.byID
+    }
+    _ = all
   }
 
   /// Serves until `stop`.
@@ -97,7 +143,7 @@ public final class IPCDispatcher: @unchecked Sendable {
         if packet.type == 0 {
           try entry.wake()
         } else {
-          alive = try entry.serve()
+          alive = try entry.serve(packet.observed)
         }
       } catch .transport(.timedOut) {
         // Nothing to read after all (a cancel, now answered).
@@ -105,25 +151,29 @@ public final class IPCDispatcher: @unchecked Sendable {
         alive = false
       }
       if alive && packet.type != 0 {
-        try arm(packet.key, entry)
+        // Unless it was unwatched meanwhile.
+        if entries.withLock({ $0.byID[packet.key] === entry }) { try arm(packet.key, entry) }
       } else if !alive {
-        // Dropping the server closes its channel.
-        _ = entries.withLock { $0.byID.removeValue(forKey: packet.key) }
+        // Dropping the server closes its channel (outside the lock: its
+        // deinit may unwatch).
+        let removed = entries.withLock { $0.byID.removeValue(forKey: packet.key) }
+        _ = removed
       }
     }
   }
 
-  /// A packet when the entry's channel is readable or its peer closed.
+  /// A packet when the entry's object asserts its signals (a channel:
+  /// readable or its peer closed).
   func arm(_ id: UInt64, _ entry: Entry) throws(Status) {
-    // The server owns the channel: borrow its number, then give it back.
-    let channel = Handle(raw: entry.channel)
+    // The entry owns the object: borrow its number, then give it back.
+    let object = Handle(raw: entry.object)
     var failure: Status?
     do throws(Status) {
-      try channel.waitAsync(port: port, key: id, signals: Signals.readable | Signals.peerClosed)
+      try object.waitAsync(port: port, key: id, signals: entry.signals)
     } catch {
       failure = error
     }
-    _ = channel.release()
+    _ = object.release()
     if let failure { throw failure }
   }
 }

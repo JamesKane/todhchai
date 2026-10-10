@@ -1,0 +1,8 @@
+# API baseline for todhchai.block.Device, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.block.Device version 1
+struct DeviceInfo (UInt32,UInt64,UInt32,Bool)
+struct Ring (Handle,Handle)
+method attach call since 1 params (Handle) result UInt32 throws BlockError
+method detach call since 1 params (UInt32) result - throws BlockError
+method info call since 1 params () result DeviceInfo throws -
+method open call since 1 params (UInt32) result Ring throws BlockError

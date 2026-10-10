@@ -15,6 +15,11 @@ extension NodeIPC.Walked {
 extension NodeIPC.NodeClient {
   public typealias Failure = IPCError<NodeIPC.NodeError>
 
+  /// The channel, for another protocol: what a walk to a service node gave.
+  public consuming func takeChannel() -> Handle {
+    connection.takeChannel()
+  }
+
   /// A channel to the node at `path` ("a/b/c", relative to this node),
   /// walking 16 names at a time. A walk that stops early is `notFound`.
   public mutating func open(_ path: String) throws(Failure) -> NodeIPC.NodeClient {

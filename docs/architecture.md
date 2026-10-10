@@ -249,9 +249,10 @@ protocol Node {
 - An SDK helper (the equivalent of lib9p's in-memory file tree) lets a
   service publish its tree in about 150 lines. lib9p's complete RAM file
   system is 169 lines.
-- **High-rate data never flows through Node.** A node such as
-  `/svc/audio/ring` hands out the dedicated protocol channel or ring
-  handle, and the data goes there.
+- **High-rate data never flows through Node.** A *service* node such as
+  `/svc/block/device` answers a walk with a channel that speaks the
+  service's typed protocol instead of Node, and that protocol hands out
+  rings; the data goes there.
 
 The file system (whose protocol extends Node with directories, files,
 attributes and queries), Tracker, the Inspector, `hey`-style scripting and

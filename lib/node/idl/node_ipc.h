@@ -48,7 +48,8 @@ extern "C" {
 typedef uint8_t node_ipc_node_kind_t;
 #define NODE_IPC_NODE_KIND_FILE ((node_ipc_node_kind_t)1)
 #define NODE_IPC_NODE_KIND_DIRECTORY ((node_ipc_node_kind_t)2)
-static inline int node_ipc_node_kind_known(uint64_t v) { return v == UINT64_C(1) || v == UINT64_C(2); }
+#define NODE_IPC_NODE_KIND_SERVICE ((node_ipc_node_kind_t)3)
+static inline int node_ipc_node_kind_known(uint64_t v) { return v == UINT64_C(1) || v == UINT64_C(2) || v == UINT64_C(3); }
 
 // enum ChangeKind (UInt8): receivers reject other values.
 typedef uint8_t node_ipc_change_kind_t;

@@ -8,6 +8,7 @@
 //     let tree = NodeTree(dispatcher: dispatcher)
 //     tree.text("status") { "running \(jobs) jobs\n" }
 //     tree.text("ctl", read: { "" }, write: { command throws(NodeIPC.NodeError) in try run(command) })
+//     tree.service("device") { channel in try serveDevice(channel) }
 //     try tree.serve(channel)
 //     try dispatcher.run()
 //
@@ -27,6 +28,8 @@ public final class TreeNode: @unchecked Sendable {
     case text(read: @Sendable () -> String, write: (@Sendable (String) throws(NodeError) -> Void)?)
     /// Another service's node: walks into it go there.
     case remote(Remote)
+    /// A typed protocol: a walk to it gets a channel `connect` serves.
+    case service(connect: (consuming Handle) throws(Status) -> Void)
   }
 
   public let name: String
@@ -56,6 +59,7 @@ public final class TreeNode: @unchecked Sendable {
     switch content {
     case .directory, .remote: .directory
     case .bytes, .text: .file
+    case .service: .service
     }
   }
   var qid: NodeIPC.Qid { NodeIPC.Qid(path: path, version: version, kind: kind) }
@@ -142,6 +146,14 @@ public final class NodeTree: @unchecked Sendable {
   public func text(_ path: String, read: @escaping @Sendable () -> String,
                    write: (@Sendable (String) throws(NodeError) -> Void)? = nil) -> TreeNode {
     place(path, .text(read: read, write: write))
+  }
+
+  /// A typed protocol at `path`: a walk that ends there makes a channel and
+  /// hands one end to `connect` (on the dispatcher's thread) to serve, and
+  /// the other to the client. Walks can't go through it.
+  @discardableResult
+  public func service(_ path: String, connect: @escaping (consuming Handle) throws(Status) -> Void) -> TreeNode {
+    place(path, .service(connect: connect))
   }
 
   /// Another service's node at `path`: walks into it are forwarded there.
@@ -336,8 +348,11 @@ struct Session: NodeIPC.NodeHandler {
       return (qids, at, [])
     }
     guard let end else { return NodeIPC.Walked(qids: qids, node: nil) }
-    guard case .remote(let remote) = end.content else { return NodeIPC.Walked(qids: qids, node: try channel(to: end)) }
-    return try forward(rest, to: remote, at: end, after: qids)
+    switch end.content {
+    case .remote(let remote): return try forward(rest, to: remote, at: end, after: qids)
+    case .service(let connect): return NodeIPC.Walked(qids: qids, node: try connection(connect))
+    default: return NodeIPC.Walked(qids: qids, node: try channel(to: end))
+    }
   }
 
   /// Walks the rest of a walk in another service, whose node `end` is.
@@ -366,6 +381,17 @@ struct Session: NodeIPC.NodeHandler {
     do throws(Status) {
       let ends = try Channel.create()
       try tree.serve(ends.b, at: node)
+      return ends.a
+    } catch {
+      throw .io
+    }
+  }
+
+  /// A new channel a service node's `connect` serves: the client's end.
+  func connection(_ connect: (consuming Handle) throws(Status) -> Void) throws(NodeError) -> Handle {
+    do throws(Status) {
+      let ends = try Channel.create()
+      try connect(ends.b)
       return ends.a
     } catch {
       throw .io
@@ -408,6 +434,7 @@ struct Session: NodeIPC.NodeHandler {
     let bytes: [UInt8]
     switch content {
     case .directory, .remote: throw .isDirectory
+    case .service: throw .unsupported
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
     }
@@ -422,6 +449,8 @@ struct Session: NodeIPC.NodeHandler {
     switch content {
     case .directory, .remote:
       throw .isDirectory
+    case .service:
+      throw .unsupported
     case .text(_, let write):
       guard let write else { throw .unsupported }
       guard let command = String(validating: data, as: UTF8.self) else { throw .invalid }
@@ -462,6 +491,7 @@ struct Session: NodeIPC.NodeHandler {
 
   mutating func create(_ name: String, kind: NodeIPC.NodeKind) throws(NodeError) -> NodeIPC.Walked {
     guard NodeIPC.isValidName(name) else { throw .badName }
+    guard kind != .service else { throw .unsupported }
     let (child, woken) = try tree.locked { () throws(NodeError) -> (TreeNode, [Watcher]) in
       let at = try current()
       guard case .directory(let allowsCreate) = at.content else { throw .notDirectory }

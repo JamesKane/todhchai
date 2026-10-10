@@ -76,6 +76,17 @@ with the programs registered in `lib/hosted/Programs.swift`:
 
     swift build --product hostboot && .build/debug/hostboot [--check] [DIR]
 
+## The block service
+
+`lib/block` serves a device's blocks through rings in a shared VMO
+(`lib/block/ring`, `BlockRing`, tier 0; the layout and wakeup rules are
+at the top of `Ring.swift`). A client walks to the service node
+`/svc/block/device` (`Namespace.connect`), which speaks `BlockIPC.Device`,
+not Node: it opens the ring and attaches buffer VMOs, and the data goes
+through the ring. Hosted, `FileBackend` is an image file; the hosted
+boot's `block` program makes `.build/hosted/block.img`. idlc's outputs are
+in `lib/block/idl`.
+
 ## Sys
 
 `Sys` (`lib/sys`, tier 0) is how services reach the kernel: croi's object

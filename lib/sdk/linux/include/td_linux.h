@@ -26,6 +26,9 @@ int td_linux_sched_idle(void);
 int td_linux_memfd(const char *name);
 // The calling thread's name (at most 15 bytes are kept).
 void td_linux_set_thread_name(const char *name);
+// open(2) with O_DIRECT (and O_CLOEXEC): reads and writes past the page
+// cache. The fd, or -1 with errno set.
+int td_linux_open_direct(const char *path, int flags);
 
 // Sequentially consistent atomics on memory shared with another process
 // (PipeWire's activation records), where Swift's Atomic can't live.
