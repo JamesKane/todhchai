@@ -5,14 +5,11 @@
 // (lib/sys/native) holds this process's handle and root VMAR and the
 // vDSO's clock.
 //
-// Two places croi differs from Zircon, and what we do meanwhile:
-// - A channel write or call that fails before the message is built leaves
-//   its handles in the caller's table; Zircon closes them. Sys promises
-//   they are consumed, and closing them here could close a reused number,
-//   so they are left open (a leak, never a double close).
-// - Threads have no way to unmap their own stack as they exit
-//   (Zircon's vmar_unmap_handle_close_thread_exit), so a finished
-//   thread's stack is unmapped by the next thread start.
+// A channel write or call consumes its handles even when it fails (croi
+// 869cb83, as Zircon), as Sys promises. Threads' stacks are still
+// unmapped by the next thread start; croi now has Zircon's
+// vmar_unmap_handle_close_thread_exit (syscall 75) and user TLS, which
+// this backend moves to after M3e.
 
 import LibSys
 import TDNative
@@ -142,22 +139,37 @@ enum Kernel {
     try check(r)
   }
 
+  /// channel_read, sized first: asked with no room, croi says how large the
+  /// next message is and leaves it queued (Zircon's BUFFER_TOO_SMALL), so
+  /// the arrays are made to fit, uninitialized. Another reader may take it
+  /// meanwhile; then the next one is sized.
   static func channelRead(_ h: UInt32) throws(Status) -> Channel.Message {
-    var bytes = [UInt8](repeating: 0, count: Channel.maxBytes)
-    var handles = [UInt32](repeating: 0, count: Channel.maxHandles)
     var actual: UInt64 = 0
-    let r = unsafe bytes.withUnsafeMutableBytes { b in
-      unsafe handles.withUnsafeMutableBytes { hs in
-        unsafe withUnsafeMutablePointer(to: &actual) { a in
-          unsafe sys(Number.channelRead, UInt64(h), 0, address(b.baseAddress), address(hs.baseAddress),
-              UInt64(Channel.maxBytes) | UInt64(Channel.maxHandles) << 32, address(a))
+    while true {
+      let size = unsafe withUnsafeMutablePointer(to: &actual) { a in
+        unsafe sys(Number.channelRead, UInt64(h), 0, 0, 0, 0, address(a))
+      }
+      if size == 0 { return Channel.Message(bytes: [], handles: []) }  // an empty message, read
+      guard size == Int64(Status.bufferTooSmall.rawValue) else {
+        try check(size)
+        throw .internal
+      }
+      let count = Int(actual & 0xFFFF_FFFF), handleCount = Int(actual >> 32)
+      // Trivial values: uninitialized until the read fills them.
+      var bytes = unsafe [UInt8](unsafeUninitializedCapacity: count) { _, n in n = count }
+      var handles = unsafe [UInt32](unsafeUninitializedCapacity: handleCount) { _, n in n = handleCount }
+      let r = unsafe bytes.withUnsafeMutableBytes { b in
+        unsafe handles.withUnsafeMutableBytes { hs in
+          unsafe withUnsafeMutablePointer(to: &actual) { a in
+            unsafe sys(Number.channelRead, UInt64(h), 0, address(b.baseAddress), address(hs.baseAddress),
+                UInt64(count) | UInt64(handleCount) << 32, address(a))
+          }
         }
       }
+      if r == Int64(Status.bufferTooSmall.rawValue) { continue }  // another reader took it: the next
+      try check(r)
+      return Channel.Message(bytes: bytes, handles: handles)
     }
-    try check(r)
-    bytes.removeLast(Channel.maxBytes - Int(actual & 0xFFFF_FFFF))
-    handles.removeLast(Channel.maxHandles - Int(actual >> 32))
-    return Channel.Message(bytes: bytes, handles: handles)
   }
 
   /// channel_call with croi_channel_call_args_t: four pointers, then the
@@ -165,8 +177,12 @@ enum Kernel {
   static func channelCall(_ h: UInt32, _ bytes: [UInt8], _ handles: [UInt32], _ deadline: Int64) throws(Status)
     -> Channel.Message
   {
-    var reply = [UInt8](repeating: 0, count: Channel.maxBytes)
-    var replyHandles = [UInt32](repeating: 0, count: Channel.maxHandles)
+    // Room for the largest reply (croi drops one that doesn't fit), from
+    // the heap's classes and not zeroed.
+    var reply = unsafe [UInt8](unsafeUninitializedCapacity: Channel.maxBytes) { _, n in n = Channel.maxBytes }
+    var replyHandles = unsafe [UInt32](unsafeUninitializedCapacity: Channel.maxHandles) { _, n in
+      n = Channel.maxHandles
+    }
     var actual = (UInt32(0), UInt32(0))
     let r = unsafe bytes.withUnsafeBytes { wb in
       unsafe handles.withUnsafeBytes { wh in

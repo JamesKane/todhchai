@@ -157,7 +157,7 @@ target_link_libraries(Launch PUBLIC Node IPC)
 todhchai_tier0(Launch)
 
 # The block service, less its hosted backend (an image file, FileBackend).
-add_library(Block STATIC lib/block/Block.swift lib/block/Client.swift lib/block/Service.swift)
+add_library(Block STATIC lib/block/Block.swift lib/block/Client.swift lib/block/Service.swift lib/block/VMOBackend.swift)
 set_target_properties(Block PROPERTIES Swift_MODULE_NAME Block)
 target_include_directories(Block INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Block PUBLIC BlockRing Node IPC)
@@ -169,6 +169,13 @@ set_target_properties(Fs PROPERTIES Swift_MODULE_NAME Fs)
 target_include_directories(Fs INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Fs PUBLIC Block BlockRing Node IPC Taisce)
 todhchai_tier0(Fs)
+
+# N0's programs' bodies, shared by the hosted and native boots.
+add_library(Services STATIC lib/services/Services.swift)
+set_target_properties(Services PROPERTIES Swift_MODULE_NAME Services)
+target_include_directories(Services INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Services PUBLIC Fs Block Launch Node IPC Taisce)
+todhchai_tier0(Services)
 
 # bootfs images: td writes them, the native launcher reads them.
 add_library(Bootfs STATIC lib/bootfs/Bootfs.swift)
@@ -187,8 +194,15 @@ if(TODHCHAI_NATIVE)
     todhchai_tier0(${name})
   endfunction()
 
-  todhchai_program(launcher boot/programs/launcher/Main.swift)
+  todhchai_program(launcher boot/programs/launcher/Main.swift boot/programs/launcher/Boot.swift)
   target_link_libraries(launcher PRIVATE Launch Bootfs Sys)
+  # N0's programs (M3e), over the bodies the hosted boot shares (lib/services).
+  todhchai_program(block boot/programs/block/Main.swift)
+  target_link_libraries(block PRIVATE Services)
+  todhchai_program(fs boot/programs/fs/Main.swift)
+  target_link_libraries(fs PRIVATE Services)
+  todhchai_program(catalog boot/programs/catalog/Main.swift)
+  target_link_libraries(catalog PRIVATE Services)
   # Tests that run on croi: td boot --test --next bin/<name>.
   todhchai_program(sys-test tests/native/SysTest.swift)
   target_link_libraries(sys-test PRIVATE Sys)
@@ -200,6 +214,11 @@ if(TODHCHAI_NATIVE)
   target_link_libraries(tree-service PRIVATE Launch Node IPC Sys)
   todhchai_program(launch-test tests/native/LaunchTest.swift)
   target_link_libraries(launch-test PRIVATE Launch Node IPC Sys)
+  # N0's exit on croi: td boot --test --next bin/n0-exit --manifests boot/native.
+  todhchai_program(n0-exit tests/native/N0Exit.swift boot/programs/launcher/Boot.swift)
+  target_link_libraries(n0-exit PRIVATE Launch Bootfs Fs Node Sys)
+  todhchai_program(spawn-probe tests/native/SpawnProbe.swift)
+  target_link_libraries(spawn-probe PRIVATE Sys)
   return()
 endif()
 

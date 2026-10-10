@@ -380,3 +380,15 @@ let blockUser = ProgramEntry { handle in
   #expect(markdown(p, library, source: source) == read("lib/block/idl/Device.md"), "\(regenerate)")
   #expect(Baseline(p, library).text == read("lib/block/idl/\(p.id).api"))
 }
+
+/// The ramdisk the native boot uses: blocks in a VMO, zero until written.
+@Test func aVMOBackendHoldsWhatIsWritten() throws {
+  let disk = try VMOBackend(blocks: 16)
+  var block = [UInt8](repeating: 0xA5, count: 8192)
+  #expect(block.withUnsafeBytes { disk.write(3, from: $0, policy: .cached) } == .ok)
+  var back = [UInt8](repeating: 0, count: 12288)
+  #expect(back.withUnsafeMutableBytes { disk.read(2, into: $0, policy: .cached) } == .ok)
+  #expect(back[0..<4096].allSatisfy { $0 == 0 } && back[4096...].allSatisfy { $0 == 0xA5 })
+  #expect(block.withUnsafeBytes { disk.write(15, from: $0, policy: .cached) } == .outOfRange)
+  block.removeAll()
+}

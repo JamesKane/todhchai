@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The block service over a 64 MiB ramdisk (natively, until virtio-blk).
+service block
+program block
+arg --memory 64M
+export
+restart on-failure

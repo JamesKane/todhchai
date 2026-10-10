@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The trace region, natively: none yet. Every trace point costs its load
-// and branch and records nothing, until the native trace (M3e) gives each
+// and branch and records nothing, until the native trace (M3f) gives each
 // process a region beside croi's kernel rings. The thread-ring hooks the
 // host's C file provides (td_trace_cpu.c, with thread-local storage croi's
 // threads don't have yet) are defined here for the link, and unused.

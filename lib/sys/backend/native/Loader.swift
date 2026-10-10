@@ -99,7 +99,7 @@ enum Loader {
     let ends = try Kernel.channelCreate()
     defer { Kernel.close(ends.0) }
     let given = handles
-    handles = []  // the write takes them (or leaks them: Kernel.channelWrite)
+    handles = []  // the write takes them, written or not
     try Kernel.channelWrite(ends.0, processArgs(infos, name: program.name), given)
     // process_start takes the bootstrap end, started or not (Zircon's rule).
     try check(sys(Number.processStart, UInt64(process), UInt64(thread), elf.entry, stackBase + stackSize,

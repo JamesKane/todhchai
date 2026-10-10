@@ -70,7 +70,11 @@ lib/launch natively: programs are bootfs's `bin/NAME`, manifests its
 `Process.start` natively loads the ELF from bootfs (`lib/elf`,
 `lib/sys/backend/native/Loader.swift`); a started program finds its
 Startup channel as `StartupHandles.take(ProcessArgs.info(ProcessArgs.user0))`.
-`td ci` boots the launcher's test (`tests/native/manifests`). Our libc exports `mem*` and `str*` under their C
+`td ci` boots the launcher's test (`tests/native/manifests`) and N0's exit
+(`bin/n0-exit` with `boot/native`, the native boot's manifests: block over
+a ramdisk, fs, catalog). N0's programs are one body each in `lib/services`
+(tier 0), which the hosted programs (`lib/hosted`) and the native ones
+(`boot/programs/<name>`) wrap. Our libc exports `mem*` and `str*` under their C
 names natively only (`lib/libc/native`, never in SwiftPM's build).
 
 ## IPC protocols
@@ -346,6 +350,11 @@ cases, comparing results and whole buffers.
   session's server holds a token whose deinit marks it closed).
 - **The CMake builds load the IPC macro from SwiftPM's build**
   (`.build/debug/IPCMacros`): run `swift build` before configuring them.
+- **Embedded Swift's String has no `contains(String)`** (Foundation's):
+  compare bytes or whole lines (`utf8.elementsEqual`, `utf8.starts(with:)`).
+- **A large allocation natively is a mapping** (libsys's heap: past 128
+  KiB, a VMO, page faults and an unmap with a TLB shootdown): keep them out
+  of hot paths. A channel message is read sized (M3e).
 - **A CMake option for Swift must be guarded in a target with assembly**
   (`$<$<COMPILE_LANGUAGE:Swift>:...>`), or clang gets it.
 

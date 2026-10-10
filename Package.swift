@@ -216,7 +216,10 @@ let package = Package(
     .testTarget(name: "FsTests", dependencies: ["Fs", "Block", "HostedPrograms", "Launch", "Node", "IPC", "IDL", "Taisce"],
                 path: "tests/fs", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The hosted boot and the programs it can start.
-    .target(name: "HostedPrograms", dependencies: ["Block", "BlockRing", "Fs", "Launch", "Node", "IPC", "Taisce"], path: "lib/hosted",
+    // N0's programs, the bodies both boots run (M3e).
+    .target(name: "Services", dependencies: ["Block", "Fs", "Launch", "Node", "IPC", "Taisce"], path: "lib/services",
+            swiftSettings: tier0),
+    .target(name: "HostedPrograms", dependencies: ["Block", "Launch", "Services", "Sys"], path: "lib/hosted",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .executableTarget(name: "hostboot", dependencies: ["HostedPrograms", "Launch", "Sys"], path: "tools/hostboot"),
     // N0's budgets, from traces (td bench --programs).

@@ -37,6 +37,7 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
                      "--cmdline", "launcher.until=launch-test"]]),
     ("sys-test-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/sys-test"]]),
     ("services-test-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/services-test"]]),
+    ("n0-exit-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/n0-exit", "--manifests", "boot/native"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))

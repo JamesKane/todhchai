@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The heap: memory from VMOs mapped into the root VMAR. Requests of up to
-// 4 KiB (with their 16-byte header) at alignments up to 16 come from size
-// classes (32 B to 4 KiB, powers of two) carved from 256 KiB chunks and
+// 128 KiB (with their 16-byte header) at alignments up to 16 come from size
+// classes (32 B to 128 KiB, powers of two) carved from 1 MiB chunks and
 // kept on per-class free lists; anything else gets a mapping of its own,
-// unmapped when freed. Embedded Swift allocates through posix_memalign and
+// unmapped when freed. The classes reach that far because a mapping costs
+// system calls, page faults and, unmapped, a TLB shootdown: a 4 KiB block
+// with its header, or a channel's largest message, must not (M3e measured
+// a channel read at 137 us when its 64 KiB buffer was a mapping). Embedded Swift allocates through posix_memalign and
 // free. Correct first, then measured (principle 9).
 
 import TDNative
 
 enum Heap {
-  static let classes = 8
+  static let classes = 13
   static let smallest = 32
-  static let chunkSize = 256 * 1024
+  static let chunkSize = 1024 * 1024
   static let pageSize = 4096
   /// A header's tag: a class index, or this bit and a mapping's length.
   static let largeBit: UInt64 = 1 << 63
 
   nonisolated(unsafe) static var vmar: UInt32 = 0
-  nonisolated(unsafe) static var free = InlineArray<8, UInt>(repeating: 0)
+  nonisolated(unsafe) static var free = InlineArray<13, UInt>(repeating: 0)
   nonisolated(unsafe) static var chunk: UInt = 0
   nonisolated(unsafe) static var chunkLeft = 0
   static let lock = RuntimeLock()

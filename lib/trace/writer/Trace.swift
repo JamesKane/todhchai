@@ -5,7 +5,7 @@
 // disabled trace point costs one load of the enabled mask and a branch.
 // Where the region comes from is the platform's: hosted, a file under
 // $TODHCHAI_TRACE, mapped shared (host/Region.swift); natively, none yet,
-// so nothing is recorded until the native trace (M3e, native/Region.swift).
+// so nothing is recorded until the native trace (M3f, native/Region.swift).
 
 import TDTraceCPU
 @_exported import TraceFormat

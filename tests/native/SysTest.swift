@@ -136,10 +136,31 @@ import Sys
         try? Channel.write(channel, bytes: m.bytes + [0xEE])
       }
     }
-    for i in 0..<20 {
-      let reply = try Channel.call(client, bytes: [0, 0, 0, 0, UInt8(i)], deadline: Clock.monotonic() + 1000 * ms)
-      check(reply.bytes.count == 6 && reply.bytes[4] == UInt8(i) && reply.bytes[5] == 0xEE, "call's reply")
+    // Our side of a call, without a wakeup: the clock, and a write and
+    // read on one thread.
+    do {
+      let c0 = Clock.monotonic()
+      for _ in 0..<1000 { _ = Clock.monotonic() }
+      let clock = (Clock.monotonic() - c0) / 1000
+      let local = try Channel.create()
+      let w0 = Clock.monotonic()
+      for _ in 0..<1000 {
+        try Channel.write(local.a, bytes: [1, 2, 3, 4, 5])
+        _ = try Channel.read(local.b)
+      }
+      print("sys-test: clock \(clock) ns; channel write and read on one thread \((Clock.monotonic() - w0) / 1000) ns")
     }
+    var callTimes: [Int64] = []
+    for i in 0..<200 {
+      let t = Clock.monotonic()
+      let reply = try Channel.call(client, bytes: [0, 0, 0, 0, UInt8(truncatingIfNeeded: i)],
+                                   deadline: Clock.monotonic() + 1000 * ms)
+      callTimes.append(Clock.monotonic() - t)
+      check(reply.bytes.count == 6 && reply.bytes[4] == UInt8(truncatingIfNeeded: i) && reply.bytes[5] == 0xEE,
+            "call's reply")
+    }
+    callTimes.sort()
+    print("sys-test: channel_call to another thread: median \(callTimes[100] / 1000) us, p90 \(callTimes[180] / 1000) us")
     _ = consume client
     try Thread.join(server)
 
