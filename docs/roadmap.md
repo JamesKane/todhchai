@@ -300,3 +300,12 @@ None remain open; each is recorded under "Decided".
   never its working tree), with no pin; the two projects will become one
   repository (2026-10-10; the last commit rather than the tree since
   2026-10-10, M3g).
+- **Desktop UX after Scott Jenson's talks** (2026-10-10,
+  [research/jenson-desktop-ux.md](research/jenson-desktop-ux.md)):
+  desktop.md is organized by his four layers, with a strategy section; press
+  selects and release raises; the UI Kit elides in the middle; a focus area
+  with a live periphery as a window management mode; stashed windows with a
+  compact size class; the drawer, provenance attributes and an opt-in
+  attention history that never records content; and these structural ideas
+  are prototyped on the hosted SDK before M8 makes any a default. The place
+  of AI models in the desktop is not yet decided.

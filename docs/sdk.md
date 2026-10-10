@@ -156,6 +156,11 @@ int main(void) {
   snapping and the move/resize loop (F-207).
 - **Scale:** each window gets one rational scale (n/120). Sizes are logical
   points, and `configure` carries both the logical and the pixel size (F-205).
+- **Size classes:** `configure` also carries a size class, `.regular` or
+  `.compact`. A window the user stashes at a screen edge, or that sits in the
+  focus area's periphery, is `.compact` ([desktop.md](desktop.md) §2): the
+  app may reflow into a minimal form (the UI Kit gives a default), or leave
+  it and be shown scaled.
 - **Frames:**
   - `requestFrame(w)` is coalesced, and the answer is a `.frame` event that
     carries the target scanout time and the actual time the previous frame was
@@ -332,7 +337,9 @@ try f.attributes["Game:LastPlayed"] = .time(.now)
 - Every frame also produces an **accessibility tree** as a side output: roles,
   labels, focus and actions. A screen reader consumes it over IPC.
 - Text uses the system's own OpenType shaper and glyph atlas (architecture
-  §13).
+  §13). Labels and list cells that don't fit are elided in the middle by
+  default, keeping both ends (and a file name's extension) readable; end
+  elision is an option, for prose (decided 2026-10-10).
 - The shell and system apps are built with this kit (principle 25).
 
 ## 11. Game Kit

@@ -182,7 +182,10 @@ services read the same tree.
   `uint64`, `double`, `time`, `bool`, `bytes`, `ref` (another node), `type`
   (MIME).
 - **Namespaces:**
-  - `sys:` for system attributes (type, app signature, capability grants);
+  - `sys:` for system attributes (type, app signature, capability grants,
+    provenance: `sys:origin`, an entry reference or URL a file came from by
+    save, download, paste or a translator, and `sys:origin-app`, the app's
+    signature; [desktop.md](desktop.md) §3);
   - `user:` for user attributes;
   - app-defined namespaces such as `Audio:` and `META:`, recorded in a type
     registry.

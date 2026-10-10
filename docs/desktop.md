@@ -4,6 +4,34 @@ The desktop draws on BeOS for structure (Tracker, Deskbar, yellow tabs,
 replicants, queries everywhere) and on retro-future cyberpunk for its look.
 It is built on Vulkan and puts game latency ahead of effects.
 
+This document follows Scott Jenson's four layers of UX
+([research/jenson-desktop-ux.md](research/jenson-desktop-ux.md), decided
+2026-10-10): *strategy* (§0: who it is for and what it leaves out),
+*structure* (§2 to §5: how windows, files and work are organized), *style*
+(§6: the look), on *stuff* (§1: the compositor, protocol and input it all
+stands on).
+
+## 0. Strategy
+
+- **For people doing sustained work on one machine**: developers, makers,
+  players of games, people who keep and search their own files (music,
+  photos, mail). A wide screen and a keyboard are the common case; touch
+  works but doesn't lead.
+- **The desktop remembers.** Direct manipulation forgets: the clipboard
+  overwrites itself and yesterday's context is rebuilt by hand. Taisce's
+  attributes, queries and journal let the desktop keep what was gathered
+  (the drawer, §3), where things came from (provenance, §3) and what was
+  done (the attention history, §3).
+- **Additions beside what works.** New structure (the focus area, stashing,
+  the drawer, the history) arrives as options next to stacking windows,
+  workspaces and the classic clipboard, never by taking them away.
+- **Prototype first.** Structural ideas are tried as opt-in prototypes on
+  the hosted SDK (Linux, Wayland), small and quick in the manner of Ink &
+  Switch, before M8 makes any of them a default.
+- **Left out:** a desktop that needs a network account; anything that
+  records what the user reads or types; effects that cost latency (§6).
+  The place of AI models in this desktop is not yet decided.
+
 ## 1. Compositor: Radharc
 
 The compositor is **Radharc** (Irish for "view, scene").
@@ -51,6 +79,11 @@ with no special code. The Todhchai compositor must have the same property
 - **Connect specs** in place of rio's attach specs: `connect(.newWindow(...))`
   for an app, and a control-only window-manager handle (rio's `none`) for
   tools such as a taskbar that manage windows without drawing.
+- **Press selects, release raises** (decided 2026-10-10, after the
+  Macintosh). A click in a background window selects at once but raises
+  and focuses the window only when the button comes up without a drag; a
+  drag that starts there leaves the stacking alone, so an item can be
+  dragged out of a window behind another. Touch does the same.
 - **Window control is typed and multi-subscriber.** rio's `wctl` verbs
   (move, resize, top, hide, current, ...) are the right set, but rio lets
   only one reader see window changes, and its own source notes that fan-out
@@ -187,6 +220,18 @@ HDR displays and is tone-mapped down on SDR.
 - **Stacking:** stacking and tiling are both supported, and tiling is optional
   per workspace. Tab-stacking (Haiku stack-and-tile) lets windows share one
   title tab.
+- **A focus area and a live periphery** (decided 2026-10-10), a third mode
+  per workspace beside stacking and tiling, for wide outputs. The middle of
+  the screen (about half its width) holds the windows being worked in; the
+  sides hold the others, scaled down, live and usable where they are.
+  Pushing a window aside (a drag or a shake) makes room. Workspaces stay,
+  but are no longer the main answer to too many windows.
+- **Stashing** (decided 2026-10-10). A window dragged to an edge is
+  stashed: its `configure` carries a compact size class, and the app may
+  reflow into a minimal form (a music player into its play button) or let
+  the server show it scaled ([sdk.md](sdk.md) §4). Stashed windows are laid
+  out with the replicants, and come back at full size with a drag or a
+  click.
 
 ## 3. Shell
 
@@ -216,6 +261,26 @@ All shell apps use the public SDK and UI Kit.
    without in-process plugins. Unlike acme, claiming is an explicit call
    with a lease: if the claimer dies, the app goes back to its defaults,
    and more than one observer can watch the stream.
+
+**Memory** (decided 2026-10-10; prototypes first, §0):
+- **The drawer.** The clipboard service keeps its history as files with
+  attributes: `Clip:Source` (the app's signature), `Clip:Origin` (an entry
+  reference or URL) and `Clip:Time`. Any document can have a drawer: clips
+  linked to it by attribute, shown beside it, kept after it closes, found
+  by query. Text, images, files and web content can be dropped in. Limits
+  on size and age are per user.
+- **Provenance.** A file made by save, download, paste or a translator
+  records where it came from (`sys:origin`, `sys:origin-app`;
+  [filesystem.md](filesystem.md) §6). Tracker shows it and can query by
+  it, and the drawer and the history link back through it.
+- **The attention history**, opt-in. A small service folds the intent
+  stream (above) and the router's messages into a timeline of signals:
+  opens, saves, how long something was in front, that a copy or paste
+  happened. It never records content (not what was copied, not what a page
+  said), keeps everything in the user's own Taisce volume, is off until
+  turned on, is listed in the Inspector while it runs, and is cleared with
+  one command. Tracker shows the timeline, each entry linked to its file
+  or window.
 
 ## 4. The router (plumber)
 
