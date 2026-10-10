@@ -7,7 +7,6 @@
 // channels, each mounted before, after or replacing what is there, one
 // marked for creating in. Unions are resolved here, in the client.
 
-import Glibc
 import IPC
 
 public enum NamespaceError: Error, Equatable, Sendable {
@@ -50,26 +49,20 @@ public final class Namespace: @unchecked Sendable {
 
   /// One channel of a union: calls on it go one at a time.
   final class Member: @unchecked Sendable {
-    let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+    let mutex = Lock()
     var client: NodeIPC.NodeClient
     let create: Bool
 
     init(_ client: consuming NodeIPC.NodeClient, create: Bool) {
       self.client = client
       self.create = create
-      pthread_mutex_init(mutex, nil)
-    }
-
-    deinit {
-      pthread_mutex_destroy(mutex)
-      mutex.deallocate()
     }
 
     func use<R: ~Copyable>(_ body: (inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) -> R)
       throws(NodeIPC.NodeClient.Failure) -> R
     {
-      pthread_mutex_lock(mutex)
-      defer { pthread_mutex_unlock(mutex) }
+      mutex.lock()
+      defer { mutex.unlock() }
       return try body(&client)
     }
 
@@ -89,23 +82,17 @@ public final class Namespace: @unchecked Sendable {
   /// The most channels one union holds.
   public static let maxUnion = 8
 
-  let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+  let mutex = Lock()
   var mounts: [Mount] = []
   public private(set) var sealed: Bool
 
   public init(sealed: Bool = false) {
     self.sealed = sealed
-    pthread_mutex_init(mutex, nil)
-  }
-
-  deinit {
-    pthread_mutex_destroy(mutex)
-    mutex.deallocate()
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
-    pthread_mutex_lock(mutex)
-    defer { pthread_mutex_unlock(mutex) }
+    mutex.lock()
+    defer { mutex.unlock() }
     return try body()
   }
 

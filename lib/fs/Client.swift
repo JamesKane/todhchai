@@ -79,7 +79,7 @@ extension FsIPC.FileClient {
 
 extension FsIPC.Attribute {
   public static func int64(_ name: String, _ value: Int64) -> FsIPC.Attribute {
-    FsIPC.Attribute(name: name, kind: 2, value: withUnsafeBytes(of: value.littleEndian) { Array($0) })
+    FsIPC.Attribute(name: name, kind: 2, value: withUnsafeBytes(of: value.littleEndian) { unsafe Array($0) })
   }
 
   public static func string(_ name: String, _ value: String) -> FsIPC.Attribute {

@@ -61,3 +61,19 @@ public enum Futex {
     unsafe Kernel.futexWake(address, count: count)
   }
 }
+
+/// A value only one thread at a time may touch: Synchronization's Mutex,
+/// over `Lock`, which works wherever Sys does (Embedded Swift on croi has
+/// no Mutex).
+public final class Locked<Value>: @unchecked Sendable {
+  let lock = Lock()
+  var value: Value
+
+  public init(_ value: Value) { self.value = value }
+
+  public func withLock<R, E: Error>(_ body: (inout Value) throws(E) -> R) throws(E) -> R {
+    lock.lock()
+    defer { lock.unlock() }
+    return try body(&value)
+  }
+}

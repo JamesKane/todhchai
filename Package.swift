@@ -81,7 +81,8 @@ let package = Package(
     // (docs/trace-format.md).
     .target(name: "TraceFormat", path: "lib/trace/format"),
     .target(name: "TDTraceCPU", path: "lib/trace/c"),
-    .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer"),
+    .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer", exclude: ["native"],
+            swiftSettings: tier0),
     .target(name: "TraceReader", dependencies: ["TraceFormat"], path: "lib/trace/reader"),
     .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader", "IPC", "Echo"], path: "tests/trace"),
     .executableTarget(name: "trace-cost", dependencies: ["Trace"], path: "tools/trace-cost"),
@@ -180,21 +181,19 @@ let package = Package(
     // td_wire.h: the wire format in C, for idlc's headers.
     .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
     .target(name: "IPC", dependencies: ["IPCWire", "Sys", "Trace", "IPCMacros"], path: "lib/ipc/runtime",
-            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+            swiftSettings: tier0),
     .testTarget(name: "IPCMacrosTests", dependencies: [
       "IPCMacros",
       .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
     ], path: "tests/ipc/macros"),
     // Node (architecture §6): the protocol every service serves, and the
     // helper that publishes an in-memory tree over it.
-    .target(name: "Node", dependencies: ["IPC"], path: "lib/node", exclude: ["idl"],
-            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .target(name: "Node", dependencies: ["IPC"], path: "lib/node", exclude: ["idl"], swiftSettings: tier0),
     .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "tests/node",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The launcher (architecture §3): manifests, a job and a process per
     // service, namespaces from grants, restarts.
-    .target(name: "Launch", dependencies: ["Node", "IPC"], path: "lib/launch", exclude: ["idl"],
-            swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .target(name: "Launch", dependencies: ["Node", "IPC"], path: "lib/launch", exclude: ["idl"], swiftSettings: tier0),
     .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC", "IDL"], path: "tests/launch",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The block service (architecture §11): rings in shared memory (tier
@@ -204,13 +203,13 @@ let package = Package(
     .target(name: "Bootfs", path: "lib/bootfs", swiftSettings: tier0),
     .testTarget(name: "BootfsTests", dependencies: ["Bootfs"], path: "tests/bootfs"),
     .target(name: "Block", dependencies: ["BlockRing", "Node", "IPC", "TDLinux"], path: "lib/block",
-            exclude: ["ring", "idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+            exclude: ["ring", "idl"], swiftSettings: tier0),
     .testTarget(name: "BlockTests", dependencies: ["Block", "BlockRing", "HostedPrograms", "Launch", "Node", "IPC", "IDL"],
                 path: "tests/block", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The fs service (filesystem.md §7): Taisce as Directory and File
     // channels that compose Node, over a block service session.
     .target(name: "Fs", dependencies: ["Block", "BlockRing", "Node", "IPC", "Taisce"], path: "lib/fs",
-            exclude: ["idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+            exclude: ["idl"], swiftSettings: tier0),
     .testTarget(name: "FsTests", dependencies: ["Fs", "Block", "HostedPrograms", "Launch", "Node", "IPC", "IDL", "Taisce"],
                 path: "tests/fs", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The hosted boot and the programs it can start.

@@ -42,7 +42,7 @@ public struct BlockClient: ~Copyable {
     } catch {
       throw .transport(error)
     }
-    guard let memory = RingMemory(mapping: mapped.ring.address, length: mapped.ring.length) else {
+    guard let memory = unsafe RingMemory(mapping: mapped.ring.address, length: mapped.ring.length) else {
       throw .transport(.badState)
     }
     bufferID = try device.attach(mapped.bufferVMO)
@@ -117,7 +117,7 @@ public struct BlockClient: ~Copyable {
       let n = min(chunk, count - done)
       try run(Submission(.read, policy: policy, buffer: bufferID, tag: tag(), block: block + UInt64(done),
                          count: UInt32(n)))
-      out += UnsafeRawBufferPointer(start: buffer.address, count: n * size)
+      unsafe out += UnsafeRawBufferPointer(start: buffer.address, count: n * size)
       done += n
     }
     return out
@@ -131,7 +131,7 @@ public struct BlockClient: ~Copyable {
     while done < bytes.count / size {
       let n = min(chunk, bytes.count / size - done)
       bytes.withUnsafeBytes { b in
-        buffer.address.copyMemory(from: b.baseAddress! + done * size, byteCount: n * size)
+        unsafe buffer.address.copyMemory(from: b.baseAddress! + done * size, byteCount: n * size)
       }
       try run(Submission(.write, policy: policy, buffer: bufferID, tag: tag(), block: block + UInt64(done),
                          count: UInt32(n)))

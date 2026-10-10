@@ -8,7 +8,6 @@ public protocol IPCServing: ~Copyable {
   mutating func handleNext(deadline: Int64) throws(IPCError<Never>) -> Bool
 }
 
-import Synchronization
 
 /// Serves many channels from one thread. A port wakes it when a channel
 /// has a request (wait_async) or when another thread asks it to do
@@ -48,18 +47,46 @@ public final class IPCDispatcher: @unchecked Sendable {
     init(_ server: consuming S) { self.server = server }
   }
 
+  /// Entries by id, in an array sorted by id: ids only grow, so a new one
+  /// goes at the end. (No hashed collections in tier 0: Embedded Swift's
+  /// need libm and a random seed.)
   struct Entries {
-    var byID: [UInt64: Entry] = [:]
+    var ids: [UInt64] = []
+    var all: [Entry] = []
     var lastID: UInt64 = 0
+
+    var count: Int { ids.count }
+
+    func index(_ id: UInt64) -> Int? {
+      var low = 0, high = ids.count
+      while low < high {
+        let mid = (low + high) / 2
+        if ids[mid] < id { low = mid + 1 } else { high = mid }
+      }
+      return low < ids.count && ids[low] == id ? low : nil
+    }
+
+    subscript(id: UInt64) -> Entry? { index(id).map { all[$0] } }
+
+    mutating func append(_ id: UInt64, _ entry: Entry) {
+      ids.append(id)
+      all.append(entry)
+    }
+
+    mutating func remove(_ id: UInt64) -> Entry? {
+      guard let i = index(id) else { return nil }
+      ids.remove(at: i)
+      return all.remove(at: i)
+    }
   }
 
   let port: Handle
-  let entries = Mutex(Entries())
+  let entries = Locked(Entries())
 
   public init() throws(Status) { port = try Port.create() }
 
   /// How many channels it serves.
-  public var count: Int { entries.withLock { $0.byID.count } }
+  public var count: Int { entries.withLock { $0.count } }
 
   /// Serves `server`'s channel until its client closes it. `wake` runs on
   /// the dispatcher's thread for each `wake(id)`, with the server. Returns
@@ -92,7 +119,7 @@ public final class IPCDispatcher: @unchecked Sendable {
 
   /// Stops a watch (dropping its object) or a server (closing its channel).
   public func unwatch(_ id: UInt64) {
-    let entry = entries.withLock { $0.byID.removeValue(forKey: id) }
+    let entry = entries.withLock { $0.remove(id) }
     if let entry {
       // Cancel the wait while the object is still open: its number may be reused.
       let object = Handle(raw: entry.object)
@@ -104,7 +131,7 @@ public final class IPCDispatcher: @unchecked Sendable {
   func insert(_ entry: Entry) throws(Status) -> UInt64 {
     let id = entries.withLock { e in
       e.lastID += 1
-      e.byID[e.lastID] = entry
+      e.append(e.lastID, entry)
       return e.lastID
     }
     try arm(id, entry)
@@ -127,9 +154,12 @@ public final class IPCDispatcher: @unchecked Sendable {
     // Moved out, then dropped outside the lock: a server's deinit may
     // unwatch. (A copy isn't enough: the optimizer may release the
     // original's storage last, under the lock.)
-    var all: [UInt64: Entry] = [:]
-    entries.withLock { swap(&all, &$0.byID) }
-    withExtendedLifetime(all) {}
+    var all = Entries()
+    entries.withLock { e in
+      all.lastID = e.lastID
+      swap(&all, &e)
+    }
+    withExtendedLifetime(all.all) {}
   }
 
   /// Serves until `stop`.
@@ -137,7 +167,7 @@ public final class IPCDispatcher: @unchecked Sendable {
     while true {
       let packet = try Port.wait(port)
       if packet.key == 0 && packet.type == 0 { return }
-      guard let entry = entries.withLock({ $0.byID[packet.key] }) else { continue }
+      guard let entry = entries.withLock({ $0[packet.key] }) else { continue }
       var alive = true
       do throws(IPCError<Never>) {
         if packet.type == 0 {
@@ -152,11 +182,11 @@ public final class IPCDispatcher: @unchecked Sendable {
       }
       if alive && packet.type != 0 {
         // Unless it was unwatched meanwhile.
-        if entries.withLock({ $0.byID[packet.key] === entry }) { try arm(packet.key, entry) }
+        if entries.withLock({ $0[packet.key] === entry }) { try arm(packet.key, entry) }
       } else if !alive {
         // Dropping the server closes its channel (outside the lock: its
         // deinit may unwatch).
-        let removed = entries.withLock { $0.byID.removeValue(forKey: packet.key) }
+        let removed = entries.withLock { $0.remove(packet.key) }
         _ = removed
       }
     }

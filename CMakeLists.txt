@@ -19,6 +19,10 @@ endif()
 # Options every tier 0 target shares.
 function(todhchai_tier0 target)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>)
+  if(TODHCHAI_MACROS)
+    target_compile_options(${target} PRIVATE
+      "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-load-plugin-executable ${TODHCHAI_MACROS}#IPCMacros>")
+  endif()
 endfunction()
 
 # Each tier 0 library: its sources, built as Embedded Swift.
@@ -102,6 +106,64 @@ set_target_properties(BlockRing PROPERTIES Swift_MODULE_NAME BlockRing)
 target_include_directories(BlockRing INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(BlockRing)
 
+# The services' stack (M3c): tracing, the IPC runtime, Node, the launcher,
+# block and fs. Protocols expand through the @IPCLibrary macro, whose
+# plugin SwiftPM builds (`swift build` first).
+set(TODHCHAI_MACROS ${CMAKE_CURRENT_SOURCE_DIR}/.build/debug/IPCMacros)
+if(NOT EXISTS ${TODHCHAI_MACROS})
+  message(FATAL_ERROR "No IPC macro plugin at ${TODHCHAI_MACROS}: run `swift build` first")
+endif()
+
+add_library(TraceFormat STATIC lib/trace/format/Format.swift)
+set_target_properties(TraceFormat PROPERTIES Swift_MODULE_NAME TraceFormat)
+target_include_directories(TraceFormat INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(TraceFormat)
+
+# Both Embedded builds record nothing yet (no Glibc for the host's file
+# region; croi's comes with M3e).
+add_library(Trace STATIC lib/trace/writer/Trace.swift lib/trace/writer/native/Region.swift)
+set_target_properties(Trace PROPERTIES Swift_MODULE_NAME Trace)
+target_include_directories(Trace PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/trace/c/include
+                                 INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Trace PUBLIC TraceFormat)
+todhchai_tier0(Trace)
+
+add_library(IPC STATIC
+  lib/ipc/runtime/Codec.swift lib/ipc/runtime/Connection.swift lib/ipc/runtime/Dispatcher.swift
+  lib/ipc/runtime/Errors.swift lib/ipc/runtime/Macros.swift)
+set_target_properties(IPC PROPERTIES Swift_MODULE_NAME IPC)
+target_include_directories(IPC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(IPC PUBLIC IPCWire Sys Trace)
+todhchai_tier0(IPC)
+
+file(GLOB _node_sources ${CMAKE_CURRENT_SOURCE_DIR}/lib/node/*.swift)
+add_library(Node STATIC ${_node_sources})
+set_target_properties(Node PROPERTIES Swift_MODULE_NAME Node)
+target_include_directories(Node INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Node PUBLIC IPC)
+todhchai_tier0(Node)
+
+file(GLOB _launch_sources ${CMAKE_CURRENT_SOURCE_DIR}/lib/launch/*.swift)
+add_library(Launch STATIC ${_launch_sources})
+set_target_properties(Launch PROPERTIES Swift_MODULE_NAME Launch)
+target_include_directories(Launch INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Launch PUBLIC Node IPC)
+todhchai_tier0(Launch)
+
+# The block service, less its hosted backend (an image file, FileBackend).
+add_library(Block STATIC lib/block/Block.swift lib/block/Client.swift lib/block/Service.swift)
+set_target_properties(Block PROPERTIES Swift_MODULE_NAME Block)
+target_include_directories(Block INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Block PUBLIC BlockRing Node IPC)
+todhchai_tier0(Block)
+
+file(GLOB _fs_sources ${CMAKE_CURRENT_SOURCE_DIR}/lib/fs/*.swift)
+add_library(Fs STATIC ${_fs_sources})
+set_target_properties(Fs PROPERTIES Swift_MODULE_NAME Fs)
+target_include_directories(Fs INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Fs PUBLIC Block BlockRing Node IPC Taisce)
+todhchai_tier0(Fs)
+
 # bootfs images: td writes them, the native launcher reads them.
 add_library(Bootfs STATIC lib/bootfs/Bootfs.swift)
 set_target_properties(Bootfs PROPERTIES Swift_MODULE_NAME Bootfs)
@@ -123,6 +185,8 @@ if(TODHCHAI_NATIVE)
   # Tests that run on croi: td boot --test --next bin/<name>.
   todhchai_program(sys-test tests/native/SysTest.swift)
   target_link_libraries(sys-test PRIVATE Sys)
+  todhchai_program(services-test tests/native/ServicesTest.swift)
+  target_link_libraries(services-test PRIVATE Fs Block Node IPC Sys)
   return()
 endif()
 

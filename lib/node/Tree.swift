@@ -15,7 +15,6 @@
 // Requests are served on the dispatcher's thread. The service may change
 // the tree from any thread; watchers hear of it.
 
-import Glibc
 import IPC
 
 public typealias NodeError = NodeIPC.NodeError
@@ -38,7 +37,10 @@ public final class TreeNode: @unchecked Sendable {
   let path: UInt64
   var version: UInt32 = 0
   var content: Content
-  weak var parent: TreeNode?
+  /// Strong: Embedded Swift has no weak references. The cycle with
+  /// `children` is broken when the node leaves the tree (removeLocked) or
+  /// the tree goes (NodeTree's deinit).
+  var parent: TreeNode?
   var children: [TreeNode] = []
   var modified = realtime()
   var attributes: [NodeIPC.Attribute] = []
@@ -69,7 +71,7 @@ public final class TreeNode: @unchecked Sendable {
 
 /// A channel to another service's node, which a tree forwards walks to.
 final class Remote: @unchecked Sendable {
-  let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+  let mutex = Lock()
   var client: NodeIPC.NodeClient
   /// Whether the node goes when the other service does (a post on a
   /// board), or stays to be given a new channel (a launcher's /svc).
@@ -78,38 +80,47 @@ final class Remote: @unchecked Sendable {
   init(_ channel: consuming Handle, removeWhenGone: Bool) {
     client = NodeIPC.NodeClient(channel: channel)
     self.removeWhenGone = removeWhenGone
-    pthread_mutex_init(mutex, nil)
-  }
-
-  deinit {
-    pthread_mutex_destroy(mutex)
-    mutex.deallocate()
   }
 
   /// Walks `names` from the remote node, one caller at a time.
   func walk(_ names: [String]) throws(NodeIPC.NodeClient.Failure) -> NodeIPC.Walked {
-    pthread_mutex_lock(mutex)
-    defer { pthread_mutex_unlock(mutex) }
+    mutex.lock()
+    defer { mutex.unlock() }
     return try client.walk(names)
   }
 }
 
-/// A session watching a node; it goes when the session's channel does.
+/// A session watching a node; it goes once the session has closed.
 final class Watcher: @unchecked Sendable {
-  weak var session: SessionState?
+  let session: SessionState
   init(_ session: SessionState) { self.session = session }
 }
 
-/// What a session shares with the tree: its dispatcher id and its queue.
+/// What a session shares with the tree: its dispatcher id, its queue, and
+/// whether it has closed (no weak references in Embedded Swift, so
+/// watchers ask).
 final class SessionState: @unchecked Sendable {
   var id: UInt64 = 0
   var pending: [NodeIPC.Change] = []
+  var closed = false
+}
+
+/// Held only by a session's server: when the dispatcher drops the server
+/// (its channel closed), this marks the session closed.
+final class SessionEnd: @unchecked Sendable {
+  let tree: NodeTree
+  let state: SessionState
+  init(_ tree: NodeTree, _ state: SessionState) {
+    self.tree = tree
+    self.state = state
+  }
+  deinit { tree.locked { state.closed = true } }
 }
 
 public final class NodeTree: @unchecked Sendable {
   public let root: TreeNode
   let dispatcher: IPCDispatcher
-  let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+  let mutex = Lock()
   var lastPath: UInt64 = 1
   var seq: UInt64 = 0
   static let logLength = 64
@@ -117,12 +128,20 @@ public final class NodeTree: @unchecked Sendable {
   public init(dispatcher: IPCDispatcher) {
     self.dispatcher = dispatcher
     root = TreeNode(name: "", path: 1, content: .directory(allowsCreate: false))
-    pthread_mutex_init(mutex, nil)
+  }
+
+  /// Breaks the parent links, so the nodes go with the tree.
+  deinit {
+    func unlink(_ n: TreeNode) {
+      n.parent = nil
+      n.children.forEach(unlink)
+    }
+    unlink(root)
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
-    pthread_mutex_lock(mutex)
-    defer { pthread_mutex_unlock(mutex) }
+    mutex.lock()
+    defer { mutex.unlock() }
     return try body()
   }
 
@@ -271,6 +290,7 @@ public final class NodeTree: @unchecked Sendable {
     var woken = notifyLocked(node, .removed, node.name) + notifyLocked(parent, .removed, node.name)
     func detach(_ n: TreeNode) {
       n.detached = true
+      n.parent = nil  // no cycle keeps a removed subtree alive
       n.children.forEach(detach)
     }
     detach(node)
@@ -284,14 +304,14 @@ public final class NodeTree: @unchecked Sendable {
     let change = NodeIPC.Change(seq: seq, kind: kind, name: name)
     node.log.append(change)
     if node.log.count > Self.logLength { node.lostThrough = node.log.removeFirst().seq }
-    node.watchers.removeAll { $0.session == nil }
-    for w in node.watchers { w.session?.pending.append(change) }
+    node.watchers.removeAll { $0.session.closed }
+    for w in node.watchers { w.session.pending.append(change) }
     return node.watchers
   }
 
   /// Asks the dispatcher to send what the watchers have queued.
   func wake(_ watchers: [Watcher]) {
-    for w in watchers { if let s = w.session { dispatcher.wake(s.id) } }
+    for w in watchers where !w.session.closed { dispatcher.wake(w.session.id) }
   }
 
   // MARK: Serving
@@ -302,7 +322,7 @@ public final class NodeTree: @unchecked Sendable {
   /// Serves Node on `channel`, at `node`.
   public func serve(_ channel: consuming Handle, at node: TreeNode) throws(Status) {
     let state = SessionState()
-    let server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state))
+    let server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state, end: SessionEnd(self, state)))
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
       let changes = locked { () -> [NodeIPC.Change] in
         defer { state.pending = [] }
@@ -313,18 +333,16 @@ public final class NodeTree: @unchecked Sendable {
   }
 }
 
-/// Nanoseconds since the Unix epoch.
-func realtime() -> Int64 {
-  var ts = timespec()
-  clock_gettime(CLOCK_REALTIME, &ts)
-  return Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
-}
+/// Nanoseconds since the Unix epoch (Sys's clock).
+func realtime() -> Int64 { Clock.realtime() }
 
 /// One channel's view of the tree: the node it is at.
 struct Session: NodeIPC.NodeHandler {
   let tree: NodeTree
   var node: TreeNode
   let state: SessionState
+  /// Marks the session closed when the server holding this goes.
+  let end: SessionEnd
 
   /// The node, if it is still in the tree.
   func current() throws(NodeError) -> TreeNode {

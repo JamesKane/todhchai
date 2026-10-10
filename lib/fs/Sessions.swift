@@ -142,6 +142,7 @@ extension NodeSession {
 
 struct DirectorySession: NodeSession, FsIPC.DirectoryHandler {
   let session: FsSession
+  let end: FsSessionEnd
 
   mutating func list(cursor: UInt64, max: UInt32, attributes: [String]) throws(FsIPC.FsError) -> FsIPC.Listing {
     try service.list(ino, cursor: cursor, max: max, attributes: attributes)
@@ -185,6 +186,7 @@ struct DirectorySession: NodeSession, FsIPC.DirectoryHandler {
 
 struct FileSession: NodeSession, FsIPC.FileHandler {
   let session: FsSession
+  let end: FsSessionEnd
 
   mutating func resize(_ size: UInt64) throws(FsIPC.FsError) {
     let ino = self.ino

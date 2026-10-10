@@ -42,6 +42,7 @@ enum Kernel {
   }
   static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) {}
   static func processSelf() throws(Status) -> UInt32 { throw .notSupported }
+  static func realtime() -> Int64 { 0 }
   static func futexWait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32, deadline: Int64) throws(Status) {
     throw .notSupported
   }

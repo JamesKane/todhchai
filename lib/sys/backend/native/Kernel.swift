@@ -240,8 +240,14 @@ enum Kernel {
 
   // MARK: VMOs
 
+  static let pageSize = 4096
+
+  /// `n` rounded up to a page: croi refuses sizes and lengths that aren't
+  /// (Zircon rounds a VMO's size up), and Sys promises pages.
+  static func pages(_ n: Int) -> Int { (n + pageSize - 1) & ~(pageSize - 1) }
+
   static func vmoCreate(_ size: Int) throws(Status) -> UInt32 {
-    try out(UInt32(0)) { sys(Number.vmoCreate, UInt64(size), 0, $0) }
+    try out(UInt32(0)) { sys(Number.vmoCreate, UInt64(pages(size)), 0, $0) }
   }
 
   static func vmoSize(_ h: UInt32) throws(Status) -> Int {
@@ -271,14 +277,14 @@ enum Kernel {
   {
     let perms: UInt64 = writable ? 3 : 1
     let mapped = try out(UInt64(0)) {
-      sys(Number.vmarMap, UInt64(Runtime.vmarRoot) | perms << 32, 0, UInt64(h), UInt64(offset), UInt64(length), $0)
+      sys(Number.vmarMap, UInt64(Runtime.vmarRoot) | perms << 32, 0, UInt64(h), UInt64(offset), UInt64(pages(length)), $0)
     }
     guard let p = unsafe UnsafeMutableRawPointer(bitPattern: UInt(mapped)) else { throw .internal }
     return unsafe p
   }
 
   static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) {
-    _ = sys(Number.vmarUnmap, UInt64(Runtime.vmarRoot), UInt64(UInt(bitPattern: address)), UInt64(length))
+    _ = sys(Number.vmarUnmap, UInt64(Runtime.vmarRoot), UInt64(UInt(bitPattern: address)), UInt64(pages(length)))
   }
 
   // MARK: Futexes and timers
@@ -354,6 +360,9 @@ enum Kernel {
   }
 
   static func now() -> Int64 { Runtime.monotonic() }
+
+  /// No UTC clock on croi yet (requirement 15): the monotonic clock.
+  static func realtime() -> Int64 { Runtime.monotonic() }
 
   static func sleep(_ deadline: Int64) { _ = sys(Number.nanosleep, UInt64(bitPattern: deadline)) }
 }

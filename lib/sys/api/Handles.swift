@@ -98,6 +98,10 @@ public func wait(_ object: borrowing Handle, for signals: UInt32, deadline: Int6
 public enum Clock {
   /// Nanoseconds on the monotonic clock, the time base of every deadline.
   public static func monotonic() -> Int64 { Kernel.now() }
+
+  /// Nanoseconds since the Unix epoch, for timestamps people read. Natively
+  /// the monotonic clock until croi has a UTC clock (requirement 15).
+  public static func realtime() -> Int64 { Kernel.realtime() }
 }
 
 /// Sleeps until `deadline`.

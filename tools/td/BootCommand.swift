@@ -72,7 +72,11 @@ func boot(_ o: BootOptions) -> Bool {
       return false
     }
   }
-  guard run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok else {
+  // croi is worked on beside us: a file edited mid-build fails it once
+  // ("modified during the build"), and a second build settles it.
+  var built = run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok
+  if !built { built = run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok }
+  guard built else {
     complain("boot: croi (../croi at \(croiRevision)) didn't build: see \(logs)/croi.log")
     return false
   }

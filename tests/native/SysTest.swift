@@ -90,6 +90,15 @@ import Sys
       check(try VMO.read(received, offset: 0, count: 8) == [0x21, 0x49, 0x41, 0x48, 0x43, 0x48, 0x44, 0x54], "mapping writes")
     }
 
+    // Sizes and lengths that aren't pages are rounded up, as Sys promises.
+    do {
+      let odd = try VMO.create(size: 3584)
+      check(try VMO.size(odd) == 4096, "VMO size rounds up to a page")
+      let mapping = try VMO.map(odd, length: 3584)
+      mapping.store(UInt32(7), at: 3580)
+      check(try VMO.read(odd, offset: 3580, count: 4) == [7, 0, 0, 0], "odd-length mapping")
+    }
+
     // Eventpairs see their peer close.
     let pair = try EventPair.create()
     let left = pair.a

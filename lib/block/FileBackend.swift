@@ -14,7 +14,7 @@ import TDLinux
 public struct HostError: Error, CustomStringConvertible, Sendable {
   public let call: String
   public let errno: Int32
-  public var description: String { "\(call): \(String(cString: strerror(errno)))" }
+  public var description: String { unsafe "\(call): \(String(cString: strerror(errno)))" }
 }
 
 public final class FileBackend: BlockBackend {
@@ -29,7 +29,7 @@ public final class FileBackend: BlockBackend {
   /// that many blocks.
   public init(path: String, blocks: UInt64? = nil, blockSize: Int = 4096, readOnly: Bool = false) throws(HostError) {
     let flags = readOnly ? O_RDONLY : O_RDWR
-    fd = open(path, flags | O_CLOEXEC | (blocks == nil || readOnly ? 0 : O_CREAT), 0o644)
+    fd = unsafe open(path, flags | O_CLOEXEC | (blocks == nil || readOnly ? 0 : O_CREAT), 0o644)
     guard fd >= 0 else { throw HostError(call: "open \(path)", errno: errno) }
     if let blocks, !readOnly {
       guard ftruncate(fd, off_t(blocks) * off_t(blockSize)) == 0 else {
@@ -40,10 +40,10 @@ public final class FileBackend: BlockBackend {
       blockCount = blocks
     } else {
       var st = stat()
-      fstat(fd, &st)
+      unsafe fstat(fd, &st)
       blockCount = UInt64(st.st_size) / UInt64(blockSize)
     }
-    direct = td_linux_open_direct(path, flags)
+    direct = unsafe td_linux_open_direct(path, flags)
     self.blockSize = blockSize
     self.readOnly = readOnly
   }
@@ -61,7 +61,7 @@ public final class FileBackend: BlockBackend {
     let file = policy == .uncached && direct >= 0 ? direct : fd
     var done = 0
     while done < buffer.count {
-      let n = pread(file, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
+      let n = unsafe pread(file, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
       if n < 0 && errno == EINTR { continue }
       guard n > 0 else { return .io }
       done += n
@@ -75,7 +75,7 @@ public final class FileBackend: BlockBackend {
     let file = policy == .uncached && direct >= 0 ? direct : fd
     var done = 0
     while done < buffer.count {
-      let n = pwrite(file, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
+      let n = unsafe pwrite(file, buffer.baseAddress! + done, buffer.count - done, offset + off_t(done))
       if n < 0 && errno == EINTR { continue }
       guard n > 0 else { return .io }
       done += n

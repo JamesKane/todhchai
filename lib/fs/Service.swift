@@ -13,7 +13,6 @@
 // operation commits in memory, so they may report a change a crash then
 // loses (filesystem.md §5).
 
-import Glibc
 import IPC
 import Node
 import Taisce
@@ -28,7 +27,8 @@ public final class FsService: @unchecked Sendable {
   var commitPending = false
   /// The journal records watchers and live queries have had.
   var journalSeen: UInt64
-  var watchers: [WeakSession] = []
+  /// Sessions watching their node, until they close.
+  var watchers: [FsSession] = []
   var lives: [LiveState] = []
 
   public struct Counts: Equatable, Sendable {
@@ -49,9 +49,12 @@ public final class FsService: @unchecked Sendable {
     journalSeen = self.fs.nextSeq - 1
     let timer = try Timer.create()
     self.timer = try timer.duplicate()
-    try dispatcher.watch(timer, signals: Signals.signaled) { [weak self] _ in
-      try? self?.commit()
-      return self != nil
+    // A strong capture (Embedded Swift has no weak references): the
+    // dispatcher owns the closure, and dropping its entries when the service
+    // stops (removeAll) ends the cycle.
+    try dispatcher.watch(timer, signals: Signals.signaled) { [self] _ in
+      try? commit()
+      return true
     }
   }
 
@@ -79,11 +82,7 @@ public final class FsService: @unchecked Sendable {
       """
   }
 
-  public static var now: UInt64 {
-    var t = timespec()
-    clock_gettime(CLOCK_REALTIME, &t)
-    return UInt64(t.tv_sec) * 1_000_000_000 + UInt64(t.tv_nsec)
-  }
+  public static var now: UInt64 { UInt64(clamping: Clock.realtime()) }
 
   // MARK: Durability
 
@@ -126,12 +125,12 @@ public final class FsService: @unchecked Sendable {
       let session = FsSession(ino: ino, service: self)
       let id: UInt64
       if isDirectory {
-        id = try dispatcher.add(FsIPC.DirectoryServer(channel: ends.b, impl: DirectorySession(session: session))) {
+        id = try dispatcher.add(FsIPC.DirectoryServer(channel: ends.b, impl: DirectorySession(session: session, end: FsSessionEnd(session)))) {
           (s: inout FsIPC.DirectoryServer<DirectorySession>) throws(IPCError<Never>) in
           for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
         }
       } else {
-        id = try dispatcher.add(FsIPC.FileServer(channel: ends.b, impl: FileSession(session: session))) {
+        id = try dispatcher.add(FsIPC.FileServer(channel: ends.b, impl: FileSession(session: session, end: FsSessionEnd(session)))) {
           (s: inout FsIPC.FileServer<FileSession>) throws(IPCError<Never>) in
           for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
         }
@@ -190,11 +189,10 @@ public final class FsService: @unchecked Sendable {
   func tell() {
     guard let records = try? fs.journal(after: journalSeen), let last = records.last else { return }
     journalSeen = last.seq
-    watchers.removeAll { $0.session == nil }
+    watchers.removeAll { $0.closed }
     var woken: [FsSession] = []
     for r in records {
-      for w in watchers {
-        guard let s = w.session else { continue }
+      for s in watchers {
         if let change = Self.change(r, for: s.ino) {
           s.pending.append(change)
           if !woken.contains(where: { $0 === s }) { woken.append(s) }
@@ -223,7 +221,7 @@ public final class FsService: @unchecked Sendable {
 
   /// Watches `session`'s node, replaying what came after `seq` (0: none).
   func watch(_ session: FsSession, since seq: UInt64) throws(NodeError) -> UInt64 {
-    if !watchers.contains(where: { $0.session === session }) { watchers.append(WeakSession(session)) }
+    if !watchers.contains(where: { $0 === session }) { watchers.append(session) }
     let now = fs.nextSeq - 1
     guard seq > 0, seq < now else { return now }
     do throws(TaisceError) {
@@ -292,7 +290,7 @@ public final class FsService: @unchecked Sendable {
   // MARK: Attributes
 
   static func encode(_ v: AttributeValue) -> (kind: UInt8, value: [UInt8]) {
-    func le<T: FixedWidthInteger>(_ x: T) -> [UInt8] { withUnsafeBytes(of: x.littleEndian) { Array($0) } }
+    func le<T: FixedWidthInteger>(_ x: T) -> [UInt8] { withUnsafeBytes(of: x.littleEndian) { unsafe Array($0) } }
     let value: [UInt8] = switch v {
     case .string(let b), .bytes(let b), .type(let b): b
     case .int64(let x), .time(let x): le(x)
@@ -382,12 +380,20 @@ final class FsSession {
     return pending
   }
 
-  deinit { service.counts.sessions -= 1 }
+  /// Set when its server goes: watchers drop it then (no weak references
+  /// in Embedded Swift).
+  var closed = false
 }
 
-struct WeakSession {
-  weak var session: FsSession?
+/// Held only by a session's server: when the dispatcher drops the server
+/// (its channel closed), the session is closed and no longer counted.
+final class FsSessionEnd {
+  let session: FsSession
   init(_ session: FsSession) { self.session = session }
+  deinit {
+    session.closed = true
+    session.service.counts.sessions -= 1
+  }
 }
 
 /// A live query and what its channel hasn't sent yet.

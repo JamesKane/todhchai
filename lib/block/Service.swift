@@ -9,7 +9,6 @@
 import BlockRing
 import IPC
 import Node
-import Synchronization
 
 /// Serves a backend's blocks. Everything runs on the dispatcher's thread.
 public final class BlockService: @unchecked Sendable {
@@ -38,7 +37,7 @@ public final class BlockService: @unchecked Sendable {
     public var corrupt = 0
   }
 
-  let counted = Mutex(Counts())
+  let counted = Locked(Counts())
   public var counts: Counts { counted.withLock { $0 } }
 
   public init(backend: any BlockBackend, name: String, dispatcher: IPCDispatcher) {
@@ -116,11 +115,11 @@ public final class BlockService: @unchecked Sendable {
     guard s.count <= Self.maxTransfer, s.block <= backend.blockCount, UInt64(s.count) <= backend.blockCount - s.block
     else { return .outOfRange }
     if write && backend.readOnly { return .readOnly }
-    guard let buffer = session.buffers[s.buffer] else { return .badBuffer }
+    guard let buffer = session.buffer(s.buffer) else { return .badBuffer }
     let start = Int(s.bufferBlock) * backend.blockSize, length = Int(s.count) * backend.blockSize
     guard start + length <= buffer.mapping.length, write || buffer.writable else { return .badBuffer }
-    let address = buffer.mapping.address + start
-    return write
+    let address = unsafe buffer.mapping.address + start
+    return unsafe write
       ? backend.write(s.block, from: UnsafeRawBufferPointer(start: address, count: length), policy: s.policy)
       : backend.read(s.block, into: UnsafeMutableRawBufferPointer(start: address, count: length), policy: s.policy)
   }
@@ -141,7 +140,11 @@ final class Session {
   let service: BlockService
   var open: OpenRing?
   var watch: UInt64?
-  var buffers: [UInt32: Buffer] = [:]
+  /// Attached buffers by id: a handful (maxBuffers), so an array (no
+  /// hashed collections in tier 0).
+  var buffers: [(id: UInt32, buffer: Buffer)] = []
+
+  func buffer(_ id: UInt32) -> Buffer? { buffers.first { $0.id == id }?.buffer }
   var lastBuffer: UInt32 = 0
 
   init(_ service: BlockService) { self.service = service }
@@ -183,7 +186,7 @@ final class Session {
   func close() {
     if let watch { service.dispatcher.unwatch(watch) }
     _ = end()
-    buffers = [:]
+    buffers = []
     service.counted.withLock { $0.sessions -= 1 }
   }
 }
@@ -223,7 +226,7 @@ struct DeviceSession: BlockIPC.DeviceHandler {
       let size = BlockRing.size(entries: Int(entries))
       let vmo = try VMO.create(size: size)
       let mapping = try VMO.map(vmo, length: size)
-      let memory = RingMemory(formatting: mapping.address, length: size, entries: Int(entries))
+      let memory = unsafe RingMemory(formatting: mapping.address, length: size, entries: Int(entries))
       let ends = try EventPair.create()
       let mine = ends.a, theirs = ends.b
       let signal = try mine.duplicate()
@@ -253,11 +256,12 @@ struct DeviceSession: BlockIPC.DeviceHandler {
       throw .invalid
     }
     session.lastBuffer += 1
-    session.buffers[session.lastBuffer] = buffer
+    session.buffers.append((session.lastBuffer, buffer))
     return session.lastBuffer
   }
 
   mutating func detach(_ buffer: UInt32) throws(BlockIPC.BlockError) {
-    guard session.buffers.removeValue(forKey: buffer) != nil else { throw .notFound }
+    guard let i = session.buffers.firstIndex(where: { $0.id == buffer }) else { throw .notFound }
+    session.buffers.remove(at: i)
   }
 }

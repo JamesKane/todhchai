@@ -85,13 +85,13 @@ public final class MemoryBackend: BlockBackend {
 
   public func read(_ block: UInt64, into buffer: UnsafeMutableRawBufferPointer, policy: CachePolicy) -> BlockStatus {
     let start = Int(block) * blockSize
-    bytes.withUnsafeBytes { buffer.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0[start..<(start + buffer.count)])) }
+    bytes.withUnsafeBytes { unsafe buffer.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0[start..<(start + buffer.count)])) }
     return .ok
   }
 
   public func write(_ block: UInt64, from buffer: UnsafeRawBufferPointer, policy: CachePolicy) -> BlockStatus {
     let start = Int(block) * blockSize
-    bytes.withUnsafeMutableBytes { UnsafeMutableRawBufferPointer(rebasing: $0[start..<(start + buffer.count)]).copyMemory(from: buffer) }
+    bytes.withUnsafeMutableBytes { unsafe UnsafeMutableRawBufferPointer(rebasing: $0[start..<(start + buffer.count)]).copyMemory(from: buffer) }
     return .ok
   }
 

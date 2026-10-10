@@ -5,7 +5,6 @@
 
 import Block
 import BlockRing
-import Glibc
 import Taisce
 
 /// A session's client, shared by copies of the device (Taisce copies
@@ -32,7 +31,7 @@ public struct RingDevice: BlockDevice {
     switch s {
     case .outOfRange: .outOfRange
     case .readOnly: .readOnly
-    default: .io(EIO)
+    default: .io(5)  // EIO
     }
   }
 

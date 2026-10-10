@@ -146,7 +146,8 @@ one Linux process, each with its own handle table; a killed one's threads
 exit at their next kernel call. Threads: `Thread.spawn { }` and
 `Thread.join`; locks: `Lock` over futexes (`Futex.wait`/`wake`). Tests of
 the native backend are programs in `tests/native`, run on croi with
-`td boot --test --next bin/<name>` (`bin/sys-test` is in `td ci`). Errors
+`td boot --test --next bin/<name>` (`bin/sys-test` and
+`bin/services-test`, N0's services in one process, are in `td ci`). Errors
 come in croi's order: bad handle, wrong type, access denied. Plans:
 `docs/milestones/N0.md`, `M3.md`.
 
@@ -331,6 +332,12 @@ cases, comparing results and whole buffers.
 - **rv64 native code is `lp64`, not croi's `lp64d`.** The toolchain's
   prebuilt rv64 Embedded libraries (the Unicode tables) are soft-float ABI,
   and ld.lld won't link the two; we reach croi only through syscalls.
+- **Tier 0 code has no `weak` or `unowned`** (Embedded Swift rejects
+  them) and no Synchronization `Mutex` on croi's targets: use `Sys.Lock`
+  or `Sys.Locked`, and break reference cycles where their owner ends (a
+  session's server holds a token whose deinit marks it closed).
+- **The CMake builds load the IPC macro from SwiftPM's build**
+  (`.build/debug/IPCMacros`): run `swift build` before configuring them.
 - **A CMake option for Swift must be guarded in a target with assembly**
   (`$<$<COMPILE_LANGUAGE:Swift>:...>`), or clang gets it.
 

@@ -12,30 +12,23 @@
 // dispatcher's: a restart waits on the restarting service, which needs the
 // dispatcher to answer its startup calls.
 
-import Glibc
 import IPC
 import Node
 
 public final class Launcher: @unchecked Sendable {
   /// The channel to a running service's tree, used one caller at a time.
   final class Export: @unchecked Sendable {
-    let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+    let mutex = Lock()
     var client: NodeIPC.NodeClient
 
     init(_ channel: consuming Handle) {
       client = NodeIPC.NodeClient(channel: channel)
-      pthread_mutex_init(mutex, nil)
-    }
-
-    deinit {
-      pthread_mutex_destroy(mutex)
-      mutex.deallocate()
     }
 
     /// A new channel to the node `names` below the service's root.
     func open(_ names: [String]) throws(NodeIPC.NodeClient.Failure) -> Handle {
-      pthread_mutex_lock(mutex)
-      defer { pthread_mutex_unlock(mutex) }
+      mutex.lock()
+      defer { mutex.unlock() }
       let node = try client.walk(names).take()
       switch consume node {
       case .some(let h): return h
@@ -90,11 +83,13 @@ public final class Launcher: @unchecked Sendable {
   public let board: SrvBoard
   /// The launcher's own tree: `status`.
   public let tree: NodeTree
-  let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+  var statusNode: TreeNode?
+  let mutex = Lock()
   var services: [Service] = []
   var stopping = false
-  var dispatcherThread = pthread_t()
-  var supervisorThread = pthread_t()
+  /// The launcher's two threads (raw handles; 0 if not started).
+  var dispatcherThread: UInt32 = 0
+  var supervisorThread: UInt32 = 0
   var running = false
 
   public init(programs: [String: ProgramEntry], rootJob: borrowing Handle) throws(Status) {
@@ -104,13 +99,14 @@ public final class Launcher: @unchecked Sendable {
     supervisor = try Port.create()
     board = SrvBoard(dispatcher: dispatcher)
     tree = NodeTree(dispatcher: dispatcher)
-    pthread_mutex_init(mutex, nil)
-    tree.text("status", read: { [unowned self] in status })
+    // A strong capture (Embedded Swift has no unowned): stop() removes the
+    // leaf, which ends the cycle.
+    statusNode = tree.text("status", read: { [self] in status })
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
-    pthread_mutex_lock(mutex)
-    defer { pthread_mutex_unlock(mutex) }
+    mutex.lock()
+    defer { mutex.unlock() }
     return try body()
   }
 
@@ -139,7 +135,7 @@ public final class Launcher: @unchecked Sendable {
         throw LaunchError("\(m.file): can't make a job: \(error)")
       }
       locked { services.append(service) }
-      if !m.grants.filter(\.viaSvc).isEmpty { try buildSvc(service) }
+      if m.grants.contains(where: { $0.viaSvc }) { try buildSvc(service) }
       try launch(service)
     }
   }
@@ -147,16 +143,8 @@ public final class Launcher: @unchecked Sendable {
   func startThreads() {
     guard !running else { return }
     running = true
-    let me = Unmanaged.passUnretained(self).toOpaque()
-    pthread_create(&dispatcherThread, nil, { arg in
-      let l = Unmanaged<Launcher>.fromOpaque(arg!).takeUnretainedValue()
-      try? l.dispatcher.run()
-      return nil
-    }, me)
-    pthread_create(&supervisorThread, nil, { arg in
-      Unmanaged<Launcher>.fromOpaque(arg!).takeUnretainedValue().supervise()
-      return nil
-    }, me)
+    dispatcherThread = (try? Thread.spawn { [self] in try? dispatcher.run() })?.release() ?? 0
+    supervisorThread = (try? Thread.spawn { [self] in supervise() })?.release() ?? 0
   }
 
   /// The service a manifest names.
@@ -217,11 +205,11 @@ public final class Launcher: @unchecked Sendable {
       try process.waitAsync(port: supervisor, key: UInt64(s.index + 1), signals: Signals.terminated)
     }
     let isReady = !m.exports || waitReady(ready, process)
-    pthread_mutex_lock(mutex)
+    mutex.lock()
     s.instances += 1
     s.state = isReady ? "running" : "failed"
     s.process = .some(process)
-    pthread_mutex_unlock(mutex)
+    mutex.unlock()
     guard isReady else {
       throw LaunchError("\(m.file):\(m.serviceLine): service '\(m.service)' didn't become ready")
     }
@@ -342,19 +330,18 @@ public final class Launcher: @unchecked Sendable {
   /// Ends every service and the launcher's threads.
   public func stop() {
     locked { stopping = true }
+    if let statusNode { tree.remove(statusNode) }
+    statusNode = nil
     try? Sys.kill(job)
     guard running else { return }
     try? Port.queue(supervisor, Packet(key: 0))
-    pthread_join(supervisorThread, nil)
+    if supervisorThread != 0 { try? Thread.join(Handle(raw: supervisorThread)) }
     dispatcher.stop()
-    pthread_join(dispatcherThread, nil)
+    if dispatcherThread != 0 { try? Thread.join(Handle(raw: dispatcherThread)) }
+    supervisorThread = 0
+    dispatcherThread = 0
     dispatcher.removeAll()
     running = false
-  }
-
-  deinit {
-    pthread_mutex_destroy(mutex)
-    mutex.deallocate()
   }
 }
 

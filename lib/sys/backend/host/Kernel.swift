@@ -3,6 +3,7 @@
 // Sys's calls on the hosted kernel (SysHost), for SwiftPM builds. The CMake
 // build uses lib/sys/backend/stub until croi's syscalls (M3).
 
+import Glibc
 import SysHost
 
 /// A program's entry, hosted: a Swift function given its startup handle.
@@ -87,6 +88,11 @@ enum Kernel {
   static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) { try? unsafe k.vmoUnmap(address) }
 
   static func processSelf() throws(Status) -> UInt32 { try k.processSelf() }
+  static func realtime() -> Int64 {
+    var ts = timespec()
+    unsafe clock_gettime(CLOCK_REALTIME, &ts)
+    return Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
+  }
   static func futexWait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32, deadline: Int64) throws(Status) {
     try unsafe k.futexWait(address, current: current, deadline: deadline)
   }
