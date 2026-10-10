@@ -289,8 +289,7 @@ let fsUser = ProgramEntry { handle in
     unlink(image)
     rmdir(".build/test-fs-\(getpid())")
   }
-  var programs = hostedPrograms
-  programs["user"] = fsUser
+  let programs = hostedPrograms + [("user", fsUser)]
   let l = try Launcher(programs: programs, rootJob: try Job.root())
   defer { l.stop() }
   try l.start([

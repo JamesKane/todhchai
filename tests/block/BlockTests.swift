@@ -341,8 +341,8 @@ let blockUser = ProgramEntry { handle in
     unlink(image)
     rmdir(".build/test-hosted-\(getpid())")
   }
-  let blockProgram = try #require(hostedPrograms["block"])
-  let l = try Launcher(programs: ["block": blockProgram, "user": blockUser], rootJob: try Job.root())
+  let blockProgram = try #require(hostedPrograms.first { $0.name == "block" }).entry
+  let l = try Launcher(programs: [("block", blockProgram), ("user", blockUser)], rootJob: try Job.root())
   defer { l.stop() }
   try l.start([
     (path: "block.manifest", text: "service block\nprogram block\narg --create 1M \(image)\nexport\n"),

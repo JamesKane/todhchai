@@ -52,7 +52,8 @@ It writes a bootfs of every program in `build/native-<arch>/bin`
 lays out the ESP in `build/boot/<arch>/esp` with
 `userboot.next=bin/launcher`, and runs QEMU (KVM on amd64):
 
-    .build/debug/td boot [--arch amd64|arm64|rv64] [--test] [--next bin/P] [-- QEMU ARGS]
+    .build/debug/td boot [--arch amd64|arm64|rv64] [--test] [--next bin/P]
+                         [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]
 
 `--test` passes when userboot reports the program exited with 0; the
 console is in `bench/out/boot/<arch>/console.log`, and a croi build failure
@@ -62,7 +63,14 @@ amd64. A program is `todhchai_program(name sources)` in `CMakeLists.txt`
 `_start` and the syscall instruction in assembly, then processargs, stdout
 over debuglog and a heap over VMOs in Swift). Embedded Swift has no
 `CommandLine`: use `Arguments.strings`, `Environment` and
-`StartupHandles.take`. Our libc exports `mem*` and `str*` under their C
+`StartupHandles.take`. `bin/launcher` (`boot/programs/launcher`) is
+lib/launch natively: programs are bootfs's `bin/NAME`, manifests its
+`etc/manifests/*.manifest` (`td boot --manifests DIR` puts them there), and
+`--cmdline launcher.until=SERVICE` makes it exit with that service's code.
+`Process.start` natively loads the ELF from bootfs (`lib/elf`,
+`lib/sys/backend/native/Loader.swift`); a started program finds its
+Startup channel as `StartupHandles.take(ProcessArgs.info(ProcessArgs.user0))`.
+`td ci` boots the launcher's test (`tests/native/manifests`). Our libc exports `mem*` and `str*` under their C
 names natively only (`lib/libc/native`, never in SwiftPM's build).
 
 ## IPC protocols

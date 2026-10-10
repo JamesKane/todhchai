@@ -17,12 +17,6 @@
 import LibSys
 import TDNative
 
-/// A program's entry, natively: an address in its image (M3d loads it).
-public struct ProgramEntry: Sendable {
-  public let address: UInt64
-  public init(address: UInt64) { self.address = address }
-}
-
 enum Number {
   static let nanosleep: UInt64 = 4
   static let handleClose: UInt64 = 10
@@ -42,6 +36,7 @@ enum Number {
   static let vmoGetSize: UInt64 = 44
   static let jobCreate: UInt64 = 60
   static let processCreate: UInt64 = 61
+  static let processStart: UInt64 = 62
   static let processExit: UInt64 = 63
   static let threadCreate: UInt64 = 64
   static let threadStart: UInt64 = 65
@@ -61,6 +56,7 @@ enum Number {
   static let timerCreate: UInt64 = 95
   static let timerSet: UInt64 = 96
   static let timerCancel: UInt64 = 97
+  static let debuglogCreate: UInt64 = 110
   static let threadExit: UInt64 = 2
 }
 
@@ -314,8 +310,8 @@ enum Kernel {
     try out(UInt32(0)) { sys(Number.jobCreate, UInt64(parent), 0, $0) }
   }
 
-  /// process_create gives the process and its root VMAR; the VMAR is closed
-  /// until the launcher loads programs itself (M3d).
+  /// process_create gives the process and its root VMAR, which the loader
+  /// keeps until the process starts (Loader.swift).
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 {
     var bytes = Array(name.utf8)
     let ends = try out((UInt32(0), UInt32(0))) { p in
@@ -323,7 +319,7 @@ enum Kernel {
         unsafe sys(Number.processCreate, UInt64(job), address(n.baseAddress), UInt64(n.count), 0, p, p + 4)
       }
     }
-    close(ends.1)
+    Loader.keep(ends.0, vmar: ends.1)
     return ends.0
   }
 
@@ -336,9 +332,8 @@ enum Kernel {
     }
   }
 
-  static func processStart(_ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) {
-    close(arg)
-    throw .notSupported  // M3d: the launcher loads ELF images
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) {
+    try Loader.start(process, thread, arg, entry)
   }
 
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) {

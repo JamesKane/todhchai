@@ -144,7 +144,7 @@ do {
   // Launch to ready, a service at a time.
   Trace.mark("launches")
   for _ in 0..<100 {
-    let l = try Launcher(programs: ["tree": treeProgram], rootJob: try Job.root())
+    let l = try Launcher(programs: [("tree", treeProgram)], rootJob: try Job.root())
     let start = Trace.now()
     try l.start([(path: "tree.manifest", text: "service tree\nprogram tree\nexport\n")])
     Trace.zone(Names.launch, since: start)

@@ -1,0 +1,6 @@
+# The native launcher's test (M3d): a service it restarts when it crashes.
+service tree
+program tree-service
+arg --greeting dia-duit
+export
+restart on-failure

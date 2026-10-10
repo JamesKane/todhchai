@@ -75,7 +75,8 @@ public final class Launcher: @unchecked Sendable {
   /// How long an exporting service has to say it is ready.
   public static let readyTimeout: Int64 = 5_000_000_000
 
-  let programs: [String: ProgramEntry]
+  /// What a manifest's `program` may name (no hashed collections in tier 0).
+  let programs: [(name: String, entry: ProgramEntry)]
   let dispatcher: IPCDispatcher
   let job: Handle
   let supervisor: Handle
@@ -92,7 +93,7 @@ public final class Launcher: @unchecked Sendable {
   var supervisorThread: UInt32 = 0
   var running = false
 
-  public init(programs: [String: ProgramEntry], rootJob: borrowing Handle) throws(Status) {
+  public init(programs: [(name: String, entry: ProgramEntry)], rootJob: borrowing Handle) throws(Status) {
     self.programs = programs
     dispatcher = try IPCDispatcher()
     job = try Job.create(parent: rootJob)
@@ -125,7 +126,7 @@ public final class Launcher: @unchecked Sendable {
   public func start(_ files: [(path: String, text: String)]) throws(LaunchError) {
     var manifests: [Manifest] = []
     for f in files { manifests.append(try Manifest(file: f.path, text: f.text)) }
-    let order = try launchOrder(manifests, programs: Array(programs.keys))
+    let order = try launchOrder(manifests, programs: programs.map { $0.name })
     startThreads()
     for m in order {
       let service: Service
@@ -197,7 +198,7 @@ public final class Launcher: @unchecked Sendable {
     }
     let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
     do throws(Status) {
-      _ = try Process.start(process, entry: programs[m.program]!, arg: processEnd)
+      _ = try Process.start(process, entry: programs.first { $0.name == m.program }!.entry, arg: processEnd)
     } catch {
       throw failed("\(error)")
     }
@@ -309,6 +310,38 @@ public final class Launcher: @unchecked Sendable {
     } catch {
       throw LaunchError("service '\(service)' doesn't answer: \(error)")
     }
+  }
+
+  /// Waits until `service`'s current instance ends, and gives its return
+  /// code: for a boot that runs a client to its end (the native launcher's
+  /// `launcher.until=`).
+  public func waitForExit(_ service: String) throws(LaunchError) -> Int64 {
+    let found = locked { () -> (Service, UInt32, Int)? in
+      guard let s = services.first(where: { $0.manifest.service == service }), let raw = s.process?.raw else {
+        return nil
+      }
+      let borrowed = Handle(raw: raw)  // `process` still owns it
+      let copy = try? borrowed.duplicate()
+      _ = borrowed.release()
+      guard let copy else { return nil }
+      return (s, copy.release(), s.instances)
+    }
+    guard let (s, raw, instance) = found else { throw LaunchError("no running service '\(service)'") }
+    let p = Handle(raw: raw)
+    let code: Int64
+    do throws(Status) {
+      _ = try p.wait(for: Signals.terminated)
+      code = try Process.info(p).returnCode
+    } catch {
+      throw LaunchError("can't wait for '\(service)': \(error)")
+    }
+    // Until the supervisor has seen it too (it has dropped the instance, or
+    // started the next), so `status` says it ended.
+    let deadline = Clock.monotonic() + 1_000_000_000
+    while locked({ s.process != nil && s.instances == instance }), Clock.monotonic() < deadline {
+      sleep(until: Clock.monotonic() + 1_000_000)
+    }
+    return code
   }
 
   /// Kills a running service's process, as a crash would end it: its

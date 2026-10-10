@@ -4,10 +4,18 @@
 // (M3): every call fails with `notSupported`. It exists so the services'
 // tier 0 code is compiled as Embedded Swift now, which proves it clean.
 
-/// A program's entry: natively, an address in its image (M3).
+/// A program's entry: natively, an ELF file in a VMO (M3d).
 public struct ProgramEntry: Sendable {
-  public let address: UInt64
-  public init(address: UInt64) { self.address = address }
+  public let image: UInt32
+  public let offset: Int
+  public let length: Int
+  public let name: String
+  public init(image: UInt32, offset: Int, length: Int, name: String) {
+    self.image = image
+    self.offset = offset
+    self.length = length
+    self.name = name
+  }
 }
 
 enum Kernel {
@@ -53,7 +61,7 @@ enum Kernel {
   static func jobCreate(_ parent: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 { throw .notSupported }
   static func threadCreate(_ process: UInt32) throws(Status) -> UInt32 { throw .notSupported }
-  static func processStart(_ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) { throw .notSupported }
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) { throw .notSupported }
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) { throw .notSupported }
   static func kill(_ h: UInt32) throws(Status) { throw .notSupported }
   static func exit(_ code: Int64) -> Never { fatalError("process_exit: no kernel") }

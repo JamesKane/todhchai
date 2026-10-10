@@ -64,7 +64,7 @@ let exiter = ProgramEntry { handle in
   Process.exit(code: Int64(args.first ?? "") ?? 0)
 }
 
-let programs = ["tree": treeProgram, "exiter": exiter]
+let programs = [("tree", treeProgram), ("exiter", exiter)]
 
 func launcher() throws -> Launcher { try Launcher(programs: programs, rootJob: try Job.root()) }
 

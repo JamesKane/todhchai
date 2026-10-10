@@ -157,12 +157,13 @@ public enum Process {
 
   /// Starts the process: its first thread runs `entry` with `arg` (moved
   /// into the process). The thread's handle. Hosted, `entry` is a Swift
-  /// function; natively, a program image's entry point (M3).
+  /// function given `arg`; natively, an ELF image the process is loaded
+  /// from, which finds `arg` as its PA_USER0 startup handle (M3d).
   public static func start(_ process: borrowing Handle, entry: ProgramEntry, arg: consuming Handle) throws(Status)
     -> Handle
   {
     let thread = Handle(raw: try Kernel.threadCreate(process.raw))
-    try Kernel.processStart(thread.raw, arg.release(), entry)
+    try Kernel.processStart(process.raw, thread.raw, arg.release(), entry)
     return thread
   }
 

@@ -202,6 +202,9 @@ let package = Package(
     // bootfs images (M3): td writes them, the native launcher reads them.
     .target(name: "Bootfs", path: "lib/bootfs", swiftSettings: tier0),
     .testTarget(name: "BootfsTests", dependencies: ["Bootfs"], path: "tests/bootfs"),
+    // ELF executables (M3d): the native loader reads programs from bootfs.
+    .target(name: "Elf", path: "lib/elf", swiftSettings: tier0),
+    .testTarget(name: "ElfTests", dependencies: ["Elf"], path: "tests/elf"),
     .target(name: "Block", dependencies: ["BlockRing", "Node", "IPC", "TDLinux"], path: "lib/block",
             exclude: ["ring", "idl"], swiftSettings: tier0),
     .testTarget(name: "BlockTests", dependencies: ["Block", "BlockRing", "HostedPrograms", "Launch", "Node", "IPC", "IDL"],

@@ -1,38 +1,97 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/launcher, natively: the program croi's userboot starts from bootfs.
-// For now (M3a) it proves the runtime: arguments, environment, startup
-// handles, the heap's two paths and String comparison, then exits 0. The
-// launcher proper (lib/launch) takes its place in M3d.
+// bin/launcher, natively (M3d): the program croi's userboot starts. It
+// reads bootfs's directory: every `bin/NAME` is a program a manifest may
+// name, and every `etc/manifests/*.manifest` is launched (lib/launch), each
+// service in a job and a process of its own, loaded from bootfs. Then it
+// supervises them for good, or, given `launcher.until=SERVICE` on croi's
+// command line (userboot passes it as the environment), until that service
+// ends, and exits with its return code: how `td boot --test` runs a boot to
+// its end.
 
+import Bootfs
+import Launch
 import LibSys
+import Sys
 
-@main struct Launcher {
+@main struct Main {
+  static func fail(_ what: String) -> Never {
+    print("launcher: \(what)")
+    exit(1)
+  }
+
   static func main() {
-    print("launcher: Todhchai on croi")
-    print("launcher: \(Arguments.strings.count) argument(s), \(Environment.strings.count) environment string(s)")
-    print("launcher: \(StartupHandles.remaining.count) startup handle(s)")
+    guard let jobRaw = StartupHandles.take(ProcessArgs.info(ProcessArgs.jobDefault)),
+      let bootfsRaw = StartupHandles.take(ProcessArgs.info(ProcessArgs.vmoBootfs))
+    else { fail("started without a job or bootfs") }
+    let job = Handle(raw: jobRaw)
+    // Open for as long as the launcher runs: programs load from it.
+    let bootfs = Handle(raw: bootfsRaw)
 
-    // Small blocks from the size classes, a large one mapped on its own.
-    var small: [[UInt8]] = []
-    for i in 0..<1000 { small.append([UInt8](repeating: UInt8(truncatingIfNeeded: i), count: i % 300)) }
-    let large = [UInt64](repeating: 7, count: 100_000)
-    var sum: UInt64 = 0
-    for block in small { for b in block { sum &+= UInt64(b) } }
-    for v in large { sum &+= v }
-    small.removeAll()
-    // Σ (i mod 256)(i mod 300) for i < 1000, plus 7 × 100 000.
-    guard sum == 17_695_004 else {
-      print("launcher: heap checksum \(sum), not 17695004")
-      exit(1)
+    let entries: [Bootfs.Entry]
+    do throws(Status) {
+      let size = try VMO.size(bootfs)
+      let header = try VMO.read(bootfs, offset: 0, count: Bootfs.headerSize)
+      guard let end = try? Bootfs.directoryEnd(header: header), end <= size else { fail("bootfs is malformed") }
+      let directory = try VMO.read(bootfs, offset: 0, count: end)
+      guard let all = try? Bootfs.entries(directory: directory, imageSize: size) else { fail("bootfs is malformed") }
+      entries = all
+    } catch {
+      fail("can't read bootfs: \(error)")
     }
 
-    let greeting = "dia duit"
-    let same = String(decoding: Array("dia duit".utf8), as: UTF8.self)
-    guard greeting == same else {
-      print("launcher: String comparison failed")
-      exit(1)
+    var programs: [(name: String, entry: ProgramEntry)] = []
+    var manifests: [(path: String, text: String)] = []
+    for e in entries {
+      if let name = e.name.dropping("bin/") {
+        programs.append((name, ProgramEntry(image: bootfs.raw, offset: e.offset, length: e.length, name: e.name)))
+      } else if e.name.dropping("etc/manifests/") != nil, e.name.utf8.reversed().starts(with: ".manifest".utf8.reversed()) {
+        do throws(Status) {
+          manifests.append((e.name, String(decoding: try VMO.read(bootfs, offset: e.offset, count: e.length), as: UTF8.self)))
+        } catch {
+          fail("can't read \(e.name): \(error)")
+        }
+      }
     }
-    print("launcher: ready")
+    guard !manifests.isEmpty else { fail("no manifests in bootfs (etc/manifests)") }
+    print("launcher: \(programs.count) program(s), \(manifests.count) manifest(s) in bootfs")
+
+    let launcher: Launcher
+    do throws(Status) {
+      launcher = try Launcher(programs: programs, rootJob: job)
+    } catch {
+      fail("can't start: \(error)")
+    }
+    do throws(LaunchError) {
+      try launcher.start(manifests)
+    } catch {
+      fail(error.description)
+    }
+    print("launcher: started")
+    for line in launcher.status.split(separator: "\n") { print("launcher:   \(line)") }
+
+    guard let until = Environment.value("launcher.until") else {
+      while true { sleep(until: infiniteDeadline) }
+    }
+    let code: Int64
+    do throws(LaunchError) {
+      code = try launcher.waitForExit(until)
+    } catch {
+      fail(error.description)
+    }
+    print("launcher: \(until) exited with \(code)")
+    for line in launcher.status.split(separator: "\n") { print("launcher:   \(line)") }
+    launcher.stop()
+    withExtendedLifetime(bootfs) {}
+    exit(code)
+  }
+}
+
+extension String {
+  /// The rest, if it starts with `prefix` (compared as bytes: tier 0 links
+  /// no Unicode tables for String's own prefix test).
+  func dropping(_ prefix: String) -> String? {
+    guard utf8.starts(with: prefix.utf8) else { return nil }
+    return String(decoding: utf8.dropFirst(prefix.utf8.count), as: UTF8.self)
   }
 }

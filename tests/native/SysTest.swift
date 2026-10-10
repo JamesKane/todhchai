@@ -38,6 +38,20 @@ import Sys
   static let ms: Int64 = 1_000_000
 
   static func run() throws(Status) {
+    // libsys: argv[0] is the program's bootfs name; the heap's size
+    // classes and its large blocks; String comparison (Unicode tables).
+    check(Arguments.strings.first == "bin/sys-test", "argv[0]")
+    var small: [[UInt8]] = []
+    for i in 0..<1000 { small.append([UInt8](repeating: UInt8(truncatingIfNeeded: i), count: i % 300)) }
+    let large = [UInt64](repeating: 7, count: 100_000)
+    var sum: UInt64 = 0
+    for block in small { for b in block { sum &+= UInt64(b) } }
+    for v in large { sum &+= v }
+    small.removeAll()
+    // Σ (i mod 256)(i mod 300) for i < 1000, plus 7 × 100 000.
+    check(sum == 17_695_004, "heap checksum")
+    check("dia duit" == String(decoding: Array("dia duit".utf8), as: UTF8.self), "String comparison")
+
     // The clock moves, and sleeping takes time.
     let t0 = Clock.monotonic()
     sleep(until: t0 + 2 * ms)

@@ -52,8 +52,8 @@ public enum Runtime {
 
 /// processargs' constants (croi's processargs.h, Zircon's values).
 public enum ProcessArgs {
-  static let protocolMagic: UInt32 = 0x4150_585d
-  static let version: UInt32 = 0x0001_000
+  public static let protocolMagic: UInt32 = 0x4150_585d
+  public static let version: UInt32 = 0x0001_000
 
   /// Handle types: the low byte of a handle-info word.
   public static let processSelf: UInt32 = 0x01

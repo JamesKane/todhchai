@@ -12,11 +12,11 @@ import Node
 import Taisce
 
 /// Every hosted program, by name.
-public let hostedPrograms: [String: ProgramEntry] = [
-  "hello": hello,
-  "block": block,
-  "fs": fsProgram,
-  "catalog": catalog,
+public let hostedPrograms: [(name: String, entry: ProgramEntry)] = [
+  ("hello", hello),
+  ("block", block),
+  ("fs", fsProgram),
+  ("catalog", catalog),
 ]
 
 /// A small service: `status` says who it is and what its namespace holds.

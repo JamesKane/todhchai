@@ -1,0 +1,6 @@
+# The native launcher's test (M3d): a client of `tree`, run to its end.
+service launch-test
+program launch-test
+arg --check 1
+use tree
+seal

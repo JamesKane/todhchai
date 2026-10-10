@@ -70,6 +70,12 @@ target_link_libraries(Taisce PUBLIC TDUnicode TDCrypto)
 target_include_directories(Taisce INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Taisce)
 
+# ELF executables: the native loader reads programs with it.
+add_library(Elf STATIC lib/elf/Elf.swift)
+set_target_properties(Elf PROPERTIES Swift_MODULE_NAME Elf)
+target_include_directories(Elf INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(Elf)
+
 # Sys: croi's values, and the typed API: over croi's syscalls natively,
 # over a stub that fails every call in the host's Embedded build.
 add_library(SysABI STATIC lib/sys/abi/Values.swift)
@@ -87,7 +93,7 @@ if(TODHCHAI_NATIVE)
                                     INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
   target_link_libraries(LibSys PUBLIC LibC)
   todhchai_tier0(LibSys)
-  set(_sys_backend lib/sys/backend/native/Kernel.swift)
+  set(_sys_backend lib/sys/backend/native/Kernel.swift lib/sys/backend/native/Loader.swift)
 else()
   set(_sys_backend lib/sys/backend/stub/Kernel.swift)
 endif()
@@ -96,7 +102,7 @@ set_target_properties(Sys PROPERTIES Swift_MODULE_NAME Sys)
 target_include_directories(Sys INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Sys PUBLIC SysABI)
 if(TODHCHAI_NATIVE)
-  target_link_libraries(Sys PUBLIC LibSys)
+  target_link_libraries(Sys PUBLIC LibSys Elf)
 endif()
 todhchai_tier0(Sys)
 
@@ -182,11 +188,18 @@ if(TODHCHAI_NATIVE)
   endfunction()
 
   todhchai_program(launcher boot/programs/launcher/Main.swift)
+  target_link_libraries(launcher PRIVATE Launch Bootfs Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.
   todhchai_program(sys-test tests/native/SysTest.swift)
   target_link_libraries(sys-test PRIVATE Sys)
   todhchai_program(services-test tests/native/ServicesTest.swift)
   target_link_libraries(services-test PRIVATE Fs Block Node IPC Sys)
+  # The launcher's test: td boot --test --manifests tests/native/manifests
+  # --cmdline launcher.until=launch-test.
+  todhchai_program(tree-service tests/native/TreeService.swift)
+  target_link_libraries(tree-service PRIVATE Launch Node IPC Sys)
+  todhchai_program(launch-test tests/native/LaunchTest.swift)
+  target_link_libraries(launch-test PRIVATE Launch Node IPC Sys)
   return()
 endif()
 

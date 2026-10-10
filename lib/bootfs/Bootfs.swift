@@ -78,6 +78,19 @@ public enum Bootfs {
   /// The image's directory, checked: every entry inside the directory and
   /// its data inside the image, at a page multiple.
   public static func entries(_ image: [UInt8]) throws(Error) -> [Entry] {
+    try entries(directory: image, imageSize: image.count)
+  }
+
+  /// The bytes from the image's start that hold its directory, read from
+  /// its first `headerSize`: for a reader that has the image in a VMO.
+  public static func directoryEnd(header: [UInt8]) throws(Error) -> Int {
+    guard let m = word(header, 0), m == magic, let size = word(header, 4) else { throw .badHeader }
+    return headerSize + Int(size)
+  }
+
+  /// The directory, from the image's first bytes (at least `directoryEnd`),
+  /// checked against the image's size.
+  public static func entries(directory image: [UInt8], imageSize: Int) throws(Error) -> [Entry] {
     guard let m = word(image, 0), m == magic, let size = word(image, 4),
       headerSize + Int(size) <= image.count
     else { throw .badHeader }
@@ -88,7 +101,7 @@ public enum Bootfs {
       guard at + 12 <= end, let nameLength = word(image, at), let dataLength = word(image, at + 4),
         let dataOffset = word(image, at + 8), nameLength >= 2, Int(nameLength) <= maxName,
         at + 12 + Int(nameLength) <= end, image[at + 12 + Int(nameLength) - 1] == 0,
-        Int(dataOffset) % pageSize == 0, Int(dataOffset) + Int(dataLength) <= image.count
+        Int(dataOffset) % pageSize == 0, Int(dataOffset) + Int(dataLength) <= imageSize
       else { throw .badEntry(at: at) }
       let name = String(decoding: image[(at + 12)..<(at + 12 + Int(nameLength) - 1)], as: UTF8.self)
       out.append(Entry(name: name, offset: Int(dataOffset), length: Int(dataLength)))

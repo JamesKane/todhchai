@@ -2,14 +2,17 @@
 
 // td boot: Todhchai on croi in QEMU (M3).
 //
-//   td boot [--arch amd64|arm64|rv64] [--test] [--timeout S] [--next PROGRAM] [-- QEMU ARGS]
+//   td boot [--arch amd64|arm64|rv64] [--test] [--timeout S] [--next PROGRAM]
+//           [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]
 //
 // Builds croi's loader and kernel from ../croi as it is checked out (M3
 // decided: no pin) into build/croi/<arch>, and our native tree
 // (build/native-<arch>). Writes a bootfs holding every program the native
 // build made (bin/<name>), and lays out an EFI system partition in
 // build/boot/<arch>/esp with croi's loader and kernel, the bootfs, and a
-// command line that has userboot start PROGRAM (bin/launcher). Then boots
+// command line that has userboot start PROGRAM (bin/launcher), plus WORDS
+// (such as launcher.until=SERVICE). bootfs also holds DIR's manifests as
+// etc/manifests/NAME.manifest, for the launcher. Then boots
 // it: interactively on the terminal, or with --test headless, judged by
 // userboot's report that the program exited with 0. Logs, the console
 // included, are in bench/out/boot/<arch>/. amd64 uses KVM when /dev/kvm
@@ -25,6 +28,8 @@ struct BootOptions {
   var test = false
   var timeout = 60.0
   var next = "bin/launcher"
+  var manifests: String?
+  var cmdline: [String] = []
   var qemuArgs: [String] = []
 }
 
@@ -44,10 +49,12 @@ func bootCommand(_ args: [String]) -> Bool {
       guard let t = Double(value()), t > 0 else { fail("--timeout needs seconds") }
       o.timeout = t
     case "--next": o.next = value()
+    case "--manifests": o.manifests = value()
+    case "--cmdline": o.cmdline += value().split(separator: " ").map(String.init)
     case "--":
       o.qemuArgs = Array(args[(i + 1)...])
       i = args.count
-    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [-- QEMU ARGS]")
+    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]")
     }
     i += 1
   }
@@ -102,8 +109,19 @@ func boot(_ o: BootOptions) -> Bool {
     files.append(("bin/\(p)", Array(data)))
   }
   guard files.contains(where: { $0.name == o.next }) else { fail("boot: no \(o.next) in \(native)/bin") }
+  // The launcher's manifests.
+  if let dir = o.manifests {
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".manifest") }
+    guard !names.isEmpty else { fail("boot: no manifests in \(dir)") }
+    for m in names.sorted() {
+      guard let data = try? Data(contentsOf: URL(filePath: "\(dir)/\(m)")) else { fail("can't read \(dir)/\(m)") }
+      files.append(("etc/manifests/\(m)", Array(data)))
+    }
+  }
   let image: [UInt8]
   do { image = try Bootfs.image(files) } catch { fail("boot: bootfs: \(error)") }
+
+  let cmdline = (["userboot.next=\(o.next)"] + o.cmdline).joined(separator: " ")
 
   // The EFI system partition.
   let work = "build/boot/\(o.arch)"
@@ -116,14 +134,14 @@ func boot(_ o: BootOptions) -> Bool {
     try FileManager.default.copyItem(atPath: "\(croi)/boot/loader.efi", toPath: "\(esp)/EFI/BOOT/\(efiName)")
     try FileManager.default.copyItem(atPath: "\(croi)/kernel/kernel.elf", toPath: "\(esp)/croi/kernel.elf")
     try Data(image).write(to: URL(filePath: "\(esp)/croi/bootfs.img"))
-    try Data("userboot.next=\(o.next)\n".utf8).write(to: URL(filePath: "\(esp)/croi/cmdline"))
+    try Data("\(cmdline)\n".utf8).write(to: URL(filePath: "\(esp)/croi/cmdline"))
   } catch {
     fail("boot: laying out \(esp): \(error)")
   }
 
   guard var qemu = qemuCommand(o.arch, esp: esp, work: work) else { return false }
   qemu += o.qemuArgs
-  say("td boot: croi \(croiRevision), \(files.count) program(s) in bootfs (\(image.count / 1024) KiB), userboot.next=\(o.next)")
+  say("td boot: croi \(croiRevision), \(files.count) file(s) in bootfs (\(image.count / 1024) KiB), \(cmdline)")
   if !o.test {
     return run(qemu + ["-nographic"], log: nil).ok
   }
