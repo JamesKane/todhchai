@@ -63,6 +63,13 @@ enum Number {
   static let interruptWait: UInt64 = 143
   static let interruptTrigger: UInt64 = 145
   static let interruptSetAffinity: UInt64 = 146
+  static let iommuCreate: UInt64 = 150
+  static let btiCreate: UInt64 = 151
+  static let btiPin: UInt64 = 152
+  static let btiReleaseQuarantine: UInt64 = 153
+  static let pmtUnpin: UInt64 = 154
+  static let vmoCreateContiguous: UInt64 = 155
+  static let btiSetProperties: UInt64 = 156
   static let resourceCreate: UInt64 = 130
   static let ioportsRequest: UInt64 = 131
   static let ioportsRelease: UInt64 = 132
@@ -395,6 +402,58 @@ enum Kernel {
 
   static func interruptSetAffinity(_ h: UInt32, _ cpus: UInt64) throws(Status) {
     try check(sys(Number.interruptSetAffinity, UInt64(h), cpus))
+  }
+
+  // MARK: DMA (croi K9e)
+
+  /// iommu_create(STUB): its descriptor is one byte (zx_iommu_desc_stub_t).
+  static func iommuCreateStub(_ resource: UInt32) throws(Status) -> UInt32 {
+    var desc: UInt8 = 0
+    return try out(UInt32(0)) { p in
+      unsafe withUnsafeMutablePointer(to: &desc) { d in unsafe sys(Number.iommuCreate, UInt64(resource), 0, address(d), 1, p) }
+    }
+  }
+
+  static func btiCreate(_ iommu: UInt32, _ id: UInt64) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.btiCreate, UInt64(iommu), 0, id, $0) }
+  }
+
+  /// croi_bti_properties_t: address_bits, memory_type (0 coherent, 1
+  /// non-coherent), window_base, window_size.
+  static func btiSetProperties(_ bti: UInt32, _ p: DMA.Properties) throws(Status) {
+    var record = InlineArray<3, UInt64>(repeating: 0)
+    record[0] = UInt64(p.addressBits) | UInt64(p.coherent ? 0 : 1) << 32
+    record[1] = p.windowBase
+    record[2] = p.windowSize
+    let r = unsafe withUnsafeMutablePointer(to: &record) { unsafe sys(Number.btiSetProperties, UInt64(bti), address($0)) }
+    try check(r)
+  }
+
+  static func vmoCreateContiguous(_ bti: UInt32, _ size: Int, _ alignmentLog2: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.vmoCreateContiguous, UInt64(bti), UInt64(pages(size)), UInt64(alignmentLog2), $0) }
+  }
+
+  /// bti_pin, packed into six registers: bti | options << 32, vmo |
+  /// addrs_count << 32, offset, size, addrs, pmt out.
+  static func btiPin(_ bti: UInt32, _ vmo: UInt32, _ offset: Int, _ size: Int, _ options: UInt32, _ count: Int)
+    throws(Status) -> (pmt: UInt32, addresses: [UInt64])
+  {
+    var addresses = [UInt64](repeating: 0, count: count)
+    var pmt: UInt32 = 0
+    let r = unsafe addresses.withUnsafeMutableBytes { a in
+      unsafe withUnsafeMutablePointer(to: &pmt) { p in
+        unsafe sys(Number.btiPin, UInt64(bti) | UInt64(options) << 32, UInt64(vmo) | UInt64(count) << 32, UInt64(offset),
+            UInt64(pages(size)), address(a.baseAddress), address(p))
+      }
+    }
+    try check(r)
+    return (pmt, addresses)
+  }
+
+  static func pmtUnpin(_ pmt: UInt32) throws(Status) { try check(sys(Number.pmtUnpin, UInt64(pmt))) }
+
+  static func btiReleaseQuarantine(_ bti: UInt32) throws(Status) {
+    try check(sys(Number.btiReleaseQuarantine, UInt64(bti)))
   }
 
   // MARK: The debuglog

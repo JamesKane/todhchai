@@ -100,8 +100,12 @@ manifest's `resource irq`). virtio drivers use `lib/virtio` (transport,
 split queues) through a `Window` over a mapped BAR (`PCIDevice` opens
 one); each driver is a probe in `boot/programs/virtio-<type>` over the
 shared `virtio-host/Host.swift` (blk, net, input, gpu, sound). They
-negotiate and read their configuration; their queues wait for croi's BTI
-(K9e).
+negotiate and read their configuration. virtio-blk does DMA through its
+BTI (`DeviceResources.takeBTI`, `PinnedMemory`; devmgr's manifest needs
+`resource system` for the stub IOMMU) and serves the block service: in the
+devices boot, fs and catalog run on a disk image at 00:10.0
+(`build/boot/amd64/disk.img`, made afresh by `td ci`). The other virtio
+drivers' queues come next.
 Device registers are read with `_Volatile`, which
 needs `-enable-experimental-feature Volatile` on the target. The test is
 `td boot --test --manifests tests/native/devices --cmdline

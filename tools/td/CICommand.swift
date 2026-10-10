@@ -60,17 +60,24 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("n0-exit-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/n0-exit", "--manifests", "boot/native",
                         "--cmdline", "n0.trace=ipc,app,mark"]]),
     // devmgr over q35's ECAM, binding QEMU's edu device to bin/edu (M3g)
-    // and a virtio disk that reads as zeros to bin/virtio-blk (M3i), and
-    // QEMU's other virtio devices to their drivers (M3k).
+    // and a 64 MiB virtio disk, made afresh each run, to bin/virtio-blk
+    // with Taisce on it (M3i), and QEMU's other virtio devices to their
+    // drivers (M3k).
     ("devices-amd64", [[".build/debug/td", "boot", "--test", "--manifests", "tests/native/devices",
                         "--cmdline", "launcher.until=devices-test", "--", "-device", "edu",
-                        "-blockdev", "driver=null-co,node-name=t,size=67108864",
-                        "-device", "virtio-blk-pci,drive=t,disable-legacy=on",
+                        "-drive", "if=none,id=t,format=raw,file=build/boot/amd64/disk.img",
+                        "-device", "virtio-blk-pci,drive=t,disable-legacy=on,addr=0x10",
                         "-netdev", "user,id=n", "-device", "virtio-net-pci,netdev=n,disable-legacy=on,mac=52:54:00:12:34:56",
                         "-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci", "-device", "virtio-gpu-pci",
                         "-audiodev", "none,id=snd", "-device", "virtio-sound-pci,audiodev=snd"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
+  // The devices boot's disk: 64 MiB of zeros, so fs makes a volume on it.
+  makeDirectory("build/boot/amd64")
+  if let f = fopen("build/boot/amd64/disk.img", "w") {
+    _ = ftruncate(fileno(f), 64 << 20)
+    fclose(f)
+  }
   // A0's budgets on croi (M3h), when the out-of-tree corpus is here.
   if let machine = largestACPIMachine() {
     steps.append(("acpi-bench-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/acpi-bench", "--data", machine]]))

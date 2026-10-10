@@ -82,10 +82,13 @@ public struct Device: Sendable {
 /// runs for each device the predicate accepts.
 public struct DriverRule: Sendable {
   public let program: String
+  /// The device's DMA address width: its BTI is narrowed to it.
+  public let addressBits: UInt32
   public let matches: @Sendable (Device) -> Bool
 
-  public init(program: String, matches: @escaping @Sendable (Device) -> Bool) {
+  public init(program: String, addressBits: UInt32 = 64, matches: @escaping @Sendable (Device) -> Bool) {
     self.program = program
+    self.addressBits = addressBits
     self.matches = matches
   }
 
@@ -95,8 +98,10 @@ public struct DriverRule: Sendable {
   }
 
   /// A rule for a PCI vendor and device id.
-  public static func pci(_ program: String, vendor: UInt16, device: UInt16) -> DriverRule {
-    DriverRule(program: program) { d in d.pci.map { $0.vendor == vendor && $0.device == device } ?? false }
+  public static func pci(_ program: String, vendor: UInt16, device: UInt16, addressBits: UInt32 = 64) -> DriverRule {
+    DriverRule(program: program, addressBits: addressBits) { d in
+      d.pci.map { $0.vendor == vendor && $0.device == device } ?? false
+    }
   }
 }
 

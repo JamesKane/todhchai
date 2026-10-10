@@ -1,7 +1,9 @@
-# devmgr's and the console's test (M3g, M3j): a client of their trees, run
-# to its end.
+# devmgr's, the console's and Taisce-on-virtio's test (M3g-M3k), a client
+# of their trees, run to its end.
 service devices-test
 program devices-test
 use devmgr
 use console
+use fs
+use catalog
 seal

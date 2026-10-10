@@ -165,6 +165,16 @@ import Sys
     }
     let ioRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.ioport))) ?? 0
     let irqRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.irq))) ?? 0
+    // The stub IOMMU, for the hosts' BTIs (croi K9e), if `resource system` is granted.
+    var iommuRaw: UInt32 = 0
+    if let systemRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.system))) {
+      let system = Handle(raw: systemRaw)
+      if let r = try? Sys.Resource.create(parent: system, kind: .system, base: DMA.iommuSystemBase, size: 1, name: "iommu"),
+        let iommu = try? DMA.stubIOMMU(resource: r)
+      {
+        iommuRaw = iommu.release()
+      }
+    }
     let boot = Boot()
     let memory = PhysicalMemory(mmioRoot: mmioRaw)
     let ports = ioRaw != 0 ? PortSpace(ioportRoot: ioRaw) : nil
@@ -266,14 +276,17 @@ import Sys
       let mmio = Handle(raw: mmioRaw)
       let io: Handle? = ioRaw != 0 ? Handle(raw: ioRaw) : nil
       let irqs: Handle? = irqRaw != 0 ? Handle(raw: irqRaw) : nil
+      let iommu: Handle? = iommuRaw != 0 ? Handle(raw: iommuRaw) : nil
+      let bits = e.program.flatMap { p in Drivers.rules.first { $0.program == p } }?.addressBits ?? 64
       // The root bus's slots, through _PRT.
       let route = f.address.bus == startBus
         ? acpi.routes.first { $0.slot == f.address.device && $0.pin == f.interruptPin } : nil
       let made = try? grants(for: f, ecam: ecamBase, startBus: startBus, mmio: mmio, ioports: io, interrupt: route,
-                             irqs: irqs)
+                             irqs: irqs, iommu: iommu, addressBits: bits)
       _ = mmio.release()
       if let io { _ = io.release() }
       if let irqs { _ = irqs.release() }
+      if let iommu { _ = iommu.release() }
       return made ?? []
     }
     for e in entries {

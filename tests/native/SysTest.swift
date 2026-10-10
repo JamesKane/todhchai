@@ -243,6 +243,29 @@ import Sys
     // Resources (croi K9a): userboot passes each kind's ranged root on.
     try resources()
 
+    // DMA (croi K9e): the stub IOMMU, a BTI narrowed, a contiguous VMO pinned.
+    if let systemRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.system))) {
+      let system = Handle(raw: systemRaw)
+      let iommuResource = try Resource.create(parent: system, kind: .system, base: DMA.iommuSystemBase, size: 1,
+                                              name: "sys-test iommu")
+      let iommu = try DMA.stubIOMMU(resource: iommuResource)
+      let bti = try DMA.bti(iommu: iommu, id: 0x42)
+      try DMA.setProperties(bti, DMA.Properties(addressBits: 32))
+      check(status { () throws(Status) in try DMA.setProperties(bti, DMA.Properties(addressBits: 48)) } == .accessDenied,
+            "a BTI's properties only narrow")
+      let buffer = try DMA.contiguousVMO(bti: bti, size: 65536)
+      let pinned = try DMA.pin(bti, buffer, offset: 0, size: 65536, options: [.read, .write, .contiguous], count: 1)
+      let bus = pinned.addresses[0]
+      check(bus != 0 && bus & 4095 == 0 && bus + 65536 <= 1 << 32, "a contiguous pin under the BTI's 32 bits")
+      let pages = try DMA.pin(bti, buffer, offset: 0, size: 8192, options: [.read], count: 2)
+      check(pages.addresses == [bus, bus + 4096], "a page-by-page pin of the same memory")
+      try DMA.unpin(pmt: pages.pmt)
+      try DMA.unpin(pmt: pinned.pmt)
+      print("sys-test: DMA: 64 KiB contiguous at \(hex(UInt32(truncatingIfNeeded: bus >> 16)))0000 through a no-IOMMU BTI")
+    } else {
+      check(false, "userboot's system resource")
+    }
+
     // A virtual interrupt (croi K9c), taken by wait and through a port.
     let irq = try Interrupt.virtual()
     try Interrupt.trigger(irq, timestamp: 1234)

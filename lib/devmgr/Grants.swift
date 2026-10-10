@@ -4,10 +4,11 @@
 // the MMIO, IRQ, BTI and I/O port handles for it): a resource for each
 // BAR, MMIO or I/O ports as the BAR is, and an MMIO resource over the
 // function's 4 KiB of ECAM, and an IRQ resource for the GSI its interrupt
-// pin is routed to (Routing.swift). They come as startup handles of type
-// `HandleType.device`, whose argument says which: 0-5 the BAR of that
-// index, `configSpace` the configuration space, `interruptBase` plus the
-// trigger mode the interrupt.
+// pin is routed to (Routing.swift), and a BTI for its DMA (croi K9e: under
+// the stub IOMMU, narrowed to the device's address width). They come as
+// startup handles of type `HandleType.device`, whose argument says which:
+// 0-5 the BAR of that index, `configSpace` the configuration space,
+// `interruptBase` plus the trigger mode the interrupt, `dmaBTI` the BTI.
 
 import PCI
 import Sys
@@ -19,6 +20,8 @@ public enum DeviceHandle {
 
   /// The interrupt's argument, plus its mode's value (Interrupt.Mode).
   public static let interruptBase: UInt32 = 0x100
+  public static let dmaBTI: UInt32 = 0x20
+  public static var bti: UInt32 { HandleType.info(HandleType.device, dmaBTI) }
 
   public static func bar(_ index: Int) -> UInt32 { HandleType.info(HandleType.device, UInt32(index)) }
   public static var config: UInt32 { HandleType.info(HandleType.device, configSpace) }
@@ -32,7 +35,8 @@ public enum DeviceHandle {
 /// address of bus `startBus`'s window. A BAR whose kind devmgr has no root
 /// for (I/O ports off amd64) is left out.
 public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowing Handle, ioports: borrowing Handle?,
-                   interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil)
+                   interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
+                   iommu: borrowing Handle? = nil, addressBits: UInt32 = 64)
   throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
@@ -76,6 +80,17 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowi
     case .none: break
     }
   }
+  switch iommu {
+  case .some(let iommu):
+    let a = f.address
+    try add(DeviceHandle.bti) { () throws(Status) in
+      let bti = try DMA.bti(iommu: iommu, id: UInt64(a.segment) << 16 | UInt64(a.bus) << 8 | UInt64(a.device) << 3
+                              | UInt64(a.function))
+      if addressBits < 64 { try DMA.setProperties(bti, DMA.Properties(addressBits: addressBits)) }
+      return bti
+    }
+  case .none: break
+  }
   return out
 }
 
@@ -85,6 +100,7 @@ public struct DeviceResources: ~Copyable {
   var bars: [(index: Int, handle: UInt32)] = []
   var config: UInt32 = 0
   var irq: UInt32 = 0
+  var bti: UInt32 = 0
   /// The interrupt's trigger mode, if one was granted.
   public private(set) var interruptMode: Interrupt.Mode?
 
@@ -93,6 +109,7 @@ public struct DeviceResources: ~Copyable {
       if let h = take(DeviceHandle.bar(i)) { bars.append((i, h)) }
     }
     config = take(DeviceHandle.config) ?? 0
+    bti = take(DeviceHandle.bti) ?? 0
     for mode in [Interrupt.Mode.default, .edgeLow, .edgeHigh, .levelLow, .levelHigh] {
       if let h = take(DeviceHandle.interrupt(mode)) {
         irq = h
@@ -105,6 +122,15 @@ public struct DeviceResources: ~Copyable {
     for b in bars { close(raw: b.handle) }
     if config != 0 { close(raw: config) }
     if irq != 0 { close(raw: irq) }
+    if bti != 0 { close(raw: bti) }
+  }
+
+  /// The device's BTI, which the caller owns from then on.
+  public mutating func takeBTI() -> Handle? {
+    guard bti != 0 else { return nil }
+    let h = Handle(raw: bti)
+    bti = 0
+    return h
   }
 
   /// The interrupt's number (the GSI), if one was granted.

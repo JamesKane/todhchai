@@ -1,0 +1,7 @@
+# N0's client on virtio-blk (M3i): songs with typed attributes written
+# through /data and a live query's update, on the real (virtual) disk.
+service catalog
+program catalog
+use fs
+export
+restart on-failure

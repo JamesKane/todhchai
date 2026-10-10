@@ -274,6 +274,81 @@ public enum Interrupt {
   }
 }
 
+/// DMA (croi K9e, Zircon's): an IOMMU, a bus transaction initiator (BTI)
+/// per device under it, and memory pinned through the BTI for the device
+/// to reach, its pages held until unpinned. croi has only the stub IOMMU
+/// so far: device addresses are physical ones.
+public enum DMA {
+  /// The bti_pin options.
+  public struct Pin: OptionSet, Sendable {
+    public let rawValue: UInt32
+    public init(rawValue: UInt32) { self.rawValue = rawValue }
+    public static let read = Pin(rawValue: 1 << 0)
+    public static let write = Pin(rawValue: 1 << 1)
+    public static let execute = Pin(rawValue: 1 << 2)
+    public static let compress = Pin(rawValue: 1 << 3)
+    public static let contiguous = Pin(rawValue: 1 << 4)
+  }
+
+  /// A BTI's DMA properties (croi's bti_set_properties): addresses below
+  /// 2^addressBits, inside [windowBase, windowBase + windowSize) if the
+  /// size isn't 0, and the memory's coherency. Only ever narrowed.
+  public struct Properties: Equatable, Sendable {
+    public var addressBits: UInt32
+    public var coherent: Bool
+    public var windowBase: UInt64
+    public var windowSize: UInt64
+    public init(addressBits: UInt32 = 64, coherent: Bool = true, windowBase: UInt64 = 0, windowSize: UInt64 = 0) {
+      self.addressBits = addressBits
+      self.coherent = coherent
+      self.windowBase = windowBase
+      self.windowSize = windowSize
+    }
+  }
+
+  /// The system resource's base that grants making an IOMMU.
+  public static let iommuSystemBase: UInt64 = 8
+
+  /// The stub IOMMU: no translation. Its BTIs are a trust decision that
+  /// croi logs.
+  public static func stubIOMMU(resource: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.iommuCreateStub(resource.raw))
+  }
+
+  /// A BTI for the device with `id` (a PCI device's bus, device and
+  /// function, by convention).
+  public static func bti(iommu: borrowing Handle, id: UInt64) throws(Status) -> Handle {
+    Handle(raw: try Kernel.btiCreate(iommu.raw, id))
+  }
+
+  public static func setProperties(_ bti: borrowing Handle, _ p: Properties) throws(Status) {
+    try Kernel.btiSetProperties(bti.raw, p)
+  }
+
+  /// A VMO of `size` bytes contiguous in device address space, inside the
+  /// BTI's properties.
+  public static func contiguousVMO(bti: borrowing Handle, size: Int, alignmentLog2: UInt32 = 0) throws(Status) -> Handle {
+    Handle(raw: try Kernel.vmoCreateContiguous(bti.raw, size, alignmentLog2))
+  }
+
+  /// Pins `size` bytes of the VMO from `offset` (page aligned); the PMT
+  /// that holds them, and their device addresses (`count` of them: one
+  /// with `.contiguous`, else one a page). Unpin with `unpin`: a PMT
+  /// closed while pinned is quarantined.
+  public static func pin(_ bti: borrowing Handle, _ vmo: borrowing Handle, offset: Int, size: Int, options: Pin,
+                         count: Int) throws(Status) -> (pmt: UInt32, addresses: [UInt64])
+  {
+    try Kernel.btiPin(bti.raw, vmo.raw, offset, size, options.rawValue, count)
+  }
+
+  /// Unpins; the PMT is consumed.
+  public static func unpin(pmt: UInt32) throws(Status) { try Kernel.pmtUnpin(pmt) }
+
+  public static func releaseQuarantine(_ bti: borrowing Handle) throws(Status) {
+    try Kernel.btiReleaseQuarantine(bti.raw)
+  }
+}
+
 /// Timers: SIGNALED at a deadline.
 public enum Timer {
   public static func create() throws(Status) -> Handle { Handle(raw: try Kernel.timerCreate()) }

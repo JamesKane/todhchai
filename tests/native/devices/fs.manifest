@@ -1,0 +1,10 @@
+# Taisce on virtio-blk (M3i): the fs service over the test disk's block
+# service, which devmgr's virtio-blk driver host serves. QEMU puts the
+# disk at 00:10.0 (td ci: addr=0x10), so only it is mounted, never the
+# boot disk. A volume labelled "main" is made if the disk holds none.
+service fs
+program fs
+arg --format main /disk/device
+mount /disk devmgr/drivers/virtio-blk-00:10.0
+export
+restart on-failure

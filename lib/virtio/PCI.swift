@@ -59,6 +59,8 @@ public final class PCIDevice {
   /// `notifyMultiplier` into this window.
   public let notify: BARWindow?
   public let notifyMultiplier: UInt32
+  /// ISR status (§4.1.4.5): reading it clears the device's INTx line.
+  public let isr: BARWindow?
 
   public init(_ resources: borrowing DeviceResources) throws(Status) {
     let config = try resources.mapConfig()
@@ -85,6 +87,7 @@ public final class PCIDevice {
     // A device with no configuration of its own gets an empty window.
     let device = window(.device) ?? common
     notify = window(.notify)
+    isr = window(.isr)
     notifyMultiplier = caps.first { $0.kind == .notify }?.multiplier ?? 0
     capabilities = caps
     self.bars = bars
@@ -93,4 +96,36 @@ public final class PCIDevice {
 
   /// `kind@barN` for each capability, for a status line.
   public var summary: String { capabilities.map { "\($0.kind.rawValue)@bar\($0.bar)" }.joined(separator: " ") }
+}
+
+/// Memory a device reaches through its BTI (croi K9e): each allocation a
+/// contiguous VMO, mapped here and pinned for the device, kept for this
+/// provider's life (the pins end with it; croi quarantines what is still
+/// pinned when a process dies).
+@safe public final class PinnedMemory: DMAMemory {
+  final class Region {
+    let mapping: Mapping
+    let pmt: UInt32
+    init(mapping: consuming Mapping, pmt: UInt32) {
+      self.mapping = mapping
+      self.pmt = pmt
+    }
+    deinit { try? DMA.unpin(pmt: pmt) }
+  }
+
+  let bti: Handle
+  var regions: [Region] = []
+
+  public init(bti: consuming Handle) { self.bti = bti }
+
+  public func allocate(bytes: Int) throws(Status) -> (pointer: UnsafeMutableRawPointer, bus: UInt64) {
+    let size = (bytes + 4095) & ~4095
+    let vmo = try DMA.contiguousVMO(bti: bti, size: size)
+    let mapping = try VMO.map(vmo, length: size)
+    let pinned = try DMA.pin(bti, vmo, offset: 0, size: size, options: [.read, .write, .contiguous], count: 1)
+    unsafe mapping.address.initializeMemory(as: UInt8.self, repeating: 0, count: size)
+    let pointer = unsafe mapping.address
+    regions.append(Region(mapping: mapping, pmt: pinned.pmt))
+    return unsafe (pointer, pinned.addresses[0])
+  }
 }

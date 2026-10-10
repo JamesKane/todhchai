@@ -60,9 +60,27 @@ import Sys
       exit(1)
     }
     check(disk[3].utf8.starts(with: "virtio-blk-".utf8) && disk[4] == "running", "virtio-blk's driver host")
+    check(disk[0] == "pci-00:10.0", "the test disk at 00:10.0 (td ci: addr=0x10)")
     let blk = read(ns, "/svc/devmgr/drivers/\(disk[3])/status") ?? ""
     for line in blk.split(separator: "\n") { print("devices-test: \(disk[3]): \(line)") }
-    check(blk.split(separator: "\n").contains("capacity 131072 sectors (64 MiB), block 512"), "the disk's size")
+    let blkLines = blk.split(separator: "\n").map(String.init)
+    check(blkLines.first == "device virtio-blk 64 MiB", "virtio-blk serves the block service")
+    check(blkLines.contains("sessions 1"), "fs's session on the virtio disk")
+
+    // Taisce on it (M3i): fs's volume and the catalogue's songs and live query.
+    let fsStatus = read(ns, "/svc/fs/status") ?? ""
+    check(fsStatus.utf8.starts(with: "volume main\ndevice /disk/device\n".utf8), "fs's volume on the virtio disk")
+    var catalog = ""
+    let until = Clock.monotonic() + 3_000_000_000
+    while Clock.monotonic() < until {
+      catalog = read(ns, "/svc/catalog/status") ?? ""
+      if catalog.split(separator: "\n").contains("live: added /music/Anam.flac") { break }
+      sleep(until: Clock.monotonic() + 20_000_000)
+    }
+    for line in catalog.split(separator: "\n") { print("devices-test: catalog: \(line)") }
+    let songs = catalog.split(separator: "\n").map(String.init)
+    check(songs.contains("live: added /music/Anam.flac"), "the live query's update on virtio-blk")
+    check(songs.contains { $0.utf8.starts(with: "Anam.flac 1990".utf8) }, "the catalogue on virtio-blk")
     // The other virtio devices (M3k), each driver's status read through devmgr.
     func driverStatus(_ ids: String, nth: Int = 0) -> [String] {
       let found = lines.filter { $0[1] == ids }

@@ -16,8 +16,14 @@ import Sys
 import Virtio
 
 func runDriver(_ name: String, _ probe: (PCIDevice) throws(Status) -> [String]) -> Never {
+  runDriver(name, DeviceResources(take: StartupHandles.take), probe)
+}
+
+/// The same, with the device's resources already taken.
+func runDriver(_ name: String, _ resources: consuming DeviceResources, _ probe: (PCIDevice) throws(Status) -> [String])
+  -> Never
+{
   guard let raw = StartupHandles.take(ProcessArgs.info(ProcessArgs.user0)) else { exit(2) }
-  let resources = DeviceResources(take: StartupHandles.take)
   var start: Startup
   do { start = try Startup(Handle(raw: raw)) } catch { exit(2) }
 

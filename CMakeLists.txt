@@ -267,6 +267,7 @@ if(TODHCHAI_NATIVE)
     todhchai_program(virtio-${_driver} boot/programs/virtio-${_driver}/Main.swift boot/programs/virtio-host/Host.swift)
     target_link_libraries(virtio-${_driver} PRIVATE DevMgr Virtio Launch Node IPC Sys)
   endforeach()
+  target_link_libraries(virtio-blk PRIVATE Services Block)
   todhchai_program(edu boot/programs/edu/Main.swift)
   target_link_libraries(edu PRIVATE DevMgr Launch Node IPC Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.

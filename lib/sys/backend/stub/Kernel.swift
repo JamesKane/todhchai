@@ -73,6 +73,17 @@ enum Kernel {
   static func interruptWait(_ h: UInt32) throws(Status) -> Int64 { throw .notSupported }
   static func interruptTrigger(_ h: UInt32, _ timestamp: Int64) throws(Status) { throw .notSupported }
   static func interruptSetAffinity(_ h: UInt32, _ cpus: UInt64) throws(Status) { throw .notSupported }
+  static func iommuCreateStub(_ resource: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func btiCreate(_ iommu: UInt32, _ id: UInt64) throws(Status) -> UInt32 { throw .notSupported }
+  static func btiSetProperties(_ bti: UInt32, _ p: DMA.Properties) throws(Status) { throw .notSupported }
+  static func vmoCreateContiguous(_ bti: UInt32, _ size: Int, _ alignmentLog2: UInt32) throws(Status) -> UInt32 {
+    throw .notSupported
+  }
+  static func btiPin(_ bti: UInt32, _ vmo: UInt32, _ offset: Int, _ size: Int, _ options: UInt32, _ count: Int)
+    throws(Status) -> (pmt: UInt32, addresses: [UInt64])
+  { throw .notSupported }
+  static func pmtUnpin(_ pmt: UInt32) throws(Status) { throw .notSupported }
+  static func btiReleaseQuarantine(_ bti: UInt32) throws(Status) { throw .notSupported }
   static func processSelf() throws(Status) -> UInt32 { throw .notSupported }
   static func realtime() -> Int64 { 0 }
   static func futexWait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32, deadline: Int64) throws(Status) {
