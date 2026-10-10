@@ -2,14 +2,23 @@
 #
 # Tier 0 build: Embedded Swift, one tree per configuration in build/<preset>.
 # The hosted build (tier 1, tools, most tests) is SwiftPM's (Package.swift).
+#
+# Two kinds of configuration: `embedded` builds tier 0 for the host and runs
+# its test programs there; `native-<arch>` builds it for croi's user space
+# (TODHCHAI_ARCH, cmake/croi.cmake) with libsys and the programs td boot
+# puts in bootfs (build/native-<arch>/bin).
 
 cmake_minimum_required(VERSION 3.29)
 project(todhchai LANGUAGES Swift)
 enable_testing()
+if(TODHCHAI_ARCH)
+  set(TODHCHAI_NATIVE ON)
+  enable_language(ASM)
+endif()
 
 # Options every tier 0 target shares.
 function(todhchai_tier0 target)
-  target_compile_options(${target} PRIVATE -parse-as-library)
+  target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>)
 endfunction()
 
 # Each tier 0 library: its sources, built as Embedded Swift.
@@ -25,6 +34,11 @@ add_library(LibC STATIC lib/libc/string/Memory.swift lib/libc/string/Strings.swi
 set_target_properties(LibC PROPERTIES Swift_MODULE_NAME LibC)
 target_include_directories(LibC INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(LibC)
+if(TODHCHAI_NATIVE)
+  # The functions under their C names; no loop may become a call to them.
+  target_sources(LibC PRIVATE lib/libc/native/Exports.swift)
+  target_compile_options(LibC PRIVATE "SHELL:-Xllvm -disable-loop-idiom-all")
+endif()
 
 add_library(TDACPI STATIC lib/acpi/Tables.swift lib/acpi/Namespace.swift lib/acpi/Loader.swift lib/acpi/Objects.swift lib/acpi/Interpreter.swift lib/acpi/Regions.swift lib/acpi/Interfaces.swift lib/acpi/Resources.swift lib/acpi/Devices.swift)
 set_target_properties(TDACPI PROPERTIES Swift_MODULE_NAME TDACPI)
@@ -70,6 +84,36 @@ add_library(BlockRing STATIC lib/block/ring/Ring.swift)
 set_target_properties(BlockRing PROPERTIES Swift_MODULE_NAME BlockRing)
 target_include_directories(BlockRing INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(BlockRing)
+
+# bootfs images: td writes them, the native launcher reads them.
+add_library(Bootfs STATIC lib/bootfs/Bootfs.swift)
+set_target_properties(Bootfs PROPERTIES Swift_MODULE_NAME Bootfs)
+target_include_directories(Bootfs INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(Bootfs)
+
+if(TODHCHAI_NATIVE)
+  # libsys: a native process's start, stdout and heap (lib/sys/native).
+  add_library(LibSys STATIC
+    lib/sys/native/entry/${TODHCHAI_ARCH}.S
+    lib/sys/native/Start.swift lib/sys/native/Stdout.swift lib/sys/native/Heap.swift)
+  set_target_properties(LibSys PROPERTIES Swift_MODULE_NAME LibSys)
+  target_include_directories(LibSys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/sys/native/include
+                                    INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+  target_link_libraries(LibSys PUBLIC LibC)
+  todhchai_tier0(LibSys)
+
+  # A program for bootfs: bin/<name>, linked with libsys.
+  function(todhchai_program name)
+    add_executable(${name} ${ARGN})
+    set_target_properties(${name} PROPERTIES Swift_MODULE_NAME ${name}
+                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    target_link_libraries(${name} PRIVATE LibSys)
+    todhchai_tier0(${name})
+  endfunction()
+
+  todhchai_program(launcher boot/programs/launcher/Main.swift)
+  return()
+endif()
 
 # Embedded test programs, run on the host by ctest.
 add_executable(wire-smoke tests/embedded/WireSmoke.swift)

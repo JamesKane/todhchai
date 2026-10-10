@@ -73,7 +73,8 @@ let package = Package(
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
 
     // The F track's libc (architecture §20), tier 0, tested against the host's.
-    .target(name: "LibC", path: "lib/libc", exclude: ["symbols.tsv"], swiftSettings: tier0),
+    // native/ exports the functions under their C names: croi's build only.
+    .target(name: "LibC", path: "lib/libc", exclude: ["symbols.tsv", "native"], swiftSettings: tier0),
     .testTarget(name: "LibCTests", dependencies: ["LibC"], path: "tests/libc"),
 
     // The trace format, the SDK's Trace module (the writer) and the reader
@@ -168,7 +169,8 @@ let package = Package(
 
     // td: the developer tool (bench, ci); Bench is its testable core.
     .target(name: "Bench", dependencies: ["TraceFormat", "TraceReader"], path: "lib/bench"),
-    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader", "ABIGen", "TDACPI"], path: "tools/td"),
+    .executableTarget(name: "td", dependencies: ["Bench", "TraceFormat", "TraceReader", "ABIGen", "TDACPI", "Bootfs"],
+                      path: "tools/td"),
     .testTarget(name: "BenchTests", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tests/bench"),
 
     // Each milestone's exit test (docs/milestones/).
@@ -198,6 +200,9 @@ let package = Package(
     // The block service (architecture §11): rings in shared memory (tier
     // 0), the Device protocol, and the hosted backend over an image file.
     .target(name: "BlockRing", path: "lib/block/ring", swiftSettings: tier0),
+    // bootfs images (M3): td writes them, the native launcher reads them.
+    .target(name: "Bootfs", path: "lib/bootfs", swiftSettings: tier0),
+    .testTarget(name: "BootfsTests", dependencies: ["Bootfs"], path: "tests/bootfs"),
     .target(name: "Block", dependencies: ["BlockRing", "Node", "IPC", "TDLinux"], path: "lib/block",
             exclude: ["ring", "idl"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "BlockTests", dependencies: ["Block", "BlockRing", "HostedPrograms", "Launch", "Node", "IPC", "IDL"],

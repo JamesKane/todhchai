@@ -1,26 +1,133 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 29, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 29,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "embedded",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "toolchainFile": "${sourceDir}/cmake/embedded.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "native-amd64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/croi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TODHCHAI_ARCH": "amd64"
+      }
+    },
+    {
+      "name": "native-arm64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/croi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TODHCHAI_ARCH": "arm64"
+      }
+    },
+    {
+      "name": "native-rv64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/croi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TODHCHAI_ARCH": "rv64"
+      }
     }
   ],
-  "buildPresets": [{ "name": "embedded", "configurePreset": "embedded" }],
+  "buildPresets": [
+    {
+      "name": "embedded",
+      "configurePreset": "embedded"
+    },
+    {
+      "name": "native-amd64",
+      "configurePreset": "native-amd64"
+    },
+    {
+      "name": "native-arm64",
+      "configurePreset": "native-arm64"
+    },
+    {
+      "name": "native-rv64",
+      "configurePreset": "native-rv64"
+    }
+  ],
   "testPresets": [
-    { "name": "embedded", "configurePreset": "embedded", "output": { "outputOnFailure": true } }
+    {
+      "name": "embedded",
+      "configurePreset": "embedded",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ],
   "workflowPresets": [
     {
       "name": "embedded",
       "steps": [
-        { "type": "configure", "name": "embedded" },
-        { "type": "build", "name": "embedded" },
-        { "type": "test", "name": "embedded" }
+        {
+          "type": "configure",
+          "name": "embedded"
+        },
+        {
+          "type": "build",
+          "name": "embedded"
+        },
+        {
+          "type": "test",
+          "name": "embedded"
+        }
+      ]
+    },
+    {
+      "name": "native-amd64",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "native-amd64"
+        },
+        {
+          "type": "build",
+          "name": "native-amd64"
+        }
+      ]
+    },
+    {
+      "name": "native-arm64",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "native-arm64"
+        },
+        {
+          "type": "build",
+          "name": "native-arm64"
+        }
+      ]
+    },
+    {
+      "name": "native-rv64",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "native-rv64"
+        },
+        {
+          "type": "build",
+          "name": "native-rv64"
+        }
       ]
     }
   ]

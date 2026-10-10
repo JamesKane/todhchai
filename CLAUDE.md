@@ -6,10 +6,11 @@ milestone's steps are in `docs/milestones/`.
 ## Build
 
 The toolchain is pinned by `.swift-version` (6.4.0, as croi's) and found
-through swiftly. There are two builds, and each step keeps both passing:
+through swiftly. There are three builds, and each step keeps them passing:
 
     swift build && swift test             # hosted: tier 1, tools, tests (SwiftPM)
     cmake --workflow --preset embedded    # tier 0 as Embedded Swift: build + ctest
+    .build/debug/td boot --test           # tier 0 on croi in QEMU (see "Native")
 
 Before committing, run everything a change must pass, including the
 build-time budgets (docs/performance.md):
@@ -38,6 +39,31 @@ quiet, dedicated build server runs `--enforce`.
   (`cmake/embedded.cmake`), which proves them Embedded-clean, and their
   test programs in `tests/embedded/` run on the host. A tier 0 library
   is listed in both `Package.swift` and `CMakeLists.txt`.
+
+## Native (croi)
+
+M3 runs tier 0 on croi (`docs/milestones/M3.md`). `td boot` builds croi's
+loader and kernel from `../croi` as it is checked out (no pin: the two
+become one repository later) into `build/croi/<arch>`, and our tree with
+the `native-<arch>` presets (`cmake/croi.cmake`: croi's triples and user
+flags, programs linked by ld.lld at 0x1000000) into `build/native-<arch>`.
+It writes a bootfs of every program in `build/native-<arch>/bin`
+(`lib/bootfs`, Zircon's format, byte-identical to croi's `mkbootfs.py`),
+lays out the ESP in `build/boot/<arch>/esp` with
+`userboot.next=bin/launcher`, and runs QEMU (KVM on amd64):
+
+    .build/debug/td boot [--arch amd64|arm64|rv64] [--test] [--next bin/P] [-- QEMU ARGS]
+
+`--test` passes when userboot reports the program exited with 0; the
+console is in `bench/out/boot/<arch>/console.log`, and a croi build failure
+or panic is reported as croi's. `td ci` builds all three arches and boots
+amd64. A program is `todhchai_program(name sources)` in `CMakeLists.txt`
+(sources in `boot/programs/`), linked with `libsys` (`lib/sys/native`, ours:
+`_start` and the syscall instruction in assembly, then processargs, stdout
+over debuglog and a heap over VMOs in Swift). Embedded Swift has no
+`CommandLine`: use `Arguments.strings`, `Environment` and
+`StartupHandles.take`. Our libc exports `mem*` and `str*` under their C
+names natively only (`lib/libc/native`, never in SwiftPM's build).
 
 ## IPC protocols
 
@@ -297,11 +323,18 @@ cases, comparing results and whole buffers.
   compiling Embedded atomics. Call 6.4.0's `swiftc` by its path there.
 - **Send test signals to the process** (`kill(getpid(), sig)`), not the
   thread: the test runner's worker threads block signals.
+- **rv64 native code is `lp64`, not croi's `lp64d`.** The toolchain's
+  prebuilt rv64 Embedded libraries (the Unicode tables) are soft-float ABI,
+  and ld.lld won't link the two; we reach croi only through syscalls.
+- **A CMake option for Swift must be guarded in a target with assembly**
+  (`$<$<COMPILE_LANGUAGE:Swift>:...>`), or clang gets it.
 
 ## Layout
 
 - `lib/`    libraries, by component (`lib/ipc/wire/` is `IPCWire`, tier 0).
 - `tools/`  host tools (`idlc`, `td`).
+- `boot/`   what boots: the hosted boot's manifests, and the native
+            programs (`boot/programs/`).
 - `tests/`  Swift Testing suites by component; `tests/embedded/` holds the
             Embedded test programs.
 - `cmake/`  the Embedded toolchain settings.

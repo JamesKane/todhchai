@@ -1,0 +1,4 @@
+module TDNative {
+  header "td_native.h"
+  export *
+}

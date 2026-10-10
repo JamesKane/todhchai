@@ -22,6 +22,9 @@
 //   td libc-symbols
 //       Lists what the toolchain's Swift runtime imports from the C and
 //       C++ runtimes, into lib/libc/symbols.tsv.
+//   td boot [--arch A] [--test] [--timeout S] [--next PROGRAM] [-- QEMU ARGS]
+//       Builds croi (../croi) and the native tree, writes the bootfs and
+//       boots it in QEMU (BootCommand.swift).
 //
 // Run from the repository root. Build td first and run its binary, so the
 // builds td starts don't wait on SwiftPM's lock:
@@ -36,10 +39,11 @@ guard FileManager.default.fileExists(atPath: "Package.swift"),
 else { fail("run td from the repository root") }
 
 var args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: td bench|ci|trace|libc-symbols [options]") }
+guard let command = args.first else { fail("usage: td bench|ci|boot|trace|acpi|shaders|libc-symbols [options]") }
 args.removeFirst()
 if command == "trace" { exit(traceCommand(args) ? 0 : 1) }
 if command == "acpi" { exit(acpiCommand(args) ? 0 : 1) }
+if command == "boot" { exit(bootCommand(args) ? 0 : 1) }
 
 var options = BenchOptions()
 var runBench = true
@@ -69,5 +73,5 @@ case "bench": exit(bench(options) ? 0 : 1)
 case "ci": exit(ci(bench: runBench ? options : nil) ? 0 : 1)
 case "libc-symbols": exit(libcSymbols() ? 0 : 1)
 case "shaders": exit(shaders(check: args.contains("--check")) ? 0 : 1)
-default: fail("unknown command \(command); td has bench, ci, shaders, trace, acpi and libc-symbols")
+default: fail("unknown command \(command); td has bench, ci, boot, shaders, trace, acpi and libc-symbols")
 }

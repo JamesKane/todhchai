@@ -29,6 +29,11 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("hosted-build", [["swift", "build"]]),
     ("hosted-tests", [["swift", "test"]]),
     ("embedded", [["cmake", "--workflow", "--preset", "embedded"]]),
+    // Tier 0 for croi's three arches; amd64 boots (M3, decided).
+    ("native-amd64", [["cmake", "--workflow", "--preset", "native-amd64"]]),
+    ("native-arm64", [["cmake", "--workflow", "--preset", "native-arm64"]]),
+    ("native-rv64", [["cmake", "--workflow", "--preset", "native-rv64"]]),
+    ("boot-amd64", [[".build/debug/td", "boot", "--test"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))
