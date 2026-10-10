@@ -55,6 +55,10 @@ public final class PCIDevice {
   public let capabilities: [Capability]
   public let bars: [MappedBAR]
   public let device: Device<BARWindow>
+  /// Where queues are notified (§4.1.4.4): queue_notify_off times
+  /// `notifyMultiplier` into this window.
+  public let notify: BARWindow?
+  public let notifyMultiplier: UInt32
 
   public init(_ resources: borrowing DeviceResources) throws(Status) {
     let config = try resources.mapConfig()
@@ -80,6 +84,8 @@ public final class PCIDevice {
     guard let common = window(.common) else { throw .notSupported }
     // A device with no configuration of its own gets an empty window.
     let device = window(.device) ?? common
+    notify = window(.notify)
+    notifyMultiplier = caps.first { $0.kind == .notify }?.multiplier ?? 0
     capabilities = caps
     self.bars = bars
     self.device = Device(common: common, device: device)

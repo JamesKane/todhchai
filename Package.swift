@@ -219,8 +219,9 @@ let package = Package(
             swiftSettings: tier0 + [.enableExperimentalFeature("Volatile")]),
     // virtio over PCI (M3i): the transport, split queues, virtio-blk's
     // requests.
-    .target(name: "Virtio", dependencies: ["DevMgr", "Sys"], path: "lib/virtio", swiftSettings: tier0),
-    .testTarget(name: "VirtioTests", dependencies: ["Virtio"], path: "tests/virtio"),
+    .target(name: "Virtio", dependencies: ["Block", "BlockRing", "DevMgr", "Sys"], path: "lib/virtio",
+            swiftSettings: tier0),
+    .testTarget(name: "VirtioTests", dependencies: ["Virtio", "Block", "BlockRing", "Sys", "Taisce"], path: "tests/virtio"),
     .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "tests/devmgr"),
     // ELF executables (M3d): the native loader reads programs from bootfs.
     .target(name: "Elf", path: "lib/elf", swiftSettings: tier0),

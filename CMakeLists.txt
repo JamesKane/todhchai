@@ -220,7 +220,7 @@ file(GLOB _virtio_sources ${CMAKE_CURRENT_SOURCE_DIR}/lib/virtio/*.swift)
 add_library(Virtio STATIC ${_virtio_sources})
 set_target_properties(Virtio PROPERTIES Swift_MODULE_NAME Virtio)
 target_include_directories(Virtio INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(Virtio PUBLIC DevMgr Sys)
+target_link_libraries(Virtio PUBLIC Block BlockRing DevMgr Sys)
 todhchai_tier0(Virtio)
 
 # bootfs images: td writes them, the native launcher reads them.
