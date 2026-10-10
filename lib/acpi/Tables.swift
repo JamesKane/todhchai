@@ -176,6 +176,42 @@ public struct FADT: Sendable {
   public var isHardwareReduced: Bool { flags & (1 << 20) != 0 }
 }
 
+/// The PCI Express memory-mapped configuration table (PCI Firmware 3.2
+/// §4.1.2): each segment's ECAM window. After the header, 8 reserved
+/// bytes, then 16 bytes an allocation: base address, segment group, start
+/// and end bus.
+public struct MCFG: Sendable {
+  public struct Window: Equatable, Sendable {
+    public var base: UInt64
+    public var segment: UInt16
+    public var startBus: UInt8
+    public var endBus: UInt8
+
+    public init(base: UInt64, segment: UInt16, startBus: UInt8, endBus: UInt8) {
+      self.base = base
+      self.segment = segment
+      self.startBus = startBus
+      self.endBus = endBus
+    }
+  }
+
+  public static let signature = Signature("MCFG")
+  public let windows: [Window]
+
+  public init(_ table: Table) throws(ACPIError) {
+    guard table.signature == Self.signature else { throw .badSignature }
+    guard table.length >= Table.headerSize + 8 else { throw .truncated }
+    var windows: [Window] = []
+    var at = Table.headerSize + 8
+    while at + 16 <= table.length {
+      let b = table.bytes
+      windows.append(Window(base: b.le64(at), segment: b.le16(at + 8), startBus: b[at + 10], endBus: b[at + 11]))
+      at += 16
+    }
+    self.windows = windows
+  }
+}
+
 /// Every table a machine's firmware describes: the DSDT, its SSDTs, and
 /// the rest by signature.
 public struct TableSet: Sendable {

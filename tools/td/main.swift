@@ -23,7 +23,7 @@
 //       Lists what the toolchain's Swift runtime imports from the C and
 //       C++ runtimes, into lib/libc/symbols.tsv.
 //   td boot [--arch A] [--test] [--timeout S] [--next PROGRAM] [-- QEMU ARGS]
-//       Builds croi (../croi) and the native tree, writes the bootfs and
+//       Builds croi (../croi's last commit) and the native tree, writes the bootfs and
 //       boots it in QEMU (BootCommand.swift).
 //
 // Run from the repository root. Build td first and run its binary, so the
@@ -47,7 +47,6 @@ if command == "boot" { exit(bootCommand(args) ? 0 : 1) }
 
 var options = BenchOptions()
 var runBench = true
-var ciKeepCroi = false
 var i = 0
 while i < args.count {
   func number() -> Int {
@@ -63,7 +62,6 @@ while i < args.count {
   case "--enforce": options.enforce = true
   case "--programs": options.programs = true
   case "--no-bench" where command == "ci": runBench = false
-  case "--keep-croi" where command == "ci": ciKeepCroi = true
   case "--check" where command == "shaders": break
   default: fail("unknown option \(args[i])")
   }
@@ -72,7 +70,7 @@ while i < args.count {
 
 switch command {
 case "bench": exit(bench(options) ? 0 : 1)
-case "ci": exit(ci(bench: runBench ? options : nil, keepCroi: ciKeepCroi) ? 0 : 1)
+case "ci": exit(ci(bench: runBench ? options : nil) ? 0 : 1)
 case "libc-symbols": exit(libcSymbols() ? 0 : 1)
 case "shaders": exit(shaders(check: args.contains("--check")) ? 0 : 1)
 default: fail("unknown command \(command); td has bench, ci, boot, shaders, trace, acpi and libc-symbols")

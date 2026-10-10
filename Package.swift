@@ -202,6 +202,13 @@ let package = Package(
     // bootfs images (M3): td writes them, the native launcher reads them.
     .target(name: "Bootfs", path: "lib/bootfs", swiftSettings: tier0),
     .testTarget(name: "BootfsTests", dependencies: ["Bootfs"], path: "tests/bootfs"),
+    // PCI configuration space and enumeration (M3g), and devmgr's model:
+    // devices, bind rules, what a driver host is granted.
+    .target(name: "PCI", path: "lib/pci", swiftSettings: tier0 + [.enableExperimentalFeature("Volatile")]),
+    .testTarget(name: "PCITests", dependencies: ["PCI", "TDACPI"], path: "tests/pci"),
+    .target(name: "DevMgr", dependencies: ["PCI", "Sys"], path: "lib/devmgr",
+            swiftSettings: tier0 + [.enableExperimentalFeature("Volatile")]),
+    .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch"], path: "tests/devmgr"),
     // ELF executables (M3d): the native loader reads programs from bootfs.
     .target(name: "Elf", path: "lib/elf", swiftSettings: tier0),
     .testTarget(name: "ElfTests", dependencies: ["Elf"], path: "tests/elf"),

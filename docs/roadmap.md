@@ -290,5 +290,7 @@ None remain open; each is recorded under "Decided".
   modules are not used.
 - **Tier 0 runtime:** our own (`libsys`), not croi's user runtime
   (2026-10-10, [milestones/M3.md](milestones/M3.md)).
-- **croi in the build:** Todhchai builds `../croi` at its head, with no pin;
-  the two projects will become one repository (2026-10-10).
+- **croi in the build:** Todhchai builds `../croi`'s last commit (HEAD,
+  never its working tree), with no pin; the two projects will become one
+  repository (2026-10-10; the last commit rather than the tree since
+  2026-10-10, M3g).

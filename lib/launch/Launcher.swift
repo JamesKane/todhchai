@@ -92,6 +92,10 @@ public final class Launcher: @unchecked Sendable {
   /// their processargs info words (natively; hosted processes have only
   /// their Startup): a trace session's region (M3f). Set before `start`.
   public var extraStartupHandles: ((_ service: String) -> [(info: UInt32, handle: UInt32)])?
+  /// What `resource` and `programs` grant (natively, from userboot), as
+  /// raw handles the launcher owns: `allow` them before `start`.
+  var grantableResources: [(kind: ResourceKind, handle: UInt32)] = []
+  var grantableBootfs: UInt32 = 0
   /// The launcher's two threads (raw handles; 0 if not started).
   var dispatcherThread: UInt32 = 0
   var supervisorThread: UInt32 = 0
@@ -107,6 +111,23 @@ public final class Launcher: @unchecked Sendable {
     // A strong capture (Embedded Swift has no unowned): stop() removes the
     // leaf, which ends the cycle.
     statusNode = tree.text("status", read: { [self] in status })
+  }
+
+  deinit {
+    for r in grantableResources { close(raw: r.handle) }
+    if grantableBootfs != 0 { close(raw: grantableBootfs) }
+  }
+
+  /// A resource that manifests may grant with `resource KIND`.
+  public func allow(resource kind: ResourceKind, _ handle: consuming Handle) {
+    let raw = handle.release()
+    locked { grantableResources.append((kind, raw)) }
+  }
+
+  /// The bootfs that manifests may grant with `programs`.
+  public func allow(bootfs: consuming Handle) {
+    let raw = bootfs.release()
+    locked { grantableBootfs = raw }
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
@@ -131,6 +152,12 @@ public final class Launcher: @unchecked Sendable {
     var manifests: [Manifest] = []
     for f in files { manifests.append(try Manifest(file: f.path, text: f.text)) }
     let order = try launchOrder(manifests, programs: programs.map { $0.name })
+    for m in manifests {
+      for r in m.resources where !locked({ grantableResources.contains { $0.kind == r.kind } }) {
+        throw m.error(r.line, "no '\(r.kind.name)' resource to grant")
+      }
+      if m.programsLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.programsLine, "no bootfs to grant") }
+    }
     startThreads()
     for m in order {
       let service: Service
@@ -201,9 +228,10 @@ public final class Launcher: @unchecked Sendable {
       throw failed("\(error)")
     }
     let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
+    let extra = (extraStartupHandles?(m.service) ?? []) + (try granted(s))
     do throws(Status) {
       _ = try Process.start(process, entry: programs.first { $0.name == m.program }!.entry, arg: processEnd,
-                            extra: extraStartupHandles?(m.service) ?? [])
+                            extra: extra)
     } catch {
       throw failed("\(error)")
     }
@@ -225,6 +253,38 @@ public final class Launcher: @unchecked Sendable {
         svc.mount(m.service, channel, removeWhenGone: false)
       }
     }
+  }
+
+  /// The handles `resource` and `programs` grant an instance of `s`, with
+  /// their processargs info: duplicates of the launcher's, and a new job
+  /// under the service's.
+  func granted(_ s: Service) throws(LaunchError) -> [(info: UInt32, handle: UInt32)] {
+    let m = s.manifest
+    var extra: [(info: UInt32, handle: UInt32)] = []
+    func duplicate(_ raw: UInt32, _ line: Int) throws(LaunchError) -> UInt32 {
+      let borrowed = Handle(raw: raw)  // the launcher still owns it
+      let copy = try? borrowed.duplicate().release()
+      _ = borrowed.release()
+      guard let copy else {
+        for e in extra { close(raw: e.handle) }
+        throw m.error(line, "can't grant it")
+      }
+      return copy
+    }
+    for r in m.resources {
+      let raw = locked { grantableResources.first { $0.kind == r.kind }!.handle }
+      extra.append((HandleType.info(HandleType.resource(r.kind)), try duplicate(raw, r.line)))
+    }
+    if m.programsLine != 0 {
+      extra.append((HandleType.info(HandleType.vmoBootfs), try duplicate(locked({ grantableBootfs }), m.programsLine)))
+      do throws(Status) {
+        extra.append((HandleType.info(HandleType.jobDefault), try Job.create(parent: s.job).release()))
+      } catch {
+        for e in extra { close(raw: e.handle) }
+        throw m.error(m.programsLine, "can't make a job: \(error)")
+      }
+    }
+    return extra
   }
 
   /// Whether the process said it was ready before it ended or time ran out.
@@ -312,6 +372,18 @@ public final class Launcher: @unchecked Sendable {
     else { throw LaunchError("no running service '\(service)'") }
     do throws(NodeIPC.NodeClient.Failure) {
       return NodeIPC.NodeClient(channel: try export.open([]))
+    } catch {
+      throw LaunchError("service '\(service)' doesn't answer: \(error)")
+    }
+  }
+
+  /// A channel to a running service's tree, to mount elsewhere (devmgr's
+  /// tree holds its driver hosts').
+  public func channel(to service: String) throws(LaunchError) -> Handle {
+    guard let s = locked({ services.first { $0.manifest.service == service } }), let export = locked({ s.export })
+    else { throw LaunchError("no running service '\(service)'") }
+    do throws(NodeIPC.NodeClient.Failure) {
+      return try export.open([])
     } catch {
       throw LaunchError("service '\(service)' doesn't answer: \(error)")
     }

@@ -3,10 +3,11 @@
 // td boot: Todhchai on croi in QEMU (M3).
 //
 //   td boot [--arch amd64|arm64|rv64] [--test] [--timeout S] [--next PROGRAM]
-//           [--manifests DIR] [--cmdline WORDS] [--keep-croi] [-- QEMU ARGS]
+//           [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]
 //
-// Builds croi's loader and kernel from ../croi as it is checked out (M3
-// decided: no pin) into build/croi/<arch>, and our native tree
+// Builds croi's loader and kernel from ../croi's last commit (M3 decided:
+// no pin; its working tree, edited beside us, is never built), exported
+// to build/croi/src, into build/croi/<arch>, and our native tree
 // (build/native-<arch>). Writes a bootfs holding every program the native
 // build made (bin/<name>), and lays out an EFI system partition in
 // build/boot/<arch>/esp with croi's loader and kernel, the bootfs, and a
@@ -31,9 +32,6 @@ struct BootOptions {
   var next = "bin/launcher"
   var manifests: String?
   var cmdline: [String] = []
-  /// Boot the croi last built here instead of building it again: croi is
-  /// edited beside us, and its tree may not build at the moment.
-  var keepCroi = false
   var qemuArgs: [String] = []
 }
 
@@ -55,11 +53,10 @@ func bootCommand(_ args: [String]) -> Bool {
     case "--next": o.next = value()
     case "--manifests": o.manifests = value()
     case "--cmdline": o.cmdline += value().split(separator: " ").map(String.init)
-    case "--keep-croi": o.keepCroi = true
     case "--":
       o.qemuArgs = Array(args[(i + 1)...])
       i = args.count
-    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [--keep-croi] [-- QEMU ARGS]")
+    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]")
     }
     i += 1
   }
@@ -70,28 +67,22 @@ func bootCommand(_ args: [String]) -> Bool {
 func boot(_ o: BootOptions) -> Bool {
   let logs = "bench/out/boot/\(o.arch)"
   makeDirectory(logs)
-  let croiRevision = capture(["git", "-C", "../croi", "describe", "--always", "--dirty"]).map(trimmed) ?? "unknown"
+  guard let croiRevision = croiSource(log: "\(logs)/croi.log") else { return false }
 
-  // croi, as checked out: a failure here is croi's, and said so.
+  // croi's last commit: a failure here is croi's, and said so.
   let croi = "build/croi/\(o.arch)"
   let root = FileManager.default.currentDirectoryPath
   if !FileManager.default.fileExists(atPath: "\(croi)/build.ninja") {
-    let configure = ["cmake", "-S", "../croi", "-B", croi, "-G", "Ninja",
-                     "-DCMAKE_TOOLCHAIN_FILE=\(root)/../croi/cmake/toolchain.cmake", "-DCROI_ARCH=\(o.arch)",
+    let configure = ["cmake", "-S", croiSourceDirectory, "-B", croi, "-G", "Ninja",
+                     "-DCMAKE_TOOLCHAIN_FILE=\(root)/\(croiSourceDirectory)/cmake/toolchain.cmake", "-DCROI_ARCH=\(o.arch)",
                      "-DCMAKE_BUILD_TYPE=RelWithDebInfo"]
     guard run(configure, log: "\(logs)/croi.log").ok else {
-      complain("boot: croi (../croi at \(croiRevision)) didn't configure: see \(logs)/croi.log")
+      complain("boot: croi \(croiRevision) didn't configure: see \(logs)/croi.log")
       return false
     }
   }
-  // croi is worked on beside us: a file edited mid-build fails it once
-  // ("modified during the build"), and a second build settles it.
-  let kept = o.keepCroi && FileManager.default.fileExists(atPath: "\(croi)/kernel/kernel.elf")
-  var built = kept || run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok
-  if !built { built = run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok }
-  if kept { say("td boot: croi as last built in \(croi) (--keep-croi)") }
-  guard built else {
-    complain("boot: croi (../croi at \(croiRevision)) didn't build: see \(logs)/croi.log")
+  guard run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok else {
+    complain("boot: croi \(croiRevision) didn't build: see \(logs)/croi.log")
     return false
   }
 
@@ -154,6 +145,44 @@ func boot(_ o: BootOptions) -> Bool {
   }
   return bootTest(qemu + ["-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot"],
                   options: o, console: "\(logs)/console.log", croiRevision: croiRevision)
+}
+
+/// Where croi's last commit is exported to, and built from.
+let croiSourceDirectory = "build/croi/src"
+
+/// Exports ../croi's HEAD to build/croi/src unless it is there already,
+/// and gives its short revision (with a note if ../croi's tree has changes
+/// of its own, which aren't built). A new revision is extracted afresh,
+/// its files dated now, so every build tree rebuilds from it; build trees
+/// configured from an older layout (../croi itself) are made again.
+func croiSource(log: String) -> String? {
+  guard let revision = capture(["git", "-C", "../croi", "rev-parse", "--short", "HEAD"]).map(trimmed) else {
+    complain("boot: ../croi isn't a git repository")
+    return nil
+  }
+  let stamp = "\(croiSourceDirectory)/.td-revision"
+  if (try? String(contentsOfFile: stamp, encoding: .utf8)).map(trimmed) != revision {
+    removeTree(croiSourceDirectory)
+    makeDirectory(croiSourceDirectory)
+    let archive = "build/croi/src.tar"
+    guard run(["git", "-C", "../croi", "archive", "--format=tar", "-o", "\(FileManager.default.currentDirectoryPath)/\(archive)", "HEAD"],
+              log: log).ok,
+      run(["tar", "-x", "-m", "-f", archive, "-C", croiSourceDirectory], log: log).ok
+    else {
+      complain("boot: couldn't export croi \(revision): see \(log)")
+      return nil
+    }
+    removeTree(archive)
+    for arch in ["amd64", "arm64", "rv64"] {
+      let cache = "build/croi/\(arch)/CMakeCache.txt"
+      if let text = try? String(contentsOfFile: cache, encoding: .utf8), !text.contains(croiSourceDirectory) {
+        removeTree("build/croi/\(arch)")
+      }
+    }
+    try? Data("\(revision)\n".utf8).write(to: URL(filePath: stamp))
+  }
+  let dirty = !(capture(["git", "-C", "../croi", "status", "--porcelain", "--untracked-files=no"]) ?? "").isEmpty
+  return dirty ? "\(revision) (committed; ../croi's uncommitted changes aren't built)" : revision
 }
 
 /// QEMU for `arch` with edk2's firmware, as croi's tools/qemu.sh runs it;

@@ -16,5 +16,9 @@ int64_t td_syscall6(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2, uint
 void *td_thread_block(void);
 void td_set_thread_pointer(void *block);
 
+// amd64's I/O port instructions (in, out) of `width` bytes: 1, 2 or 4.
+uint32_t td_port_in(uint16_t port, uint32_t width);
+void td_port_out(uint16_t port, uint32_t width, uint32_t value);
+
 // The program's own entry: Swift's @main emits it.
 int main(int argc, char **argv);

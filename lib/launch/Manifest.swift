@@ -12,11 +12,18 @@
 //     srv                     # the session board, at /srv
 //     seal                    # its namespace is sealed
 //     restart on-failure      # never (the default), on-failure or always
+//     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
+//     programs                # it starts programs from bootfs, in a job under its own
+//
+// `resource` and `programs` are what devmgr is given (M3g): the launcher's
+// own ranged root resource of the kind, and bootfs with a job, so that it
+// can start driver hosts. A launcher that has none to give refuses them.
 //
 // Anything wrong stops the launch with its file and line: Plan 9 ignores
 // errors in namespace files, and sandboxes come out quietly wrong.
 
 import Node
+import Sys
 
 /// A manifest error, with where it is.
 public struct LaunchError: Error, Equatable, CustomStringConvertible, Sendable {
@@ -54,6 +61,10 @@ public struct Manifest: Sendable {
   public var srv = false
   public var sealed = false
   public var restart = RestartPolicy.never
+  /// `resource` lines: the kinds of hardware granted.
+  public var resources: [(kind: ResourceKind, line: Int)] = []
+  /// `programs`: its line, or 0.
+  public var programsLine = 0
   public var serviceLine = 0
 
   /// "file:line: message"
@@ -128,6 +139,16 @@ public struct Manifest: Sendable {
           throw error(lineNumber, "'restart' takes never, on-failure or always")
         }
         restart = policy
+      case "resource":
+        try count(1...1)
+        guard let kind = ResourceKind(name: rest[0]) else {
+          throw error(lineNumber, "'resource' takes mmio, irq, ioport, smc or system")
+        }
+        guard !resources.contains(where: { $0.kind == kind }) else { throw error(lineNumber, "a second 'resource \(rest[0])'") }
+        resources.append((kind, lineNumber))
+      case "programs":
+        try count(0...0)
+        programsLine = lineNumber
       default:
         throw error(lineNumber, "unknown directive '\(directive)'")
       }

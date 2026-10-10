@@ -44,6 +44,41 @@ td_thread_block:
 td_set_thread_pointer:
   ud2
 
+// td_port_in(port, width) and td_port_out(port, width, value): the I/O
+// port instructions, for ports the process requested (ioports_request);
+// width 1, 2 or 4.
+.section .text.td_port_in, "ax"
+.globl td_port_in
+td_port_in:
+  mov %edi, %edx
+  xor %eax, %eax
+  cmp $1, %esi
+  je 1f
+  cmp $2, %esi
+  je 2f
+  in %dx, %eax
+  ret
+1:in %dx, %al
+  ret
+2:in %dx, %ax
+  ret
+
+.section .text.td_port_out, "ax"
+.globl td_port_out
+td_port_out:
+  mov %edx, %eax
+  mov %edi, %edx
+  cmp $1, %esi
+  je 1f
+  cmp $2, %esi
+  je 2f
+  out %eax, %dx
+  ret
+1:out %al, %dx
+  ret
+2:out %ax, %dx
+  ret
+
 // The stack protector's canary: fixed until croi has a random source to
 // draw one from at start.
 .section .data.__stack_chk_guard, "aw"

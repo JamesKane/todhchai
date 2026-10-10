@@ -43,8 +43,9 @@ quiet, dedicated build server runs `--enforce`.
 ## Native (croi)
 
 M3 runs tier 0 on croi (`docs/milestones/M3.md`). `td boot` builds croi's
-loader and kernel from `../croi` as it is checked out (no pin: the two
-become one repository later) into `build/croi/<arch>`, and our tree with
+loader and kernel from `../croi`'s last commit, never its working tree
+(exported to `build/croi/src`; no pin: the two become one repository
+later) into `build/croi/<arch>`, and our tree with
 the `native-<arch>` presets (`cmake/croi.cmake`: croi's triples and user
 flags, programs linked by ld.lld at 0x1000000) into `build/native-<arch>`.
 It writes a bootfs of every program in `build/native-<arch>/bin`
@@ -76,6 +77,25 @@ a ramdisk, fs, catalog). N0's programs are one body each in `lib/services`
 (tier 0), which the hosted programs (`lib/hosted`) and the native ones
 (`boot/programs/<name>`) wrap. Our libc exports `mem*` and `str*` under their C
 names natively only (`lib/libc/native`, never in SwiftPM's build).
+
+## devmgr and drivers
+
+`bin/devmgr` (`boot/programs/devmgr`, M3g) maps the ECAM window
+(`--ecam BASE` until croi's K9b passes the MCFG), enumerates PCI
+(`lib/pci`, tier 0: `ConfigSpace`, `ECAM`, `enumerate`), binds drivers by
+the Swift predicates in `lib/devmgr/Rules.swift` (first match wins) and
+runs a driver host per bound device with its own `Launcher`, mounting each
+host's tree at `drivers/SERVICE`. A manifest grants hardware with
+`resource mmio|irq|ioport|smc|system` (the launcher's ranged roots from
+userboot) and `programs` (bootfs and a job under the service's). A host
+gets exactly its device's resources as `HandleType.device` startup
+handles (argument 0-5 a BAR, 0x10 its config space): read them with
+`DeviceResources(take: StartupHandles.take)`, and its registers through
+`Registers` (volatile). Device registers are read with `_Volatile`, which
+needs `-enable-experimental-feature Volatile` on the target. The test is
+`td boot --test --manifests tests/native/devices --cmdline
+launcher.until=devices-test -- -device edu` (QEMU's edu device and
+`bin/edu`), in `td ci`.
 
 ## IPC protocols
 
@@ -178,8 +198,7 @@ debuglog and `td boot` puts them in `bench/out/boot/<arch>/trace`, which
 `td trace summary` also reads as one timeline (calls through croi). N0's
 run: `td boot --test --next bin/n0-exit --manifests boot/native --cmdline
 n0.trace=ipc,app,mark`. The console carries ~110 KB/s: keep recordings
-small. `--keep-croi` boots the croi last built when ../croi's tree doesn't
-build.
+small.
 
 ## Wayland
 

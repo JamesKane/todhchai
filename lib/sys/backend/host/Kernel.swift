@@ -87,6 +87,21 @@ enum Kernel {
   }
   static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) { try? unsafe k.vmoUnmap(address) }
 
+  // Resources and physical memory: none hosted.
+  static func vmoCreatePhysical(_ resource: UInt32, _ address: UInt64, _ size: Int) throws(Status) -> UInt32 {
+    throw .notSupported
+  }
+  static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) { throw .notSupported }
+  static func resourceCreate(_ parent: UInt32, _ options: UInt32, _ base: UInt64, _ size: UInt64, _ name: String)
+    throws(Status) -> UInt32
+  { throw .notSupported }
+  static func resourceInfo(_ h: UInt32) throws(Status) -> ResourceInfo { throw .notSupported }
+  static func ioportsRequest(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) { throw .notSupported }
+  static func ioportsRelease(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) { throw .notSupported }
+  /// No ports: reads see what a missing device gives, all ones.
+  static func portIn(_ port: UInt16, _ width: Int) -> UInt32 { UInt32.max >> (32 - 8 * width) }
+  static func portOut(_ port: UInt16, _ width: Int, _ value: UInt32) {}
+
   static func processSelf() throws(Status) -> UInt32 { try k.processSelf() }
   static func realtime() -> Int64 {
     var ts = timespec()

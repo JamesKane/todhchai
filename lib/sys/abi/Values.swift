@@ -154,3 +154,70 @@ public func flowID(channel: UInt64, txid: UInt32) -> UInt64 {
   z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
   return z ^ (z >> 31)
 }
+
+/// Resource kinds (croi's resource.h, Zircon's ZX_RSRC_KIND_*): what range
+/// of hardware a resource grants. ROOT is the root resource, every kind's.
+public enum ResourceKind: UInt32, Sendable {
+  case mmio = 0
+  case irq = 1
+  /// amd64 only.
+  case ioport = 2
+  case root = 3
+  /// arm64 only: SMCCC function ids.
+  case smc = 4
+  case system = 5
+
+  public var name: String {
+    switch self {
+    case .mmio: "mmio"
+    case .irq: "irq"
+    case .ioport: "ioport"
+    case .root: "root"
+    case .smc: "smc"
+    case .system: "system"
+    }
+  }
+
+  public init?(name: String) {
+    switch name {
+    case "mmio": self = .mmio
+    case "irq": self = .irq
+    case "ioport": self = .ioport
+    case "smc": self = .smc
+    case "system": self = .system
+    default: return nil
+    }
+  }
+}
+
+/// Processargs handle types (croi's processargs.h, Zircon's PA_*) that a
+/// process passes on to the ones it starts: the low byte of an info word,
+/// whose bits 16-31 are an argument.
+public enum HandleType {
+  public static let jobDefault: UInt32 = 0x03
+  public static let vmoBootfs: UInt32 = 0x1B
+  public static let rootResource: UInt32 = 0x3F
+  /// Each kind's ranged root: MMIO 0x50, IRQ 0x51, IOPORT 0x52, SMC 0x53,
+  /// SYSTEM 0x54.
+  public static func resource(_ kind: ResourceKind) -> UInt32 {
+    switch kind {
+    case .mmio: 0x50
+    case .irq: 0x51
+    case .ioport: 0x52
+    case .smc: 0x53
+    case .system: 0x54
+    case .root: rootResource
+    }
+  }
+  public static let user0: UInt32 = 0xF0
+  /// Todhchai's: a process's trace region (M3f).
+  public static let traceRegion: UInt32 = 0xF1
+  /// Todhchai's: a driver host's device resources (lib/devmgr); the
+  /// argument says which.
+  public static let device: UInt32 = 0xF2
+
+  /// An info word: the type, and the argument in bits 16-31.
+  public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 {
+    (type & 0xFF) | (argument & 0xFFFF) << 16
+  }
+}

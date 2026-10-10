@@ -77,6 +77,14 @@ public enum Port {
 
 /// Virtual memory objects: memory that handles share.
 public enum VMO {
+  /// How a VMO's mappings are cached (vmo_set_cache_policy).
+  public enum CachePolicy: UInt32, Sendable {
+    case cached = 0
+    case uncached = 1
+    case uncachedDevice = 2
+    case writeCombining = 3
+  }
+
   /// A new VMO of `size` bytes (rounded up to pages), zeroed.
   public static func create(size: Int) throws(Status) -> Handle { Handle(raw: try Kernel.vmoCreate(size)) }
 
@@ -88,6 +96,18 @@ public enum VMO {
 
   public static func write(_ vmo: borrowing Handle, offset: Int, _ bytes: [UInt8]) throws(Status) {
     try Kernel.vmoWrite(vmo.raw, offset, bytes)
+  }
+
+  /// A VMO over physical memory, `address` and `size` page-aligned, which
+  /// an MMIO resource must cover (croi K9a). Its mappings are uncached
+  /// device memory unless its cache policy is changed before the first.
+  public static func physical(resource: borrowing Handle, address: UInt64, size: Int) throws(Status) -> Handle {
+    Handle(raw: try Kernel.vmoCreatePhysical(resource.raw, address, size))
+  }
+
+  /// Sets how the VMO's mappings are cached; only while it has none.
+  public static func setCachePolicy(_ vmo: borrowing Handle, _ policy: CachePolicy) throws(Status) {
+    try Kernel.vmoSetCachePolicy(vmo.raw, policy)
   }
 
   /// Maps `length` bytes from `offset` (a page multiple) into this process.
@@ -120,6 +140,57 @@ public enum VMO {
     precondition(offset >= 0 && offset + MemoryLayout<T>.size <= length)
     unsafe address.storeBytes(of: value, toByteOffset: offset, as: T.self)
   }
+}
+
+/// Resources (croi K9a, Zircon's): the right to a range of hardware, MMIO
+/// addresses, interrupts or I/O ports. A child lies inside its parent; the
+/// launcher grants its ranged roots by manifest (`resource mmio`).
+public enum Resource {
+  /// A resource for `base` and `size` of `kind`, inside `parent`'s range.
+  /// `exclusive`: no other may overlap it (only from a ranged root).
+  public static func create(parent: borrowing Handle, kind: ResourceKind, base: UInt64, size: UInt64,
+                            name: String, exclusive: Bool = false) throws(Status) -> Handle
+  {
+    Handle(raw: try Kernel.resourceCreate(parent.raw, kind.rawValue | (exclusive ? 0x1_0000 : 0), base, size, name))
+  }
+
+  /// What a resource grants (object_get_info, RESOURCE).
+  public static func info(_ resource: borrowing Handle) throws(Status) -> ResourceInfo {
+    try Kernel.resourceInfo(resource.raw)
+  }
+}
+
+public struct ResourceInfo: Equatable, Sendable {
+  public var kind: UInt32
+  public var flags: UInt32
+  public var base: UInt64
+  /// 0 for a kind's ranged root.
+  public var size: UInt64
+  public var name: String
+
+  public init(kind: UInt32, flags: UInt32, base: UInt64, size: UInt64, name: String) {
+    self.kind = kind
+    self.flags = flags
+    self.base = base
+    self.size = size
+    self.name = name
+  }
+}
+
+/// I/O ports (amd64): a process may use the ports it has requested with
+/// an IOPORT resource that covers them; any other faults.
+public enum IOPorts {
+  public static func request(_ resource: borrowing Handle, base: UInt16, count: UInt16) throws(Status) {
+    try Kernel.ioportsRequest(resource.raw, base, count)
+  }
+
+  public static func release(_ resource: borrowing Handle, base: UInt16, count: UInt16) throws(Status) {
+    try Kernel.ioportsRelease(resource.raw, base, count)
+  }
+
+  /// `in` and `out` of 1, 2 or 4 bytes (`width`).
+  public static func read(_ port: UInt16, width: Int) -> UInt32 { Kernel.portIn(port, width) }
+  public static func write(_ port: UInt16, width: Int, _ value: UInt32) { Kernel.portOut(port, width, value) }
 }
 
 /// Timers: SIGNALED at a deadline.

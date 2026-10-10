@@ -31,6 +31,8 @@ enum Number {
   static let vmoRead: UInt64 = 41
   static let vmoWrite: UInt64 = 42
   static let vmoGetSize: UInt64 = 44
+  static let vmoSetCachePolicy: UInt64 = 46
+  static let vmoCreatePhysical: UInt64 = 47
   static let jobCreate: UInt64 = 60
   static let processCreate: UInt64 = 61
   static let processStart: UInt64 = 62
@@ -54,6 +56,9 @@ enum Number {
   static let timerSet: UInt64 = 96
   static let timerCancel: UInt64 = 97
   static let debuglogCreate: UInt64 = 110
+  static let resourceCreate: UInt64 = 130
+  static let ioportsRequest: UInt64 = 131
+  static let ioportsRelease: UInt64 = 132
   static let threadExit: UInt64 = 2
 }
 
@@ -297,6 +302,64 @@ enum Kernel {
 
   static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) {
     _ = sys(Number.vmarUnmap, UInt64(Runtime.vmarRoot), UInt64(UInt(bitPattern: address)), UInt64(pages(length)))
+  }
+
+  // MARK: Resources and physical memory (croi K9a)
+
+  static func vmoCreatePhysical(_ resource: UInt32, _ address: UInt64, _ size: Int) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { sys(Number.vmoCreatePhysical, UInt64(resource), address, UInt64(pages(size)), $0) }
+  }
+
+  static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) {
+    try check(sys(Number.vmoSetCachePolicy, UInt64(h), UInt64(policy.rawValue)))
+  }
+
+  /// resource_create: the parent and options share the first argument.
+  static func resourceCreate(_ parent: UInt32, _ options: UInt32, _ base: UInt64, _ size: UInt64, _ name: String)
+    throws(Status) -> UInt32
+  {
+    var bytes = Array(name.utf8.prefix(31))
+    return try out(UInt32(0)) { p in
+      unsafe bytes.withUnsafeMutableBytes { n in
+        unsafe sys(Number.resourceCreate, UInt64(parent) | UInt64(options) << 32, base, size, address(n.baseAddress),
+            UInt64(n.count), p)
+      }
+    }
+  }
+
+  /// object_get_info(RESOURCE): croi_info_resource_t, 56 bytes.
+  static func resourceInfo(_ h: UInt32) throws(Status) -> ResourceInfo {
+    let r = try out(InlineArray<7, UInt64>(repeating: 0)) { sys(Number.objectGetInfo, UInt64(h), 18, $0, 56) }
+    var name: [UInt8] = []
+    for i in 3..<7 {
+      for b in 0..<8 { name.append(UInt8(truncatingIfNeeded: r[i] >> (8 * UInt64(b)))) }
+    }
+    if let end = name.firstIndex(of: 0) { name.removeSubrange(end...) }
+    return ResourceInfo(
+      kind: UInt32(truncatingIfNeeded: r[0]), flags: UInt32(truncatingIfNeeded: r[0] >> 32), base: r[1], size: r[2],
+      name: String(decoding: name, as: UTF8.self))
+  }
+
+  static func ioportsRequest(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) {
+    try check(sys(Number.ioportsRequest, UInt64(resource), UInt64(base), UInt64(count)))
+  }
+
+  static func ioportsRelease(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) {
+    try check(sys(Number.ioportsRelease, UInt64(resource), UInt64(base), UInt64(count)))
+  }
+
+  static func portIn(_ port: UInt16, _ width: Int) -> UInt32 {
+    #if arch(x86_64)
+      td_port_in(port, UInt32(width))
+    #else
+      UInt32.max >> (32 - 8 * width)  // no ports: what a missing device gives
+    #endif
+  }
+
+  static func portOut(_ port: UInt16, _ width: Int, _ value: UInt32) {
+    #if arch(x86_64)
+      td_port_out(port, UInt32(width), value)
+    #endif
   }
 
   // MARK: Futexes and timers

@@ -37,6 +37,52 @@ import Sys
 
   static let ms: Int64 = 1_000_000
 
+  /// The MMIO and IOPORT ranged roots: a resource of each made under them,
+  /// q35's host bridge read through a physical VMO over its ECAM page and
+  /// through ports 0xCF8/0xCFC, which must agree.
+  static func resources() throws(Status) {
+    guard let mmioRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.mmio))) else {
+      check(false, "userboot's MMIO resource")
+      return
+    }
+    let mmio = Handle(raw: mmioRaw)
+    let root = try Resource.info(mmio)
+    check(root.kind == ResourceKind.mmio.rawValue && root.size == 0, "MMIO ranged root")
+    #if arch(x86_64)
+      let ecam = try Resource.create(parent: mmio, kind: .mmio, base: 0xE000_0000, size: 4096, name: "sys-test ecam")
+      let info = try Resource.info(ecam)
+      check(info.base == 0xE000_0000 && info.size == 4096 && info.name == "sys-test ecam", "resource info")
+      let vmo = try VMO.physical(resource: ecam, address: 0xE000_0000, size: 4096)
+      check(status { () throws(Status) in try VMO.read(vmo, offset: 0, count: 4) } == .notSupported,
+            "a device VMO refuses vmo_read")
+      let config = try VMO.map(vmo, length: 4096, writable: false)
+      let id = config.load(UInt32.self, at: 0)
+      check(id & 0xFFFF == 0x8086, "the host bridge's vendor through ECAM")
+      check(status { () throws(Status) in
+        try VMO.physical(resource: ecam, address: 0xE000_1000, size: 4096)
+      } == .outOfRange, "a VMO beyond the resource")
+
+      guard let portsRaw = StartupHandles.take(ProcessArgs.info(HandleType.resource(.ioport))) else {
+        check(false, "userboot's IOPORT resource")
+        return
+      }
+      let ports = Handle(raw: portsRaw)
+      let pci = try Resource.create(parent: ports, kind: .ioport, base: 0xCF8, size: 8, name: "sys-test pci")
+      try IOPorts.request(pci, base: 0xCF8, count: 8)
+      IOPorts.write(0xCF8, width: 4, 0x8000_0000)
+      check(IOPorts.read(0xCFC, width: 4) == id, "the host bridge's id through ports 0xCF8/0xCFC")
+      try IOPorts.release(pci, base: 0xCF8, count: 8)
+      print("sys-test: host bridge \(hex(id & 0xFFFF)):\(hex(id >> 16)) through ECAM and ports")
+    #endif
+  }
+
+  static func hex(_ v: UInt32) -> String {
+    let digits = Array("0123456789abcdef".utf8)
+    var out: [UInt8] = []
+    for shift in stride(from: 12, through: 0, by: -4) { out.append(digits[Int((v >> UInt32(shift)) & 0xF)]) }
+    return String(decoding: out, as: UTF8.self)
+  }
+
   static func run() throws(Status) {
     // libsys: argv[0] is the program's bootfs name; the heap's size
     // classes and its large blocks; String comparison (Unicode tables).
@@ -194,6 +240,8 @@ import Sys
     // This process, and a job and process of its own making.
     let me = try Process.current()
     check(try me.info().type == ObjectType.process, "process self")
+    // Resources (croi K9a): userboot passes each kind's ranged root on.
+    try resources()
     print("sys-test: \(Clock.monotonic() - t0) ns")
   }
 }

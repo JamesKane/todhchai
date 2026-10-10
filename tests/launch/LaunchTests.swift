@@ -216,3 +216,17 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(markdown(p, library, source: source) == read("lib/launch/idl/Startup.md"), "\(regenerate)")
   #expect(Baseline(p, library).text == read("lib/launch/idl/\(p.id).api"))
 }
+
+/// `resource` and `programs` (M3g) grant only what the launcher was
+/// allowed: hosted it has neither unless a test gives it a stand-in.
+@Test func hardwareGrantsNeedTheLaunchersOwn() throws {
+  #expect(launchError([("d.m", "service d\nprogram tree\nresource mmio\nexport\n")])
+    == "d.m:3: no 'mmio' resource to grant")
+  #expect(launchError([("d.m", "service d\nprogram tree\nexport\nprograms\n")]) == "d.m:4: no bootfs to grant")
+  let l = try launcher()
+  defer { l.stop() }
+  l.allow(resource: .mmio, try Event.create())
+  l.allow(bootfs: try VMO.create(size: 4096))
+  try l.start([(path: "d.m", text: "service d\nprogram tree\nresource mmio\nprograms\nexport\n")])
+  #expect(waitFor(l, "d running restarts 0"))
+}
