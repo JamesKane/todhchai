@@ -54,6 +54,10 @@ func traceCommand(_ args: [String]) -> Bool {
     return true
   case "summary":
     for path in traceFiles(rest) { say(summary(readTrace(path), title: path)) }
+    // A recording on croi (td boot): its files read as one timeline.
+    for dir in rest where FileManager.default.fileExists(atPath: "\(dir)/kernel.trace") {
+      say(acrossProcesses(dir))
+    }
     return true
   case "diff":
     guard rest.count == 2 else { fail("td trace diff A B") }
@@ -117,4 +121,25 @@ func traceRecord(_ args: [String]) -> Bool {
   let r = run(program, log: nil)
   say("td trace: \(program[0]) \(r.ok ? "exited 0" : "failed"); traces in \(dir)")
   return r.ok
+}
+
+/// A croi recording's directory (kernel.trace and N-process.trace files,
+/// lib/trace/session) as one timeline: each call's path through both ends
+/// and croi, with the median time to each step.
+func acrossProcesses(_ dir: String) -> String {
+  let files = traceFiles([dir]).map { path -> (name: String, trace: TraceFile) in
+    var name = String(path.split(separator: "/").last!.dropLast(".trace".count))
+    if let dash = name.firstIndex(of: "-"), name[..<dash].allSatisfy(\.isNumber) { name = String(name[name.index(after: dash)...]) }
+    return (name, readTrace(path))
+  }
+  let set = TraceSet(files)
+  var out = "# \(dir): calls across processes and croi\n\n"
+  out += "Each call's commonest path, with the median time from the step before to each step.\n\n"
+  out += "| Flow | Count | p50 | Path |\n|---|---:|---:|---|\n"
+  for b in set.breakdown() {
+    var path = b.path.first ?? ""
+    for (i, step) in b.path.dropFirst().enumerated() { path += " →\(formatValue(b.gaps[i])) \(step)" }
+    out += "| `\(b.name)` | \(b.count) | \(formatValue(b.total)) | \(path) |\n"
+  }
+  return out
 }

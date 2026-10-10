@@ -88,6 +88,10 @@ public final class Launcher: @unchecked Sendable {
   let mutex = Lock()
   var services: [Service] = []
   var stopping = false
+  /// More handles for each instance a service starts, moved into it with
+  /// their processargs info words (natively; hosted processes have only
+  /// their Startup): a trace session's region (M3f). Set before `start`.
+  public var extraStartupHandles: ((_ service: String) -> [(info: UInt32, handle: UInt32)])?
   /// The launcher's two threads (raw handles; 0 if not started).
   var dispatcherThread: UInt32 = 0
   var supervisorThread: UInt32 = 0
@@ -198,7 +202,8 @@ public final class Launcher: @unchecked Sendable {
     }
     let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
     do throws(Status) {
-      _ = try Process.start(process, entry: programs.first { $0.name == m.program }!.entry, arg: processEnd)
+      _ = try Process.start(process, entry: programs.first { $0.name == m.program }!.entry, arg: processEnd,
+                            extra: extraStartupHandles?(m.service) ?? [])
     } catch {
       throw failed("\(error)")
     }

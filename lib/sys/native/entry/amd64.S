@@ -28,6 +28,22 @@ td_syscall6:
   syscall
   ret
 
+// td_thread_block(): the calling thread's block (ThreadBlock, Thread.swift),
+// whose first word points to itself: FS's base is set to it
+// (object_set_property, CROI_PROP_REGISTER_FS), and %fs:0 reads it back.
+.section .text.td_thread_block, "ax"
+.globl td_thread_block
+td_thread_block:
+  mov %fs:0, %rax
+  ret
+
+// td_set_thread_pointer(block): amd64 sets FS's base through croi
+// (ThreadBlock.install), so this is unused here.
+.section .text.td_set_thread_pointer, "ax"
+.globl td_set_thread_pointer
+td_set_thread_pointer:
+  ud2
+
 // The stack protector's canary: fixed until croi has a random source to
 // draw one from at start.
 .section .data.__stack_chk_guard, "aw"

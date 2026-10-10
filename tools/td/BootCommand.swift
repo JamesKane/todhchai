@@ -3,7 +3,7 @@
 // td boot: Todhchai on croi in QEMU (M3).
 //
 //   td boot [--arch amd64|arm64|rv64] [--test] [--timeout S] [--next PROGRAM]
-//           [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]
+//           [--manifests DIR] [--cmdline WORDS] [--keep-croi] [-- QEMU ARGS]
 //
 // Builds croi's loader and kernel from ../croi as it is checked out (M3
 // decided: no pin) into build/croi/<arch>, and our native tree
@@ -20,6 +20,7 @@
 
 import Bench
 import Bootfs
+import TraceReader
 import FoundationEssentials
 import Glibc
 
@@ -30,6 +31,9 @@ struct BootOptions {
   var next = "bin/launcher"
   var manifests: String?
   var cmdline: [String] = []
+  /// Boot the croi last built here instead of building it again: croi is
+  /// edited beside us, and its tree may not build at the moment.
+  var keepCroi = false
   var qemuArgs: [String] = []
 }
 
@@ -51,10 +55,11 @@ func bootCommand(_ args: [String]) -> Bool {
     case "--next": o.next = value()
     case "--manifests": o.manifests = value()
     case "--cmdline": o.cmdline += value().split(separator: " ").map(String.init)
+    case "--keep-croi": o.keepCroi = true
     case "--":
       o.qemuArgs = Array(args[(i + 1)...])
       i = args.count
-    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [-- QEMU ARGS]")
+    default: fail("unknown option \(args[i]); usage: td boot [--arch A] [--test] [--timeout S] [--next P] [--manifests DIR] [--cmdline WORDS] [--keep-croi] [-- QEMU ARGS]")
     }
     i += 1
   }
@@ -81,8 +86,10 @@ func boot(_ o: BootOptions) -> Bool {
   }
   // croi is worked on beside us: a file edited mid-build fails it once
   // ("modified during the build"), and a second build settles it.
-  var built = run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok
+  let kept = o.keepCroi && FileManager.default.fileExists(atPath: "\(croi)/kernel/kernel.elf")
+  var built = kept || run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok
   if !built { built = run(["ninja", "-C", croi, "loader-efi", "kernel"], log: "\(logs)/croi.log").ok }
+  if kept { say("td boot: croi as last built in \(croi) (--keep-croi)") }
   guard built else {
     complain("boot: croi (../croi at \(croiRevision)) didn't build: see \(logs)/croi.log")
     return false
@@ -255,7 +262,20 @@ func bootTest(_ qemu: [String], options o: BootOptions, console: String, croiRev
       }
     }
   }
-  try? Data(lines.joined(separator: "\n").utf8).write(to: URL(filePath: console))
+  // Traces the guest wrote out (lib/trace/session) go beside the console.
+  let traceLines = lines.filter { $0.contains("td-trace ") }
+  try? Data(lines.filter { !$0.contains("td-trace ") }.joined(separator: "\n").utf8)
+    .write(to: URL(filePath: console))
+  if !traceLines.isEmpty {
+    let logs = String(console[..<(console.lastIndex(of: "/") ?? console.startIndex)])
+    try? Data(traceLines.joined(separator: "\n").utf8).write(to: URL(filePath: "\(logs)/trace.log"))
+    let dir = "\(logs)/trace"
+    switch reassembleTraces(traceLines, into: dir) {
+    case .success(let files): say("td boot: \(files) trace file(s) in \(dir) (td trace summary \(dir))")
+    case .failure(let why):
+      if verdict!.ok { verdict = (false, "the guest's trace is damaged: \(why.description)") }
+    }
+  }
   let seconds = now() - start
   if verdict!.ok {
     say("td boot: \(o.next) exited with 0 (\(format(seconds)) s from power on; console in \(console))")
@@ -264,4 +284,59 @@ func bootTest(_ qemu: [String], options o: BootOptions, console: String, croiRev
   complain("boot: FAILED: \(verdict!.why); the console's end (all of it in \(console)):")
   for line in lines.suffix(30) { complain("  \(line)") }
   return false
+}
+
+struct TraceDamage: Error, CustomStringConvertible {
+  let description: String
+}
+
+/// The files `td-trace NAME OFFSET BASE64` lines carry (or `td-trace NAME
+/// OFFSET zero COUNT`), each ended by `td-trace NAME end SIZE`
+/// (lib/trace/session's export), written to `dir` as NAME.trace. A piece
+/// the console dropped is reported (a piece sent twice is taken once).
+/// The number of files.
+func reassembleTraces(_ lines: [String], into dir: String) -> Result<Int, TraceDamage> {
+  removeTree(dir)
+  makeDirectory(dir)
+  var pieces: [String: [Int: [UInt8]]] = [:]
+  var sizes: [String: Int] = [:]
+  for line in lines {
+    let all = line.split(separator: " ").map(String.init)
+    guard let at = all.firstIndex(of: "td-trace") else { continue }
+    let words = Array(all[(at + 1)...])
+    guard words.count >= 3 else { continue }  // a line the console cut short: the other copy has it
+    let name = words[0]
+    if words[1] == "end" {
+      if let n = Int(words[2]) { sizes[name] = n }
+      continue
+    }
+    guard let offset = Int(words[1]) else { continue }
+    if words.count == 4, words[2] == "zero", let n = Int(words[3]) {
+      pieces[name, default: [:]][offset] = [UInt8](repeating: 0, count: n)
+    } else if words.count == 3, let data = Data(base64Encoded: words[2]) {
+      pieces[name, default: [:]][offset] = [UInt8](data)
+    }
+  }
+  for (name, size) in sizes.sorted(by: { $0.key < $1.key }) {
+    var bytes: [UInt8] = []
+    while bytes.count < size {
+      guard let piece = pieces[name]?[bytes.count], !piece.isEmpty else {
+        return .failure(TraceDamage(description: "\(name): the piece at \(bytes.count) is missing (the console dropped it)"))
+      }
+      bytes += piece
+    }
+    guard bytes.count == size else { return .failure(TraceDamage(description: "\(name) is \(bytes.count) bytes, not \(size)")) }
+    do {
+      _ = try TraceFile(bytes: bytes)
+    } catch {
+      return .failure(TraceDamage(description: "\(name) doesn't read as a trace: \(error)"))
+    }
+    guard (try? Data(bytes).write(to: URL(filePath: "\(dir)/\(name).trace"))) != nil else {
+      return .failure(TraceDamage(description: "can't write \(dir)/\(name).trace"))
+    }
+  }
+  if let lost = pieces.keys.first(where: { sizes[$0] == nil }) {
+    return .failure(TraceDamage(description: "\(lost) has no end"))
+  }
+  return .success(sizes.count)
 }

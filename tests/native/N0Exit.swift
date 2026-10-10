@@ -9,12 +9,20 @@
 // fs killed, restarted by its policy, and the client reconnected. Run by
 //
 //     td boot --test --next bin/n0-exit --manifests boot/native
+//
+// With `--cmdline n0.trace=CATEGORIES` (user categories, such as
+// ipc,app) it records the run (M3f): croi's kernel rings (ipc) and a
+// region for itself and each service, written out at the end for `td boot`
+// to reassemble (lib/trace/session). The measures run fewer times then:
+// the trace leaves through the console at ~110 KB/s.
 
 import Fs
 import Launch
 import LibSys
 import Node
 import Sys
+import Trace
+import TraceSession
 
 @main struct N0Exit {
   static func check(_ ok: Bool, _ what: StaticString, _ detail: String = "") {
@@ -51,7 +59,9 @@ import Sys
   /// `td bench`): spawn to main, a cached read through fs, a live query's
   /// update. Not enforced: TCG's timings mean nothing, and this machine is
   /// shared.
-  static func measure(_ l: Launcher, _ programs: [(name: String, entry: ProgramEntry)], job root: borrowing Handle) {
+  /// `runs`: how much less to run (1: all; 4 when tracing).
+  static func measure(_ l: Launcher, _ programs: [(name: String, entry: ProgramEntry)], job root: borrowing Handle,
+                      runs: Int) {
     // Spawn to main: a process made, loaded from bootfs and started, until
     // its main signals.
     guard let probe = programs.first(where: { $0.name == "spawn-probe" })?.entry else {
@@ -60,14 +70,15 @@ import Sys
     var spawns: [Int64] = []
     do throws(Status) {
       let job = try Job.create(parent: root)
-      for _ in 0..<20 {
+      for _ in 0..<(20 / runs) {
         let pair = try EventPair.create()
         let mine = pair.a
-        let t0 = Clock.monotonic()
+        let t0 = Clock.monotonic(), z = Trace.now()
         let process = try Process.create(job: job, name: "spawn-probe")
         _ = try Process.start(process, entry: probe, arg: pair.b)
         _ = try mine.wait(for: Signals.signaled, deadline: Clock.monotonic() + 2_000_000_000)
         spawns.append(Clock.monotonic() - t0)
+        Trace.zone(spawnZone, since: z)
         _ = try process.wait(for: Signals.terminated)
       }
     } catch {
@@ -86,13 +97,14 @@ import Sys
 
     // A cached read: open a small file and read it all.
     var reads: [Int64] = []
-    for _ in 0..<200 {
-      let t0 = Clock.monotonic()
+    for _ in 0..<(200 / runs) {
+      let t0 = Clock.monotonic(), z = Trace.now()
       guard var f = try? data.file("music/Dulaman.flac"), let bytes = try? f.readAll(), bytes.count == 13 else {
         Boot.fail("reading music/Dulaman.flac")
       }
-      reads.append(Clock.monotonic() - t0)
       _ = consume f
+      reads.append(Clock.monotonic() - t0)
+      Trace.zone(readZone, since: z)
     }
     print("n0-exit: open and read a cached file: \(spread(reads))")
 
@@ -103,9 +115,9 @@ import Sys
       var live = FsIPC.LiveQueryClient(channel: try data.live("Audio:Year >= 2001", scan: false))
       while case .changed(let c) = try live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000), c.kind != .current {}
       var dir = try data.makeDirectory("probe")
-      for i in 0..<20 {
+      for i in 0..<(20 / runs) {
         var f = try dir.makeFile("\(i)")
-        let t0 = Clock.monotonic()
+        let t0 = Clock.monotonic(), z = Trace.now()
         try f.setAttribute(.int64("Audio:Year", 2001))
         var arrived = false
         while !arrived, case .changed(let c) = try live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000) {
@@ -113,11 +125,34 @@ import Sys
         }
         guard arrived else { Boot.fail("the live query missed an update") }
         updates.append(Clock.monotonic() - t0)
+        Trace.zone(liveZone, since: z)
       }
     } catch {
       Boot.fail("measuring a live query")
     }
     print("n0-exit: a live query's update: \(spread(updates))")
+  }
+
+  static let spawnZone = TraceName("spawn to main")
+  static let readZone = TraceName("cached read")
+  static let liveZone = TraceName("live update")
+
+  /// A recording of the run, if croi's command line asks for one.
+  static func startTrace(_ l: Launcher) -> TraceSession? {
+    guard let names = Environment.value("n0.trace") else { return nil }
+    guard let categories = TraceCategory(names: names) else { Boot.fail("n0.trace: unknown categories \(names)") }
+    guard let resource = StartupHandles.take(ProcessArgs.info(ProcessArgs.resource)) else {
+      Boot.fail("n0.trace: started without the root resource")
+    }
+    let session: TraceSession
+    do throws(Status) {
+      session = try TraceSession(resource: resource, categories: categories, kernel: TraceSession.Kernel.ipc)
+    } catch {
+      Boot.fail("n0.trace: can't start croi's trace: \(error)")
+    }
+    if let mine = session.region(for: "n0-exit") { Trace.start(region: Handle(raw: mine.handle)) }
+    l.extraStartupHandles = { name in session.region(for: name).map { [$0] } ?? [] }
+    return session
   }
 
   static func main() {
@@ -128,6 +163,7 @@ import Sys
     } catch {
       Boot.fail("can't make a launcher: \(error)")
     }
+    let session = startTrace(l)
     let t0 = Clock.monotonic()
     do throws(LaunchError) {
       try l.start(boot.manifests)
@@ -150,7 +186,7 @@ import Sys
     check(read(l, "fs", "volume/music/Dulaman.flac") == "Dulaman.flac\n", "a song through fs's tree")
     check(has(read(l, "block", "status"), "sessions 1"), "block's status", read(l, "block", "status"))
     print("n0-exit: catalogue, live query and trees ok")
-    measure(l, boot.programs, job: boot.job)
+    measure(l, boot.programs, job: boot.job, runs: session == nil ? 1 : 4)
 
     // fs dies; its policy restarts it, and the client mounts it again.
     do throws(LaunchError) { try l.kill("fs") } catch { Boot.fail(error.description) }
@@ -181,6 +217,11 @@ import Sys
       check(message == "catalog.manifest:3: no service 'fs'", "a missing service stops the launch", message)
     } catch {
       Boot.fail("can't make a launcher: \(error)")
+    }
+    if let session {
+      let t0 = Clock.monotonic()
+      session.export { print($0) }
+      print("n0-exit: trace written in \((Clock.monotonic() - t0) / 1_000_000) ms")
     }
     print("n0-exit: ok")
     _ = consume boot

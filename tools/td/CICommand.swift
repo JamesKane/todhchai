@@ -21,10 +21,13 @@ let protocols: [(file: String, baselines: String, with: [String])] = [
 let protocolHeaders = ["tests/ipc/c/generated/test_ipc.h", "lib/node/idl/node_ipc.h", "lib/node/idl/srv_ipc.h", "lib/launch/idl/launch_ipc.h",
                       "lib/block/idl/block_ipc.h", "lib/fs/idl/fs_ipc.h"]
 
-func ci(bench benchOptions: BenchOptions?) -> Bool {
+/// `keepCroi`: boot the croi last built rather than ../croi's tree, which is
+/// edited beside us and may not build (said in the output).
+func ci(bench benchOptions: BenchOptions?, keepCroi: Bool = false) -> Bool {
   let logs = "bench/out/ci"
   removeTree(logs)
   makeDirectory(logs)
+  if keepCroi { say("td ci: --keep-croi: the boots use the croi last built in build/croi, not ../croi's tree") }
   var steps: [(String, [[String]])] = [
     ("hosted-build", [["swift", "build"]]),
     ("hosted-tests", [["swift", "test"]]),
@@ -37,9 +40,15 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
                      "--cmdline", "launcher.until=launch-test"]]),
     ("sys-test-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/sys-test"]]),
     ("services-test-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/services-test"]]),
-    ("n0-exit-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/n0-exit", "--manifests", "boot/native"]]),
+    ("n0-exit-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/n0-exit", "--manifests", "boot/native",
+                        "--cmdline", "n0.trace=ipc,app,mark"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
+  if keepCroi {
+    steps = steps.map { s in
+      (s.0, s.1.map { c in c.count > 2 && c[1] == "boot" ? c + ["--keep-croi"] : c })
+    }
+  }
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))
   for p in protocols {
     steps.append(("baseline \(p.file)",

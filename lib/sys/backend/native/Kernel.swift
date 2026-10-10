@@ -348,8 +348,9 @@ enum Kernel {
     }
   }
 
-  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) {
-    try Loader.start(process, thread, arg, entry)
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry,
+                           _ extra: [(info: UInt32, handle: UInt32)]) throws(Status) {
+    try Loader.start(process, thread, arg, entry, extra)
   }
 
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) {
@@ -389,10 +390,13 @@ enum Threads {
     let stack: UInt
     /// A handle to the thread, to see when it has ended.
     let thread: UInt32
-    init(body: @escaping @Sendable () -> Void, stack: UInt, thread: UInt32) {
+    /// The thread's block, at its stack's top.
+    let block: UInt
+    init(body: @escaping @Sendable () -> Void, stack: UInt, thread: UInt32, block: UInt) {
       self.body = body
       self.stack = stack
       self.thread = thread
+      self.block = block
     }
   }
 
@@ -411,14 +415,17 @@ enum Threads {
       unsafe Kernel.vmoUnmap(UnsafeMutableRawPointer(bitPattern: stack)!, stackSize)
       throw error
     }
-    let start = Start(body: body, stack: stack, thread: watch)
-    let arg = UInt64(UInt(bitPattern: unsafe Unmanaged.passRetained(start).toOpaque()))
-    // amd64 code expects to have been called: its stack 8 off 16 at entry.
+    // The thread's block (LibSys.ThreadBlock) at the stack's top, zero as
+    // the VMO is, and the stack below it. amd64 code expects to have been
+    // called: its stack 8 off 16 at entry.
+    let blockAt = stack + UInt(stackSize - ThreadBlock.size)
     #if arch(x86_64)
-      let top = UInt64(stack + UInt(stackSize)) - 8
+      let top = UInt64(blockAt) - 8
     #else
-      let top = UInt64(stack + UInt(stackSize))
+      let top = UInt64(blockAt)
     #endif
+    let start = Start(body: body, stack: stack, thread: watch, block: blockAt)
+    let arg = UInt64(UInt(bitPattern: unsafe Unmanaged.passRetained(start).toOpaque()))
     let entry: @convention(c) (UInt64, UInt64) -> Void = td_thread_entry
     let r = sys(Number.threadStart, UInt64(thread), UInt64(UInt(bitPattern: unsafe unsafeBitCast(entry, to: UnsafeRawPointer.self))),
                 top, arg, 0)
@@ -452,6 +459,7 @@ enum Threads {
 /// Where a thread Sys started begins: on its own stack, with its Start.
 @c func td_thread_entry(_ arg: UInt64, _ unused: UInt64) {
   let start = unsafe Unmanaged<Threads.Start>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(arg))!).takeRetainedValue()
+  unsafe ThreadBlock.install(UnsafeMutableRawPointer(bitPattern: start.block)!, thread: start.thread)
   start.body()
   _ = consume start
   _ = sys(Number.threadExit, 0)

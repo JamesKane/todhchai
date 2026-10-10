@@ -87,7 +87,7 @@ if(TODHCHAI_NATIVE)
   # libsys: a native process's start, stdout and heap (lib/sys/native).
   add_library(LibSys STATIC
     lib/sys/native/entry/${TODHCHAI_ARCH}.S
-    lib/sys/native/Start.swift lib/sys/native/Stdout.swift lib/sys/native/Heap.swift)
+    lib/sys/native/Start.swift lib/sys/native/Stdout.swift lib/sys/native/Heap.swift lib/sys/native/Thread.swift)
   set_target_properties(LibSys PROPERTIES Swift_MODULE_NAME LibSys)
   target_include_directories(LibSys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/sys/native/include
                                     INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
@@ -127,11 +127,19 @@ todhchai_tier0(TraceFormat)
 
 # Both Embedded builds record nothing yet (no Glibc for the host's file
 # region; croi's comes with M3e).
-add_library(Trace STATIC lib/trace/writer/Trace.swift lib/trace/writer/native/Region.swift)
+if(TODHCHAI_NATIVE)
+  set(_trace_region lib/trace/writer/native/Region.swift)
+else()
+  set(_trace_region lib/trace/writer/stub/Region.swift)
+endif()
+add_library(Trace STATIC lib/trace/writer/Trace.swift ${_trace_region})
 set_target_properties(Trace PROPERTIES Swift_MODULE_NAME Trace)
 target_include_directories(Trace PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/trace/c/include
                                  INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Trace PUBLIC TraceFormat)
+if(TODHCHAI_NATIVE)
+  target_link_libraries(Trace PUBLIC Sys)
+endif()
 todhchai_tier0(Trace)
 
 add_library(IPC STATIC
@@ -184,6 +192,13 @@ target_include_directories(Bootfs INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Bootfs)
 
 if(TODHCHAI_NATIVE)
+  # A recording on croi (M3f): kernel rings and processes' regions.
+  add_library(TraceSession STATIC lib/trace/session/Session.swift)
+  set_target_properties(TraceSession PROPERTIES Swift_MODULE_NAME TraceSession)
+  target_include_directories(TraceSession INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+  target_link_libraries(TraceSession PUBLIC Trace Sys)
+  todhchai_tier0(TraceSession)
+
   # A program for bootfs: bin/<name>, linked with libsys.
   function(todhchai_program name)
     add_executable(${name} ${ARGN})
@@ -216,7 +231,7 @@ if(TODHCHAI_NATIVE)
   target_link_libraries(launch-test PRIVATE Launch Node IPC Sys)
   # N0's exit on croi: td boot --test --next bin/n0-exit --manifests boot/native.
   todhchai_program(n0-exit tests/native/N0Exit.swift boot/programs/launcher/Boot.swift)
-  target_link_libraries(n0-exit PRIVATE Launch Bootfs Fs Node Sys)
+  target_link_libraries(n0-exit PRIVATE Launch Bootfs Fs Node Sys TraceSession)
   todhchai_program(spawn-probe tests/native/SpawnProbe.swift)
   target_link_libraries(spawn-probe PRIVATE Sys)
   return()

@@ -29,6 +29,8 @@ enum SyscallNumber {
 public enum Runtime {
   nonisolated(unsafe) public internal(set) static var processSelf: UInt32 = 0
   nonisolated(unsafe) public internal(set) static var vmarRoot: UInt32 = 0
+  /// The main thread's own handle.
+  nonisolated(unsafe) public internal(set) static var threadSelf: UInt32 = 0
   nonisolated(unsafe) static var vdsoClock: (@convention(c) () -> UInt64)? = nil
 
   /// Nanoseconds on the monotonic clock: the vDSO's, with no kernel call,
@@ -64,6 +66,8 @@ public enum ProcessArgs {
   public static let fd: UInt32 = 0x30
   public static let resource: UInt32 = 0x3F
   public static let user0: UInt32 = 0xF0
+  /// Todhchai's: the process's trace region, a VMO (lib/trace, M3f).
+  public static let traceRegion: UInt32 = 0xF1
 
   /// A handle-info word: the type, and an argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 {
@@ -147,14 +151,18 @@ public func exit(_ code: Int64) -> Never {
   var infos: [UInt32] = []
   var vmar: UInt32 = 0
   var log: UInt32 = 0
+  var thread: UInt32 = 0
   if valid {
     // Found before anything allocates.
     for i in 0..<count {
       let info = word(Int(word(8)) + 4 * i)
       if info == ProcessArgs.info(ProcessArgs.vmarRoot) && vmar == 0 { vmar = handles[i] }
       if info == ProcessArgs.info(ProcessArgs.fd, 1) && log == 0 { log = handles[i] }
+      if info == ProcessArgs.info(ProcessArgs.threadSelf) && thread == 0 { thread = handles[i] }
     }
   }
+  // The thread pointer first: the trace and locks may read it from here on.
+  ThreadBlock.installMain(thread: thread)
   Heap.vmar = vmar
   Stdout.log = log
   Runtime.vmarRoot = vmar
@@ -195,6 +203,7 @@ public func exit(_ code: Int64) -> Never {
   _ = StartupHandles.take(ProcessArgs.info(ProcessArgs.fd, 1))
   _ = StartupHandles.take(ProcessArgs.info(ProcessArgs.vmarRoot))
   Runtime.processSelf = StartupHandles.take(ProcessArgs.info(ProcessArgs.processSelf)) ?? 0
+  Runtime.threadSelf = StartupHandles.take(ProcessArgs.info(ProcessArgs.threadSelf)) ?? 0
 
   let argc = unsafe Int32(argv.count)
   unsafe argv.append(nil)

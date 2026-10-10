@@ -61,7 +61,8 @@ enum Kernel {
   static func jobCreate(_ parent: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 { throw .notSupported }
   static func threadCreate(_ process: UInt32) throws(Status) -> UInt32 { throw .notSupported }
-  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) { throw .notSupported }
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry,
+                           _ extra: [(info: UInt32, handle: UInt32)]) throws(Status) { throw .notSupported }
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) { throw .notSupported }
   static func kill(_ h: UInt32) throws(Status) { throw .notSupported }
   static func exit(_ code: Int64) -> Never { fatalError("process_exit: no kernel") }

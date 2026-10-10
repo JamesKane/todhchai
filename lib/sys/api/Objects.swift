@@ -159,11 +159,22 @@ public enum Process {
   /// into the process). The thread's handle. Hosted, `entry` is a Swift
   /// function given `arg`; natively, an ELF image the process is loaded
   /// from, which finds `arg` as its PA_USER0 startup handle (M3d).
-  public static func start(_ process: borrowing Handle, entry: ProgramEntry, arg: consuming Handle) throws(Status)
-    -> Handle
+  ///
+  /// `extra` are more handles moved into the process, each with its
+  /// processargs info word: natively it finds them with
+  /// `StartupHandles.take` (the trace region, M3f); hosted processes take
+  /// their startup from `arg` alone, so they are closed.
+  public static func start(_ process: borrowing Handle, entry: ProgramEntry, arg: consuming Handle,
+                           extra: [(info: UInt32, handle: UInt32)] = []) throws(Status) -> Handle
   {
-    let thread = Handle(raw: try Kernel.threadCreate(process.raw))
-    try Kernel.processStart(process.raw, thread.raw, arg.release(), entry)
+    let thread: Handle
+    do throws(Status) {
+      thread = Handle(raw: try Kernel.threadCreate(process.raw))
+    } catch {
+      for e in extra { Kernel.close(e.handle) }
+      throw error
+    }
+    try Kernel.processStart(process.raw, thread.raw, arg.release(), entry, extra)
     return thread
   }
 

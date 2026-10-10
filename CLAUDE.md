@@ -172,6 +172,15 @@ program and read the result with:
     .build/debug/td trace record -o DIR [-c app,frame,...] [--circular] -- PROGRAM ARGS
     .build/debug/td trace summary DIR        # also: print, diff A B
 
+On croi, `TraceSession` (lib/trace/session) records the kernel's rings and
+a region per process (given in processargs); the files come out over the
+debuglog and `td boot` puts them in `bench/out/boot/<arch>/trace`, which
+`td trace summary` also reads as one timeline (calls through croi). N0's
+run: `td boot --test --next bin/n0-exit --manifests boot/native --cmdline
+n0.trace=ipc,app,mark`. The console carries ~110 KB/s: keep recordings
+small. `--keep-croi` boots the croi last built when ../croi's tree doesn't
+build.
+
 ## Wayland
 
 The hosted SDK speaks Wayland directly (architecture §18). The protocol

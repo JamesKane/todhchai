@@ -81,7 +81,7 @@ let package = Package(
     // (docs/trace-format.md).
     .target(name: "TraceFormat", path: "lib/trace/format"),
     .target(name: "TDTraceCPU", path: "lib/trace/c"),
-    .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer", exclude: ["native"],
+    .target(name: "Trace", dependencies: ["TraceFormat", "TDTraceCPU"], path: "lib/trace/writer", exclude: ["native", "stub"],
             swiftSettings: tier0),
     .target(name: "TraceReader", dependencies: ["TraceFormat"], path: "lib/trace/reader"),
     .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader", "IPC", "Echo"], path: "tests/trace"),

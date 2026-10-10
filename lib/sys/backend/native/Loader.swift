@@ -68,8 +68,9 @@ enum Loader {
 
   /// Loads `program` into `process` and starts `thread` there, handing it
   /// `arg`. `arg` is consumed whatever happens.
-  static func start(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ program: ProgramEntry) throws(Status) {
-    var handles: [UInt32] = [arg]
+  static func start(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ program: ProgramEntry,
+                    _ extra: [(info: UInt32, handle: UInt32)]) throws(Status) {
+    var handles: [UInt32] = [arg] + extra.map { $0.handle }
     defer { for h in handles { Kernel.close(h) } }
     let vmar = try take(process)
     handles.append(vmar)
@@ -91,8 +92,8 @@ enum Loader {
     handles.append(threadCopy)
     let log = try out(UInt32(0)) { sys(Number.debuglogCreate, 0, 0, $0) }
     handles.append(log)
-    let infos = [
-      ProcessArgs.info(ProcessArgs.user0), ProcessArgs.info(ProcessArgs.vmarRoot),
+    let infos = [ProcessArgs.info(ProcessArgs.user0)] + extra.map { $0.info } + [
+      ProcessArgs.info(ProcessArgs.vmarRoot),
       ProcessArgs.info(ProcessArgs.processSelf), ProcessArgs.info(ProcessArgs.threadSelf),
       ProcessArgs.info(ProcessArgs.fd, 1),
     ]

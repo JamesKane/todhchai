@@ -150,3 +150,36 @@ runs a program with `TODHCHAI_TRACE=DIR` set. Each process that uses
 `Trace` then writes `DIR/<pid>.trace`. `td trace print`, `td trace -s`
 (per-name counts and percentiles) and `td trace -d` (two traces compared)
 read the files.
+
+## Recording on croi (M3f)
+
+Natively a process doesn't make its region: whoever traces it does
+(`TraceSession`, `lib/trace/session`), and hands it to the process as a
+VMO in processargs (`PA_USER1`, `ProcessArgs.traceRegion`). The session
+writes the header, so `counter_hz` is croi's (its rings' `frequency`), and
+`start` is croi's trace session. The process maps the region on its first
+trace name and writes rings as on Linux; a thread finds its ring through
+its thread block (libsys, `ThreadBlock`, croi's per-thread FS base,
+`TPIDR_EL0` or `tp`). A region's process id is `0xF0000` plus its number
+in the session: croi names threads by an internal task id user space
+can't read yet, so user and kernel records join through flow ids, not
+thread ids.
+
+The session also starts croi's kernel trace (`trace_configure`, with the
+tracing or root resource) and maps each CPU's ring. When it ends it writes
+every file compacted (the strings used, each ring's records from 0) and
+the kernel's rings as `kernel.trace` (process 0, a ring a CPU, `cpu` set,
+no strings). Until croi has a device to the host (virtio, M3h), the files
+leave through the debuglog in base64:
+
+    td-trace NAME OFFSET BASE64        (120 bytes a line)
+    td-trace NAME OFFSET zero COUNT    (a run of zeros)
+    td-trace NAME end SIZE
+
+paced below the console's rate (about 110 KB/s under KVM: croi's debuglog
+drops records when its console dumper falls 512 behind). `td boot`
+reassembles them into `bench/out/boot/<arch>/trace/` and fails the boot if
+a piece is missing. `td trace summary DIR` then reads that directory as
+one timeline as well as file by file: each call's commonest path through
+the client, croi's CHANNEL_WRITE, CHANNEL_READ and DONATE, and the server,
+with the median time to each step.

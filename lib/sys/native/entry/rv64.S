@@ -31,6 +31,20 @@ td_syscall6:
   ecall
   ret
 
+// td_thread_block() and td_set_thread_pointer(block): tp, which croi keeps
+// per thread (and nothing else here uses: no ELF TLS).
+.section .text.td_thread_block, "ax"
+.globl td_thread_block
+td_thread_block:
+  mv a0, tp
+  ret
+
+.section .text.td_set_thread_pointer, "ax"
+.globl td_set_thread_pointer
+td_set_thread_pointer:
+  mv tp, a0
+  ret
+
 .section .sdata.__stack_chk_guard, "aw"
 .globl __stack_chk_guard
 .balign 8

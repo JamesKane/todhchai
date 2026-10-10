@@ -179,3 +179,75 @@ public struct Distribution: Equatable, Sendable {
     max = s.last ?? 0
   }
 }
+
+/// Several traces of one recording read as one timeline (M3f): the kernel's
+/// (`kernel.trace`, from croi's rings) and each process's. They share the
+/// cycle counter, so records compare by time; a call's records join by
+/// flow id, the user FLOW records each end writes and croi's CHANNEL_WRITE,
+/// CHANNEL_READ and DONATE (docs/trace-format.md, "IPC flow ids").
+public struct TraceSet: Sendable {
+  /// croi's IPC record kinds.
+  public static let channelWrite: UInt16 = 80
+  public static let channelRead: UInt16 = 81
+  public static let donate: UInt16 = 82
+
+  /// One step of a flow: when, and what (a process's name, or croi's
+  /// `write`, `read` or `donate`).
+  public struct Step: Equatable, Sendable {
+    public var time: UInt64
+    public var what: String
+  }
+
+  /// Each file, by the name of the process that wrote it ("kernel" for
+  /// croi's).
+  public var files: [(name: String, trace: TraceFile)]
+
+  public init(_ files: [(name: String, trace: TraceFile)]) { self.files = files }
+
+  public var counterHz: UInt64 { files.first?.trace.counterHz ?? 1 }
+
+  /// Each flow's steps across every file, by time, and its name (the first
+  /// user step's).
+  public func joinedFlows() -> [UInt64: (name: String, steps: [Step])] {
+    var flows: [UInt64: (name: String, steps: [Step])] = [:]
+    for (process, t) in files {
+      for r in t.records {
+        let what: String
+        switch r.kind {
+        case TraceKind.flow.rawValue: what = process
+        case Self.channelWrite: what = "write"
+        case Self.channelRead: what = "read"
+        case Self.donate: what = "donate"
+        default: continue
+        }
+        var f = flows[r.a] ?? (name: "", steps: [])
+        if r.kind == TraceKind.flow.rawValue && f.name.isEmpty { f.name = t.name(r.b) }
+        f.steps.append(Step(time: r.time, what: what))
+        flows[r.a] = f
+      }
+    }
+    for (id, f) in flows { flows[id]!.steps = f.steps.sorted { $0.time < $1.time } }
+    return flows
+  }
+
+  /// Per flow name: how many, the commonest path through the steps, and
+  /// the median time between each step and the next on that path (seconds).
+  public func breakdown() -> [(name: String, count: Int, path: [String], gaps: [Double], total: Double)] {
+    var byName: [String: [[Step]]] = [:]
+    for (_, f) in joinedFlows() where !f.name.isEmpty { byName[f.name, default: []].append(f.steps) }
+    var out: [(name: String, count: Int, path: [String], gaps: [Double], total: Double)] = []
+    for (name, flows) in byName {
+      var paths: [[String]: [[Step]]] = [:]
+      for steps in flows { paths[steps.map(\.what), default: []].append(steps) }
+      // The commonest; of those as common, the longest (the most complete).
+      guard let (path, common) = paths.max(by: { ($0.value.count, $0.key.count) < ($1.value.count, $1.key.count) })
+      else { continue }
+      func median(_ v: [Double]) -> Double { v.sorted()[v.count / 2] }
+      let hz = Double(counterHz)
+      let gaps = (1..<max(path.count, 1)).map { i in median(common.map { Double($0[i].time - $0[i - 1].time) / hz }) }
+      let total = median(common.map { Double($0.last!.time - $0.first!.time) / hz })
+      out.append((name, flows.count, path, gaps, total))
+    }
+    return out.sorted { $0.name < $1.name }
+  }
+}

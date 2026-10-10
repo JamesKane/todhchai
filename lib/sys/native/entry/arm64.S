@@ -26,6 +26,20 @@ td_syscall6:
   svc #0
   ret
 
+// td_thread_block() and td_set_thread_pointer(block): TPIDR_EL0, which
+// croi keeps per thread.
+.section .text.td_thread_block, "ax"
+.globl td_thread_block
+td_thread_block:
+  mrs x0, tpidr_el0
+  ret
+
+.section .text.td_set_thread_pointer, "ax"
+.globl td_set_thread_pointer
+td_set_thread_pointer:
+  msr tpidr_el0, x0
+  ret
+
 .section .data.__stack_chk_guard, "aw"
 .globl __stack_chk_guard
 .balign 8

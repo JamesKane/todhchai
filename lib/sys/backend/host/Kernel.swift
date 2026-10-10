@@ -105,7 +105,9 @@ enum Kernel {
   static func jobCreate(_ parent: UInt32) throws(Status) -> UInt32 { try k.jobCreate(parent: parent) }
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 { try k.processCreate(job: job, name: name) }
   static func threadCreate(_ process: UInt32) throws(Status) -> UInt32 { try k.threadCreate(process: process) }
-  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry) throws(Status) {
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry,
+                           _ extra: [(info: UInt32, handle: UInt32)]) throws(Status) {
+    for e in extra { close(e.handle) }  // hosted, a process's startup is `arg`
     try k.threadStart(thread, arg: arg) { raw in entry.body(Handle(raw: raw)) }
   }
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) {
