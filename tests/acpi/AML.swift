@@ -116,8 +116,83 @@ extension AML {
   static func whileLoop(_ predicate: [UInt8], _ body: [UInt8]) -> [UInt8] { [0xA2] + package(predicate + body) }
 }
 
+extension AML {
+  /// A PkgLength-encoded raw value (a field's width in bits counts no
+  /// bytes of its own).
+  static func raw(_ v: Int) -> [UInt8] {
+    if v < 0x40 { return [UInt8(v)] }
+    for n in 2...4 where v < 1 << (4 + 8 * (n - 1)) {
+      var out = [UInt8((n - 1) << 6 | (v & 0x0F))]
+      for k in 0..<(n - 1) { out.append(UInt8(truncatingIfNeeded: v >> (4 + 8 * k))) }
+      return out
+    }
+    fatalError("too wide")
+  }
+
+  enum FieldEntry {
+    case named(String, Int)
+    case reserved(Int)
+    case access(UInt8)
+  }
+
+  static func fieldList(_ entries: [FieldEntry]) -> [UInt8] {
+    entries.flatMap { e -> [UInt8] in
+      switch e {
+      case .named(let name, let bits): seg(Substring(name)) + raw(bits)
+      case .reserved(let bits): [0x00] + raw(bits)
+      case .access(let type): [0x01, type, 0x00]
+      }
+    }
+  }
+
+  static func region(_ name: String, space: UInt8, _ offset: [UInt8], _ length: [UInt8]) -> [UInt8] {
+    ext(0x80, AML.name(name), [space], offset, length)
+  }
+
+  /// Field (region, flags) { entries }: flags are AccessType | LockRule << 4 | UpdateRule << 5.
+  static func field(_ region: String, _ flags: UInt8, _ entries: [FieldEntry]) -> [UInt8] {
+    [0x5B, 0x81] + package(AML.name(region) + [flags] + fieldList(entries))
+  }
+
+  static func indexField(_ index: String, _ data: String, _ flags: UInt8, _ entries: [FieldEntry]) -> [UInt8] {
+    [0x5B, 0x86] + package(AML.name(index) + AML.name(data) + [flags] + fieldList(entries))
+  }
+
+  static func bankField(_ region: String, _ bank: String, _ value: [UInt8], _ flags: UInt8, _ entries: [FieldEntry])
+    -> [UInt8]
+  {
+    [0x5B, 0x87] + package(AML.name(region) + AML.name(bank) + value + [flags] + fieldList(entries))
+  }
+}
+
 /// A host that records what the AML asks of it.
 final class RecordingHost: ACPIHost {
+  /// Each space's bytes, by address (PCI_Config: by function, then offset).
+  var memory: [UInt8: [UInt64: UInt8]] = [:]
+  var accesses: [(write: Bool, RegionAccess, UInt64)] = []
+  /// Spaces with no handler.
+  var unhandled: Set<UInt8> = []
+
+  func key(_ a: RegionAccess) -> UInt64 {
+    guard let p = a.pci else { return a.address }
+    return UInt64(p.segment) << 48 | UInt64(p.bus) << 40 | UInt64(p.device) << 32 | UInt64(p.function) << 24 | a.address
+  }
+
+  func readRegion(_ a: RegionAccess) -> UInt64? {
+    guard !unhandled.contains(a.space) else { return nil }
+    var v: UInt64 = 0
+    for i in 0..<a.width { v |= UInt64(memory[a.space]?[key(a) + UInt64(i)] ?? 0) << (8 * UInt64(i)) }
+    accesses.append((false, a, v))
+    return v
+  }
+
+  func writeRegion(_ a: RegionAccess, _ value: UInt64) -> Bool {
+    guard !unhandled.contains(a.space) else { return false }
+    for i in 0..<a.width { memory[a.space, default: [:]][key(a) + UInt64(i)] = UInt8(truncatingIfNeeded: value >> (8 * UInt64(i))) }
+    accesses.append((true, a, value))
+    return true
+  }
+
   var interfaces: [[UInt8]] = [Array("Windows 2015".utf8)]
   var notifications: [(Int, UInt64)] = []
   var debugged: [String] = []

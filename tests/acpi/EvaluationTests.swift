@@ -249,6 +249,7 @@ func everyIdentifyingMethodInTheCorpusEvaluates() throws {
     for set in corpusLoads(machine) {
       var ns = Namespace()
       let host = RecordingHost()
+      host.unhandled = Set(0...255)  // no regions: the snapshot test reads real memory
       for file in set { try ns.load(try Table(try #require(Corpus.bytes(machine, file))), host: host) }
       for problem in ns.problems {
         #expect(problem.kind == .codeFailed(.unsupported), "\(machine) \(set): \(problem)")

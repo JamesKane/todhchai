@@ -3,7 +3,8 @@
 // The AML interpreter (ACPI 6.5 §19, §20): it runs AML straight from the
 // table's bytes, as the loader decodes it, with no tree in between.
 // Conversions and stores follow §19.3.5.4-.8; each operator its §19.6
-// entry. Field units (operation regions) come in A0d.
+// entry. Field units are read and written through their regions
+// (Regions.swift).
 
 /// What a statement leaves the code around it to do.
 enum Flow {
@@ -127,13 +128,49 @@ struct Machine<Host: ACPIHost> {
   }
 
   /// A definition met in code: the loader makes it, and if this is a
-  /// method, what it made goes when the method returns.
+  /// method, what it made goes when the method returns. Operands the
+  /// loader kept as code (a region's offset and length, a bank value, a
+  /// Name's computed value) are evaluated now, in this frame: they may use
+  /// its locals and arguments (§19.6.98: evaluated when the operator runs).
   mutating func define(_ c: inout Cursor, table: Int, ns: inout Namespace) throws(ACPIError) {
     let before = ns.nodes.count
     let loader = Loader(table: table, run: runner)
     try loader.term(&c, scope: frames[frame].scope, depth: frames.count, into: &ns)
-    if frames[frame].temporaries != nil {
-      for n in before..<ns.nodes.count where ns.nodes[n].parent >= 0 { frames[frame].temporaries!.append(n) }
+    for n in before..<ns.nodes.count where ns.nodes[n].parent >= 0 {
+      try materialize(n, &ns)
+      if frames[frame].temporaries != nil { frames[frame].temporaries!.append(n) }
+    }
+  }
+
+  /// A deferred operand, evaluated in this frame.
+  mutating func now(_ v: Value, _ ns: inout Namespace) throws(ACPIError) -> Value {
+    guard case .deferred(let code, _) = v else { return v }
+    var c = Cursor(bytes: ns.tables[code.table], at: code.start, end: code.end)
+    switch try evaluate(&c, ns: &ns) {
+    case .integer(let i): return .integer(i)
+    case .string(let s): return .string(s)
+    case .buffer(let b): return .buffer(b.bytes)
+    default: throw ACPIError.typeMismatch
+    }
+  }
+
+  mutating func materialize(_ n: Int, _ ns: inout Namespace) throws(ACPIError) {
+    let table = ns.nodes[n].table
+    switch ns.nodes[n].object {
+    case .region(let space, let offset, let length):
+      ns.setObject(n, .region(space: space, offset: try now(offset, &ns), length: try now(length, &ns)), table: table)
+    case .dataRegion(let signature, let oem, let oemTable):
+      ns.setObject(n, .dataRegion(signature: try now(signature, &ns), oemID: try now(oem, &ns),
+                                  oemTableID: try now(oemTable, &ns)), table: table)
+    case .field(var f):
+      if case .bank(let region, let bank, let value) = f.source {
+        f.source = .bank(region: region, bank: bank, value: try now(value, &ns))
+        ns.setObject(n, .field(f), table: table)
+      }
+    case .value(.deferred(let code, _)):
+      var c = Cursor(bytes: ns.tables[code.table], at: code.start, end: code.end)
+      ns.data[n] = try evaluate(&c, ns: &ns)
+    default: break
     }
   }
 
@@ -606,7 +643,7 @@ struct Machine<Host: ACPIHost> {
     case .bufferField:
       guard case .bufferField(let b, let off, let bits)? = ns.data[node] else { throw ACPIError.uninitialized }
       return readBits(b, off, bits, ns)
-    case .field: throw ACPIError.unsupported  // operation regions: A0d
+    case .field: return try readField(node, &ns)
     case .external: throw ACPIError.notFound
     default: return .object(node)
     }
@@ -746,7 +783,7 @@ struct Machine<Host: ACPIHost> {
     case .bufferField:
       guard case .bufferField(let b, let off, let bits)? = ns.data[n] else { throw ACPIError.uninitialized }
       writeBits(b, off, bits, try fieldBytes(v, &ns))
-    case .field: throw ACPIError.unsupported
+    case .field: try writeField(n, try fieldBytes(v, &ns), &ns)
     case .scope where ns.nodes[n].table >= 0:
       ns.setObject(n, .value(.integer(0)), table: ns.nodes[n].table)
       ns.data[n] = copied(v)

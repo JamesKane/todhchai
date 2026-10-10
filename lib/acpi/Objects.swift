@@ -70,7 +70,8 @@ func copied(_ d: Datum) -> Datum {
 }
 
 /// What the interpreter asks of the system it runs in: devmgr natively,
-/// a fake in tests. Operation regions come in A0d.
+/// a fake in tests. Operation regions are `readRegion` and `writeRegion`
+/// (Regions.swift), which a host gives for the spaces it handles.
 public protocol ACPIHost: AnyObject {
   /// `_OSI (name)`: whether the OS claims this interface (§5.7.2).
   func supportsInterface(_ name: [UInt8]) -> Bool
@@ -85,4 +86,9 @@ public protocol ACPIHost: AnyObject {
   func debug(_ text: [UInt8])
   /// Fatal (§19.6.46): the OS logs it and shuts down in good time.
   func fatal(type: UInt8, code: UInt32, argument: UInt64)
+  /// An operation region access (Regions.swift): the value read, or nil
+  /// if the host has no handler for it.
+  func readRegion(_ access: RegionAccess) -> UInt64?
+  /// Whether the write was handled.
+  func writeRegion(_ access: RegionAccess, _ value: UInt64) -> Bool
 }
