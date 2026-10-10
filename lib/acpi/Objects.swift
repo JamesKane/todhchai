@@ -22,7 +22,7 @@ public final class PackageObject {
 public enum Reference {
   /// A named object.
   case node(Int)
-  /// A method's LocalX or ArgX, in the call frame at this depth.
+  /// A method's LocalX or ArgX, in the call with this serial number.
   case local(Int, frame: Int)
   case arg(Int, frame: Int)
   /// An element of a package.

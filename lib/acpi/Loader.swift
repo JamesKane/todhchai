@@ -213,6 +213,10 @@ struct Loader {
   /// existing one if it's only a placeholder (a scope made by a path, or
   /// an External). Nil for a second real definition, which is noted.
   func define(_ path: NamePath, in scope: Int, at offset: Int, into ns: inout Namespace) -> Int? {
+    guard ns.nodes.count < Namespace.maximumNodes else {
+      ns.note(.codeFailed(.tooManyObjects), table: table, offset: offset)
+      return nil
+    }
     guard let parent = ns.parentScope(path, from: scope), let name = path.segments.last else {
       ns.note(.notFound, table: table, offset: offset)
       return nil
@@ -460,6 +464,7 @@ struct Loader {
         c.at = end
         return .deferred(Code(table: table, start: start, end: end), scope: scope)
       }
+      guard c.at <= end else { throw c.malformed() }  // the size ran past the buffer's own package
       let given = Array(c.bytes[c.at..<end])
       c.at = end
       guard size <= 1 << 24 else { throw c.malformed() }

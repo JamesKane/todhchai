@@ -40,6 +40,17 @@ public enum ACPIError: Error, Equatable, Sendable {
   /// A resource template (§6.4) that doesn't parse: a descriptor cut
   /// short, an unknown type, no end tag.
   case badResourceTemplate
+  // Limits (A0f): what keeps any input, however hostile, from trapping
+  // or exhausting the process.
+  /// An evaluation ran more statements than its budget (`stepLimit`).
+  case stepLimit
+  /// A string, buffer or field larger than the interpreter makes.
+  case tooLarge
+  /// More namespace objects than the interpreter keeps.
+  case tooManyObjects
+  /// An object whose value depends on itself (a region whose offset reads
+  /// its own field, a reference to itself, an index field through itself).
+  case recursive
 }
 
 /// Little-endian reads from table bytes.

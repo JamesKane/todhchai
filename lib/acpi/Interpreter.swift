@@ -16,6 +16,8 @@ enum Flow {
 
 /// A method call's state.
 struct Frame {
+  /// This call's serial number (Namespace.frameSerial).
+  var serial = 0
   var locals = [Datum](repeating: .uninitialized, count: 8)
   var args = [Datum](repeating: .uninitialized, count: 7)
   /// The scope its names are looked up from (the method's node, or the
@@ -38,8 +40,16 @@ enum Location {
 
 typealias Runner = (inout Namespace, Code, Int) throws(ACPIError) -> Void
 
-/// How deep method calls may go.
-let maximumCalls = 128
+// How deep running code may go. Real firmware is shallow: calling every
+// method in the corpus reached 14 levels of expressions, 9 of statements
+// and 7 calls; these allow over four times that. They bound the native
+// stack a worst case needs (RobustnessTests measures it).
+/// Method calls in progress.
+let maximumCalls = 32
+/// Expressions inside expressions, across calls.
+let maximumExpressionDepth = 64
+/// Statement lists (If, While bodies) inside each other, across calls.
+let maximumStatementNesting = 64
 
 struct Machine<Host: ACPIHost> {
   let host: Host
@@ -48,10 +58,66 @@ struct Machine<Host: ACPIHost> {
   var loopLimit = 1 << 20
   /// How deep expressions are nested now.
   var depth = 0
+  /// How deep statement lists are nested now.
+  var nesting = 0
+  /// How deep field accesses are nested (an index field's index is itself a field).
+  var fieldDepth = 0
+  /// Statements and expressions run so far, and the budget.
+  var steps = 0
+  var stepLimit = 1 << 26
+  var loopTimeout: UInt64 = 300_000_000
+  /// Regions and Names being evaluated now: met again, they depend on themselves.
+  var evaluating: [Int] = []
+
+  /// The largest string or buffer the interpreter makes.
+  static var maximumObjectBytes: Int { 1 << 24 }
 
   init(host: Host, loopLimit: Int = 1 << 20) {
     self.host = host
     self.loopLimit = loopLimit
+  }
+
+  init(host: Host, _ ns: Namespace) {
+    self.host = host
+    loopLimit = ns.loopLimit
+    stepLimit = ns.stepLimit
+    loopTimeout = ns.loopTimeout
+  }
+
+  /// A new call frame, with its serial number.
+  mutating func push(_ scope: Int, _ temporaries: [Int]?, _ ns: inout Namespace) {
+    ns.frameSerial += 1
+    frames.append(Frame(serial: ns.frameSerial, scope: scope, temporaries: temporaries))
+  }
+
+  /// The frame with this serial number, if its call hasn't returned.
+  func frameIndex(_ serial: Int) throws(ACPIError) -> Int {
+    var i = frames.count - 1
+    while i >= 0 {
+      if frames[i].serial == serial { return i }
+      i -= 1
+    }
+    throw ACPIError.uninitialized  // a reference that outlived its call
+  }
+
+  mutating func step() throws(ACPIError) {
+    steps += 1
+    guard steps <= stepLimit else { throw ACPIError.stepLimit }
+  }
+
+  /// Follows references to what they finally point at (a few at most:
+  /// one that leads back to itself is caught).
+  mutating func resolved(_ d: Datum, _ ns: inout Namespace) throws(ACPIError) -> Datum {
+    var v = d
+    for _ in 0..<32 {
+      guard case .reference(let r) = v else { return v }
+      v = try read(r, &ns)
+    }
+    throw ACPIError.recursive
+  }
+
+  func checkSize(_ n: Int) throws(ACPIError) {
+    guard n <= Self.maximumObjectBytes else { throw ACPIError.tooLarge }
   }
 
   var frame: Int { frames.count - 1 }
@@ -61,7 +127,7 @@ struct Machine<Host: ACPIHost> {
   var runner: Runner {
     let host = self.host
     return { (ns: inout Namespace, code: Code, scope: Int) throws(ACPIError) in
-      var m = Machine(host: host, loopLimit: ns.loopLimit)
+      var m = Machine(host: host, ns)
       try m.runLoadCode(&ns, code, scope)
     }
   }
@@ -72,7 +138,7 @@ struct Machine<Host: ACPIHost> {
   // MARK: Running code
 
   mutating func runLoadCode(_ ns: inout Namespace, _ code: Code, _ scope: Int) throws(ACPIError) {
-    frames.append(Frame(scope: scope, temporaries: nil))
+    push(scope, nil, &ns)
     defer { frames.removeLast() }
     var c = Cursor(bytes: ns.tables[code.table], at: code.start, end: code.end)
     switch try termList(&c, end: code.end, table: code.table, ns: &ns) {
@@ -90,9 +156,8 @@ struct Machine<Host: ACPIHost> {
       return truth(host.supportsInterface(try stringValue(name, &ns)), ns)
     case .method(_, _, _, let body):
       guard frames.count < maximumCalls else { throw ACPIError.callTooDeep }
-      var f = Frame(scope: node, temporaries: [])
-      for (i, a) in args.prefix(7).enumerated() { f.args[i] = a }
-      frames.append(f)
+      push(node, [], &ns)
+      for (i, a) in args.prefix(7).enumerated() { frames[frame].args[i] = a }
       var c = Cursor(bytes: ns.tables[body.table], at: body.start, end: body.end)
       let flow: Flow
       do {
@@ -119,6 +184,9 @@ struct Machine<Host: ACPIHost> {
   }
 
   mutating func termList(_ c: inout Cursor, end: Int, table: Int, ns: inout Namespace) throws(ACPIError) -> Flow {
+    nesting += 1
+    defer { nesting -= 1 }
+    guard nesting < maximumStatementNesting else { throw ACPIError.tooDeep }
     while c.at < end {
       let flow = try statement(&c, table: table, ns: &ns)
       if case .next = flow { continue }
@@ -175,6 +243,7 @@ struct Machine<Host: ACPIHost> {
   }
 
   mutating func statement(_ c: inout Cursor, table: Int, ns: inout Namespace) throws(ACPIError) -> Flow {
+    try step()
     let op = try c.peek()
     switch op {
     case 0x10, 0x14, 0x08, 0x06, 0x15:  // Scope, Method, Name, Alias, External
@@ -201,11 +270,12 @@ struct Machine<Host: ACPIHost> {
       let end = try c.pkgEnd()
       let top = c.at
       var iterations = 0
+      let started = host.timer()
       while true {
         c.at = top
         guard try integerValue(try evaluate(&c, ns: &ns), &ns) != 0 else { break }
         iterations += 1
-        guard iterations <= loopLimit else { throw ACPIError.loopLimit }
+        guard iterations <= loopLimit, host.timer() &- started <= loopTimeout else { throw ACPIError.loopLimit }
         let flow = try termList(&c, end: end, table: table, ns: &ns)
         if case .breakLoop = flow { break }
         if case .returned = flow { return flow }
@@ -268,7 +338,8 @@ struct Machine<Host: ACPIHost> {
   mutating func evaluate(_ c: inout Cursor, ns: inout Namespace) throws(ACPIError) -> Datum {
     depth += 1
     defer { depth -= 1 }
-    guard depth < maximumDepth else { throw ACPIError.tooDeep }
+    guard depth < maximumExpressionDepth else { throw ACPIError.tooDeep }
+    try step()
     if try c.atName() {
       let path = try c.nameString()
       guard let node = ns.resolve(path, from: frames[frame].scope) else { throw ACPIError.notFound }
@@ -352,6 +423,7 @@ struct Machine<Host: ACPIHost> {
     case 0x84:  // ConcatenateResTemplate
       let a = try bufferBytes(try evaluate(&c, ns: &ns), &ns)
       let b = try bufferBytes(try evaluate(&c, ns: &ns), &ns)
+      try checkSize(a.count + b.count)
       let result = Datum.buffer(BufferObject(resourceBody(a) + resourceBody(b) + [0x79, 0x00]))
       try store(result, to: try target(&c, ns: &ns), &ns)
       return result
@@ -611,10 +683,10 @@ struct Machine<Host: ACPIHost> {
   func reference(to location: Location) throws(ACPIError) -> Reference {
     switch location {
     case .node(let n): return .node(n)
-    case .local(let i): return .local(i, frame: frame)
+    case .local(let i): return .local(i, frame: frames[frame].serial)
     case .arg(let i):
       if case .reference(let r) = frames[frame].args[i] { return r }
-      return .arg(i, frame: frame)
+      return .arg(i, frame: frames[frame].serial)
     case .reference(let r): return r
     case .none, .debug: throw ACPIError.typeMismatch
     }
@@ -654,6 +726,9 @@ struct Machine<Host: ACPIHost> {
   mutating func value(of node: Int, _ ns: inout Namespace) throws(ACPIError) -> Datum {
     if let d = ns.data[node] { return d }
     guard case .value(let v) = ns.nodes[node].object else { throw ACPIError.typeMismatch }
+    guard !evaluating.contains(node) else { throw ACPIError.recursive }
+    evaluating.append(node)
+    defer { evaluating.removeLast() }
     let d = try datum(v, &ns)
     ns.data[node] = d
     return d
@@ -671,7 +746,7 @@ struct Machine<Host: ACPIHost> {
       return .package(PackageObject(out))
     case .name(let path, let scope): return nameElement(path, scope: scope, ns)
     case .deferred(let code, let scope):
-      frames.append(Frame(scope: scope, temporaries: nil))
+      push(scope, nil, &ns)
       defer { frames.removeLast() }
       var c = Cursor(bytes: ns.tables[code.table], at: code.start, end: code.end)
       return try evaluate(&c, ns: &ns)
@@ -693,8 +768,8 @@ struct Machine<Host: ACPIHost> {
   mutating func read(_ r: Reference, _ ns: inout Namespace) throws(ACPIError) -> Datum {
     switch r {
     case .node(let n): return try readNamed(n, &ns)
-    case .local(let i, let f): return frames[f].locals[i]
-    case .arg(let i, let f): return frames[f].args[i]
+    case .local(let i, let f): return frames[try frameIndex(f)].locals[i]
+    case .arg(let i, let f): return frames[try frameIndex(f)].args[i]
     case .element(let p, let i): return p.elements[i]
     case .byte(let b, let i): return .integer(UInt64(b.bytes[i]))
     }
@@ -728,7 +803,8 @@ struct Machine<Host: ACPIHost> {
   {
     let path = try c.nameString()
     guard case .buffer(let b) = source else { throw ACPIError.typeMismatch }
-    guard bitLength > 0, bitOffset &+ bitLength <= UInt64(b.bytes.count) * 8 else { throw ACPIError.outOfBounds }
+    let total = UInt64(b.bytes.count) * 8
+    guard bitLength > 0, bitLength <= total, bitOffset <= total - bitLength else { throw ACPIError.outOfBounds }
     let loader = Loader(table: 0)
     let before = ns.nodes.count
     guard let node = loader.define(path, in: frames[frame].scope, at: c.at, into: &ns) else { return }
@@ -757,8 +833,8 @@ struct Machine<Host: ACPIHost> {
   mutating func store(_ v: Datum, through r: Reference, _ ns: inout Namespace) throws(ACPIError) {
     switch r {
     case .node(let n): try storeNamed(v, n, &ns)
-    case .local(let i, let f): frames[f].locals[i] = copied(v)
-    case .arg(let i, let f): frames[f].args[i] = copied(v)
+    case .local(let i, let f): frames[try frameIndex(f)].locals[i] = copied(v)
+    case .arg(let i, let f): frames[try frameIndex(f)].args[i] = copied(v)
     case .element(let p, let i): p.elements[i] = copied(v)
     case .byte(let b, let i): b.bytes[i] = UInt8(truncatingIfNeeded: try integerValue(v, &ns))
     }
@@ -814,7 +890,7 @@ struct Machine<Host: ACPIHost> {
   /// to the integer's width, none at all an error), a buffer's first
   /// bytes, least significant first.
   mutating func integerValue(_ d: Datum, _ ns: inout Namespace) throws(ACPIError) -> UInt64 {
-    switch d {
+    switch try resolved(d, &ns) {
     case .integer(let v): return v
     case .string(let s):
       guard !s.isEmpty else { throw ACPIError.typeMismatch }
@@ -830,7 +906,6 @@ struct Machine<Host: ACPIHost> {
       for (i, byte) in b.bytes.prefix(lengthOfInteger(ns)).enumerated() { v |= UInt64(byte) << (8 * UInt64(i)) }
       return v
     case .bufferField(let b, let off, let bits): return try integerValue(readBits(b, off, bits, ns), &ns)
-    case .reference(let r): return try integerValue(try read(r, &ns), &ns)
     case .uninitialized: throw ACPIError.uninitialized
     default: throw ACPIError.typeMismatch
     }
@@ -870,12 +945,11 @@ struct Machine<Host: ACPIHost> {
   /// An operand as a buffer: an integer's bytes (4 or 8), a string's
   /// bytes with its null terminator (an empty string for ToBuffer: none).
   mutating func bufferBytes(_ d: Datum, _ ns: inout Namespace, explicit: Bool = false) throws(ACPIError) -> [UInt8] {
-    switch d {
+    switch try resolved(d, &ns) {
     case .buffer(let b): return b.bytes
     case .integer(let v): return (0..<lengthOfInteger(ns)).map { UInt8(truncatingIfNeeded: v >> (8 * UInt64($0))) }
     case .string(let s): return explicit && s.isEmpty ? [] : s + [0]
     case .bufferField(let b, let off, let bits): return try bufferBytes(readBits(b, off, bits, ns), &ns)
-    case .reference(let r): return try bufferBytes(try read(r, &ns), &ns, explicit: explicit)
     case .uninitialized: throw ACPIError.uninitialized
     default: throw ACPIError.typeMismatch
     }
@@ -891,10 +965,11 @@ struct Machine<Host: ACPIHost> {
   /// An operand as a string: an integer as 8 or 16 hex digits, a buffer as
   /// two-digit hex numbers separated by spaces.
   mutating func stringValue(_ d: Datum, _ ns: inout Namespace) throws(ACPIError) -> [UInt8] {
-    switch d {
+    switch try resolved(d, &ns) {
     case .string(let s): return s
     case .integer(let v): return hex(v, digits: 2 * lengthOfInteger(ns))
     case .buffer(let b):
+      try checkSize(b.bytes.count * 3)
       var out: [UInt8] = []
       for (i, byte) in b.bytes.enumerated() {
         if i > 0 { out.append(0x20) }
@@ -902,7 +977,6 @@ struct Machine<Host: ACPIHost> {
       }
       return out
     case .bufferField(let bf, let off, let bits): return try stringValue(readBits(bf, off, bits, ns), &ns)
-    case .reference(let r): return try stringValue(try read(r, &ns), &ns)
     case .uninitialized: throw ACPIError.uninitialized
     default: throw ACPIError.typeMismatch
     }
@@ -931,7 +1005,9 @@ struct Machine<Host: ACPIHost> {
     case .integer(let v): return useDecimal ? decimal(v) : hex(v, digits: 2 * lengthOfInteger(ns))
     default:
       var out: [UInt8] = []
-      for (i, byte) in try bufferBytes(d, &ns).enumerated() {
+      let bytes = try bufferBytes(d, &ns)
+      try checkSize(bytes.count * 5)
+      for (i, byte) in bytes.enumerated() {
         if i > 0 { out.append(0x2C) }
         out += useDecimal ? decimal(UInt64(byte)) : Array("0x".utf8) + hex(UInt64(byte), digits: 2)
       }
@@ -941,6 +1017,16 @@ struct Machine<Host: ACPIHost> {
 
   /// Concatenate (§19.6.12): the result has the first operand's type.
   mutating func concatenate(_ a: Datum, _ b: Datum, _ ns: inout Namespace) throws(ACPIError) -> Datum {
+    let result = try concatenated(a, b, &ns)
+    switch result {
+    case .string(let s): try checkSize(s.count)
+    case .buffer(let x): try checkSize(x.bytes.count)
+    default: break
+    }
+    return result
+  }
+
+  mutating func concatenated(_ a: Datum, _ b: Datum, _ ns: inout Namespace) throws(ACPIError) -> Datum {
     switch a {
     case .integer(let v):
       let first = (0..<lengthOfInteger(ns)).map { UInt8(truncatingIfNeeded: v >> (8 * UInt64($0))) }
@@ -1011,11 +1097,10 @@ struct Machine<Host: ACPIHost> {
   }
 
   mutating func size(of d: Datum, _ ns: inout Namespace) throws(ACPIError) -> Int {
-    switch d {
+    switch try resolved(d, &ns) {
     case .buffer(let b): return b.bytes.count
     case .string(let s): return s.count
     case .package(let p): return p.elements.count
-    case .reference(let r): return try size(of: try read(r, &ns), &ns)
     default: throw ACPIError.typeMismatch
     }
   }
@@ -1099,15 +1184,15 @@ extension Namespace {
   public mutating func load<H: ACPIHost>(_ table: Table, host: H) throws(ACPIError) {
     let index = addTable(table.bytes)
     var c = Cursor(bytes: table.bytes, at: Table.headerSize, end: table.length)
-    let loader = Loader(table: index, run: Machine(host: host, loopLimit: loopLimit).runner)
+    let loader = Loader(table: index, run: Machine(host: host, self).runner)
     try loader.termList(&c, end: c.end, scope: Self.root, depth: 0, into: &self)
   }
 
   /// Evaluates a node: a method is called with `args`; anything else is
   /// read.
   public mutating func evaluate<H: ACPIHost>(_ node: Int, _ args: [Datum] = [], host: H) throws(ACPIError) -> Datum {
-    var m = Machine(host: host, loopLimit: loopLimit)
-    m.frames.append(Frame(scope: Self.root, temporaries: nil))
+    var m = Machine(host: host, self)
+    m.push(Self.root, nil, &self)
     return try m.call(node, args, &self)
   }
 

@@ -52,6 +52,9 @@ extension Machine {
     {
       (base, size) = (b, s)
     } else {
+      guard !evaluating.contains(node) else { throw ACPIError.recursive }
+      evaluating.append(node)
+      defer { evaluating.removeLast() }
       base = try integerValue(try datum(offset, &ns), &ns)
       size = try integerValue(try datum(length, &ns), &ns)
       ns.data[node] = .package(PackageObject([.integer(base), .integer(size)]))
@@ -169,6 +172,10 @@ extension Machine {
   mutating func readField(_ node: Int, _ ns: inout Namespace) throws(ACPIError) -> Datum {
     guard case .field(let f) = ns.nodes[node].object else { throw ACPIError.typeMismatch }
     guard f.bitLength > 0 else { return .integer(0) }
+    guard f.bitLength <= 1 << 20 else { throw ACPIError.tooLarge }
+    fieldDepth += 1
+    defer { fieldDepth -= 1 }
+    guard fieldDepth < 16 else { throw ACPIError.recursive }
     let width = try accessWidth(f)
     let unitBits = width * 8
     let start = Int(f.bitOffset), length = Int(f.bitLength)
@@ -195,6 +202,10 @@ extension Machine {
   mutating func writeField(_ node: Int, _ source: [UInt8], _ ns: inout Namespace) throws(ACPIError) {
     guard case .field(let f) = ns.nodes[node].object else { throw ACPIError.typeMismatch }
     guard f.bitLength > 0 else { return }
+    guard f.bitLength <= 1 << 20 else { throw ACPIError.tooLarge }
+    fieldDepth += 1
+    defer { fieldDepth -= 1 }
+    guard fieldDepth < 16 else { throw ACPIError.recursive }
     let width = try accessWidth(f)
     let unitBits = width * 8
     let start = Int(f.bitOffset), length = Int(f.bitLength)
@@ -227,8 +238,8 @@ extension Namespace {
   /// (those that won't evaluate are left out): what `td acpi import`
   /// snapshots.
   public mutating func regions<H: ACPIHost>(host: H) -> [(node: Int, space: UInt8, base: UInt64, length: UInt64)] {
-    var m = Machine(host: host, loopLimit: loopLimit)
-    m.frames.append(Frame(scope: Self.root, temporaries: nil))
+    var m = Machine(host: host, self)
+    m.push(Self.root, nil, &self)
     var out: [(node: Int, space: UInt8, base: UInt64, length: UInt64)] = []
     for n in 0..<nodes.count where isLive(n) {
       guard case .region = nodes[n].object else { continue }

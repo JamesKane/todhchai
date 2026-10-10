@@ -140,8 +140,18 @@ public struct Namespace {
   /// Each node's run-time object: a Name's value once first used and as
   /// stores change it, a buffer field's bits, a mutex's or event's count.
   var data: [Datum?] = []
-  /// Iterations one While may take before it's abandoned (`loopLimit`).
+  /// Iterations one While may take before it's abandoned.
   public var loopLimit = 1 << 20
+  /// How long one While may run, in the Timer's 100 ns units: 30 s, as
+  /// other interpreters allow.
+  public var loopTimeout: UInt64 = 300_000_000
+  /// Statements and expressions one evaluation may run.
+  public var stepLimit = 1 << 26
+  /// Call frames so far: a reference to a local names its frame by this,
+  /// so one that outlives its call is caught, not misread.
+  var frameSerial = 0
+  /// The most nodes the namespace holds; definitions past it fail.
+  public static let maximumNodes = 1 << 20
   /// Mutexes held, innermost last, for sync-level order (§19.6.87).
   var heldMutexes: [(node: Int, syncLevel: Int, count: Int)] = []
   /// Each loaded table's bytes, which Code spans point into.
@@ -236,6 +246,7 @@ public struct Namespace {
   }
 
   mutating func note(_ kind: LoadProblem.Kind, table: Int, offset: Int) {
+    guard problems.count < 1000 else { return }  // enough to diagnose; no more memory
     problems.append(LoadProblem(kind: kind, table: table, offset: offset))
   }
 
