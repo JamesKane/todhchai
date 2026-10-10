@@ -199,11 +199,6 @@ target_include_directories(Console INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Console)
 
 # virtio over PCI (M3i): the transport, split queues, virtio-blk.
-add_library(Virtio STATIC lib/virtio/Block.swift lib/virtio/Queue.swift lib/virtio/Transport.swift)
-set_target_properties(Virtio PROPERTIES Swift_MODULE_NAME Virtio)
-target_include_directories(Virtio INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
-todhchai_tier0(Virtio)
-
 # PCI configuration space and enumeration, and devmgr's model (M3g).
 # Device registers are read through _Volatile.
 add_library(PCI STATIC lib/pci/Config.swift lib/pci/ECAM.swift lib/pci/Enumerate.swift)
@@ -218,6 +213,15 @@ target_include_directories(DevMgr INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(DevMgr PRIVATE "SHELL:-enable-experimental-feature Volatile")
 target_link_libraries(DevMgr PUBLIC PCI Sys TDACPI)
 todhchai_tier0(DevMgr)
+
+# virtio over PCI (M3i, M3k): the transport, split queues, each device
+# type's configuration.
+file(GLOB _virtio_sources ${CMAKE_CURRENT_SOURCE_DIR}/lib/virtio/*.swift)
+add_library(Virtio STATIC ${_virtio_sources})
+set_target_properties(Virtio PROPERTIES Swift_MODULE_NAME Virtio)
+target_include_directories(Virtio INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Virtio PUBLIC DevMgr Sys)
+todhchai_tier0(Virtio)
 
 # bootfs images: td writes them, the native launcher reads them.
 add_library(Bootfs STATIC lib/bootfs/Bootfs.swift)
@@ -258,8 +262,11 @@ if(TODHCHAI_NATIVE)
   # The framebuffer console (M3j).
   todhchai_program(console boot/programs/console/Main.swift)
   target_link_libraries(console PRIVATE Console ZBI Launch Node IPC Sys)
-  todhchai_program(virtio-blk boot/programs/virtio-blk/Main.swift)
-  target_link_libraries(virtio-blk PRIVATE DevMgr Virtio Launch Node IPC Sys)
+  # virtio drivers (M3i, M3k), each with virtio-host/Host.swift.
+  foreach(_driver blk net input gpu sound)
+    todhchai_program(virtio-${_driver} boot/programs/virtio-${_driver}/Main.swift boot/programs/virtio-host/Host.swift)
+    target_link_libraries(virtio-${_driver} PRIVATE DevMgr Virtio Launch Node IPC Sys)
+  endforeach()
   todhchai_program(edu boot/programs/edu/Main.swift)
   target_link_libraries(edu PRIVATE DevMgr Launch Node IPC Sys)
   # Tests that run on croi: td boot --test --next bin/<name>.

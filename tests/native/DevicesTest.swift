@@ -4,7 +4,8 @@
 // starts beside devmgr (tests/native/devices). Run by
 //
 //     td boot --test --manifests tests/native/devices --cmdline launcher.until=devices-test -- -device edu \
-//       -blockdev driver=null-co,node-name=t,size=67108864 -device virtio-blk-pci,drive=t,disable-legacy=on
+//       -blockdev driver=null-co,node-name=t,size=67108864 -device virtio-blk-pci,drive=t,disable-legacy=on \
+//       ... and QEMU's other virtio devices (td ci's step `devices-amd64` has them all)
 //
 // It reads devmgr's status through /svc: q35's host bridge and the ESP's
 // virtio-blk are found and left unbound, the edu device is bound to bin/edu
@@ -62,6 +63,18 @@ import Sys
     let blk = read(ns, "/svc/devmgr/drivers/\(disk[3])/status") ?? ""
     for line in blk.split(separator: "\n") { print("devices-test: \(disk[3]): \(line)") }
     check(blk.split(separator: "\n").contains("capacity 131072 sectors (64 MiB), block 512"), "the disk's size")
+    // The other virtio devices (M3k), each driver's status read through devmgr.
+    func driverStatus(_ ids: String, nth: Int = 0) -> [String] {
+      let found = lines.filter { $0[1] == ids }
+      guard nth < found.count, found[nth][4] == "running" else { return [] }
+      return (read(ns, "/svc/devmgr/drivers/\(found[nth][3])/status") ?? "").split(separator: "\n").map(String.init)
+    }
+    check(driverStatus("1af4:1041").contains("mac 52:54:00:12:34:56"), "virtio-net's MAC")
+    let inputs = [driverStatus("1af4:1052", nth: 0), driverStatus("1af4:1052", nth: 1)]
+    check(inputs.contains { $0.contains("name QEMU Virtio Keyboard") } && inputs.contains { $0.contains("name QEMU Virtio Tablet") },
+          "virtio-input's keyboard and tablet")
+    check(driverStatus("1af4:1050").contains { $0.utf8.starts(with: "scanouts 1,".utf8) }, "virtio-gpu's scanout")
+    check(driverStatus("1af4:1059").contains { $0.utf8.starts(with: "jacks 0, streams 2,".utf8) }, "virtio-sound's streams")
     // ACPI's devices, from q35's DSDT through croi's boot data (M3h).
     check(lines.contains { $0[0] == "acpi-_SB_.PCI0" && $0[1] == "PNP0A08" }, "ACPI's PCI root bridge")
     check(lines.contains { $0[0] == "acpi-_SB_.PCI0.SF8_.RTC_" && $0[1] == "PNP0B00" }, "ACPI's RTC")

@@ -207,3 +207,44 @@ final class ModelBlock {
   #expect(request(Block.write, sector: 0, fill: 1) != nil && request(Block.write, sector: 1, fill: 1) != nil)
   #expect(request(Block.write, sector: 2, fill: 1) == nil)
 }
+
+/// virtio-input's configuration answers what its select and subsel ask.
+@Test func inputConfigurationIsQueried() throws {
+  let common = ModelWindow(), config = ModelWindow()
+  config.bytes = [UInt8](repeating: 0, count: 136)
+  let name = Array("QEMU Virtio Keyboard".utf8)
+  config.onWrite = { offset, _, _ in
+    guard offset <= 1 else { return }
+    let select = config.bytes[0], subsel = config.bytes[1]
+    var data: [UInt8] = []
+    switch select {
+    case Input.idName: data = name
+    case Input.idDevids: data = [0x06, 0, 0x27, 0x06, 0x01, 0, 0x01, 0]  // BUS_VIRTUAL, 0x0627, 1, 1
+    case Input.eventBits where subsel == 1 || subsel == 0x11 || subsel == 0x14: data = [0xFF]
+    default: data = []
+    }
+    config.bytes[2] = UInt8(data.count)
+    for (i, b) in data.enumerated() { config.bytes[8 + i] = b }
+  }
+  common.onRead = { offset, _ in offset == 0x04 ? (common.bytes[0] == 1 ? 1 : 0) : nil }
+  let d = Device(common: common, device: config)
+  _ = try d.negotiate(0)
+  let id = Input.identity(d)
+  #expect(id == Input.Identity(name: "QEMU Virtio Keyboard", bus: 6, vendor: 0x0627, product: 1, version: 1,
+                               eventTypes: [0x01, 0x11, 0x14]))
+}
+
+@Test func networkConfigurationByFeature() throws {
+  let common = ModelWindow(), config = ModelWindow()
+  for (i, b) in [0x52, 0x54, 0x00, 0x12, 0x34, 0x56].enumerated() { config.bytes[i] = UInt8(b) }
+  config.write(6, width: 2, 1)
+  config.write(10, width: 2, 1500)
+  common.onRead = { offset, _ in
+    offset == 0x04 ? (common.bytes[0] == 1 ? 1 : Network.Feature.mac | Network.Feature.status) : nil
+  }
+  let d = Device(common: common, device: config)
+  _ = try d.negotiate(Network.Feature.mac | Network.Feature.status | Network.Feature.mtu)
+  let c = Network.config(d)
+  #expect(c == Network.Config(mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56], status: 1, mtu: nil, queuePairs: 1))
+  #expect(Network.text(c.mac!) == "52:54:00:12:34:56")
+}

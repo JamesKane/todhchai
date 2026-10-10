@@ -60,11 +60,15 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("n0-exit-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/n0-exit", "--manifests", "boot/native",
                         "--cmdline", "n0.trace=ipc,app,mark"]]),
     // devmgr over q35's ECAM, binding QEMU's edu device to bin/edu (M3g)
-    // and a virtio disk that reads as zeros to bin/virtio-blk (M3i).
+    // and a virtio disk that reads as zeros to bin/virtio-blk (M3i), and
+    // QEMU's other virtio devices to their drivers (M3k).
     ("devices-amd64", [[".build/debug/td", "boot", "--test", "--manifests", "tests/native/devices",
                         "--cmdline", "launcher.until=devices-test", "--", "-device", "edu",
                         "-blockdev", "driver=null-co,node-name=t,size=67108864",
-                        "-device", "virtio-blk-pci,drive=t,disable-legacy=on"]]),
+                        "-device", "virtio-blk-pci,drive=t,disable-legacy=on",
+                        "-netdev", "user,id=n", "-device", "virtio-net-pci,netdev=n,disable-legacy=on,mac=52:54:00:12:34:56",
+                        "-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci", "-device", "virtio-gpu-pci",
+                        "-audiodev", "none,id=snd", "-device", "virtio-sound-pci,audiodev=snd"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
   // A0's budgets on croi (M3h), when the out-of-tree corpus is here.

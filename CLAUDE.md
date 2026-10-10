@@ -97,8 +97,11 @@ handles (argument 0-5 a BAR, 0x10 its config space): read them with
 `Registers` (volatile), and its interrupt with `interrupt()` (devmgr
 routes INTx through ACPI's _PRT, `lib/devmgr/Routing.swift`; the
 manifest's `resource irq`). virtio drivers use `lib/virtio` (transport,
-split queues) through a `Window` over a mapped BAR; `bin/virtio-blk`
-negotiates and sizes disks, and its requests wait for croi's BTI (K9e).
+split queues) through a `Window` over a mapped BAR (`PCIDevice` opens
+one); each driver is a probe in `boot/programs/virtio-<type>` over the
+shared `virtio-host/Host.swift` (blk, net, input, gpu, sound). They
+negotiate and read their configuration; their queues wait for croi's BTI
+(K9e).
 Device registers are read with `_Volatile`, which
 needs `-enable-experimental-feature Volatile` on the target. The test is
 `td boot --test --manifests tests/native/devices --cmdline

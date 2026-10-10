@@ -16,7 +16,7 @@ func function(_ vendor: UInt16, _ device: UInt16, at d: UInt8) -> Function {
 
 @Test func firstMatchingRuleBinds() {
   let devices = [Device(pci: function(0x8086, 0x29C0, at: 0)), Device(pci: function(0x1234, 0x11E8, at: 4)),
-                 Device(pci: function(0x1AF4, 0x1041, at: 3))]  // virtio-net: no built-in rule yet
+                 Device(pci: function(0x1AF4, 0x1044, at: 3))]  // virtio-rng: no built-in rule
   let rules = Drivers.rules + [
     DriverRule(program: "any-virtio") { $0.pci?.vendor == 0x1AF4 },
     DriverRule(program: "never") { _ in true },

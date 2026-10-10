@@ -184,6 +184,9 @@ public final class Device<W: Window> {
     return Int(common.read(Common.queueNotifyOff, width: 2))
   }
 
+  /// Writes the device configuration (virtio-input's select, §5.8.4).
+  public func setConfig(_ offset: Int, width: Int, _ value: UInt64) { device.write(offset, width: width, value) }
+
   /// The device configuration's bytes `offset..<offset+width`, read so a
   /// change mid-read is seen (§4.1.4.3.1: config_generation before and after).
   public func config(_ offset: Int, width: Int) -> UInt64 {

@@ -12,5 +12,12 @@ public enum Drivers {
     // capabilities; Virtual I/O Device 1.2 §4.1.2).
     .pci("virtio-blk", vendor: 0x1AF4, device: 0x1042),
     .pci("virtio-blk", vendor: 0x1AF4, device: 0x1001),
+    // The other virtio devices QEMU gives (M3k): network (modern and
+    // transitional), GPU, input (keyboards, mice, tablets) and sound.
+    .pci("virtio-net", vendor: 0x1AF4, device: 0x1041),
+    .pci("virtio-net", vendor: 0x1AF4, device: 0x1000),
+    .pci("virtio-gpu", vendor: 0x1AF4, device: 0x1050),
+    .pci("virtio-input", vendor: 0x1AF4, device: 0x1052),
+    .pci("virtio-sound", vendor: 0x1AF4, device: 0x1059),
   ]
 }
