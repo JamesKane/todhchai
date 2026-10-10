@@ -71,6 +71,15 @@ public struct Rule: Sendable {
     // AML, load-time code run) at most 5 ms; _STA on every device, 1 ms.
     case "program.acpi.load_p99": Rule(tolerance: 0.5, floor: 200e-6, window: 5, limit: 5e-3)
     case "program.acpi.sta_p99": Rule(tolerance: 0.5, floor: 50e-6, window: 5, limit: 1e-3)
+    // N0 (M3's services, hosted, ahead of croi's numbers in QEMU): history
+    // only, except a live query's update through the fs service, at most
+    // M3's 1 ms; and every call's flow joins its four steps.
+    case "program.n0.call_p99": Rule(tolerance: 0.5, floor: 2e-6, window: 5)
+    case "program.n0.call_unjoined": .zero
+    case "program.n0.walk_read_p99": Rule(tolerance: 0.5, floor: 5e-6, window: 5)
+    case "program.n0.block_read4k_p99": Rule(tolerance: 0.5, floor: 2e-6, window: 5)
+    case "program.n0.live_p99": Rule(tolerance: 0.5, floor: 50e-6, window: 5, limit: 1e-3)
+    case "program.n0.launch_p99": Rule(tolerance: 0.5, floor: 500e-6, window: 5)
     default:
       if name.hasPrefix("program.") { .perFrame } else if name.hasPrefix("build.clean.") { .cleanBuild } else { .buildTime }
     }

@@ -127,6 +127,23 @@ public struct TraceFile: Sendable {
     return out
   }
 
+  /// Flows, by name: each flow's span from its first step to its last, in
+  /// seconds, and how many steps it had (an IPC call: its write, the
+  /// server's read, the reply's write and the caller's read).
+  public func flows() -> [String: [(seconds: Double, steps: Int)]] {
+    var spans: [UInt64: [UInt64: (first: UInt64, last: UInt64, steps: Int)]] = [:]
+    for r in records where r.kind == TraceKind.flow.rawValue {
+      let s = spans[r.b, default: [:]][r.a]
+      spans[r.b, default: [:]][r.a] = (Swift.min(s?.first ?? r.time, r.time), Swift.max(s?.last ?? r.time, r.time),
+                                       (s?.steps ?? 0) + 1)
+    }
+    var out: [String: [(seconds: Double, steps: Int)]] = [:]
+    for (nameID, byFlow) in spans {
+      out[name(nameID)] = byFlow.values.map { (seconds($0.last - $0.first), $0.steps) }
+    }
+    return out
+  }
+
   /// The time between each mark labeled `begin` and the next labeled `end`,
   /// on the same thread, in seconds.
   public func intervals(from begin: String, to end: String) -> [Double] {

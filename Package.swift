@@ -27,6 +27,7 @@ let package = Package(
     .executable(name: "taisce-fuse", targets: ["TaisceFuse"]),
     .executable(name: "taisce-bench", targets: ["TaisceBench"]),
     .executable(name: "acpi-bench", targets: ["ACPIBench"]),
+    .executable(name: "n0-bench", targets: ["N0Bench"]),
   ],
   dependencies: [
     // Toolchain, not third-party code (principle 29): the release matching
@@ -171,7 +172,8 @@ let package = Package(
     .testTarget(name: "BenchTests", dependencies: ["Bench", "TraceFormat", "TraceReader"], path: "tests/bench"),
 
     // Each milestone's exit test (docs/milestones/).
-    .testTarget(name: "MilestoneTests", dependencies: ["Echo", "IDLCTests"], path: "tests/milestones",
+    .testTarget(name: "MilestoneTests", dependencies: ["Echo", "IDLCTests", "HostedPrograms", "Launch", "Node", "Fs", "IPC"],
+                path: "tests/milestones",
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // td_wire.h: the wire format in C, for idlc's headers.
     .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
@@ -210,6 +212,9 @@ let package = Package(
     .target(name: "HostedPrograms", dependencies: ["Block", "BlockRing", "Fs", "Launch", "Node", "IPC", "Taisce"], path: "lib/hosted",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .executableTarget(name: "hostboot", dependencies: ["HostedPrograms", "Launch", "Sys"], path: "tools/hostboot"),
+    // N0's budgets, from traces (td bench --programs).
+    .executableTarget(name: "N0Bench", dependencies: ["Block", "Fs", "IPC", "Launch", "Node", "Taisce", "Trace"],
+                      path: "tools/n0-bench", swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // The test protocol and its server, shared by the tests below.
     .target(name: "Echo", dependencies: ["IPC"], path: "tests/ipc/echo",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),

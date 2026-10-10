@@ -12,6 +12,10 @@
 //             group commit on the host's disk (S1)
 //   acpi      loading the ACPI corpus's largest machine, and _STA on every
 //             device (A0); only with a corpus (td acpi)
+//   n0        a channel call's round trip (its IPC flow, which must join
+//             all four steps), a Node walk and read, a 4 KiB block read
+//             through the ring, a live query's update through the fs
+//             service, and launch to ready (N0's exit)
 //   and Swift's retains and allocations per frame in each steady state.
 //
 // They open windows and play (silent) audio, so they need the desktop and
@@ -31,17 +35,17 @@ func programBudgets(out: String) -> [(String, Double)] {
   let traces = "\(out)/programs"
   removeTree(traces)
   makeDirectory(traces)
-  for product in ["minimal", "synth", "gameloop", "taisce-bench", "acpi-bench"] {
+  for product in ["minimal", "synth", "gameloop", "taisce-bench", "acpi-bench", "n0-bench"] {
     guard run(["swift", "build", "-c", "release", "--product", product, "--scratch-path", scratch],
               log: "\(out)/logs/build-\(product).log").ok
     else { fail("building \(product) failed; see \(out)/logs/build-\(product).log") }
   }
 
   /// Runs a program with tracing on, and returns its trace.
-  func traced(_ name: String, _ env: [String]) -> ProgramTrace {
+  func traced(_ name: String, _ env: [String], categories: String = "app,frame,audio,mark") -> ProgramTrace {
     let dir = "\(traces)/\(name)"
     makeDirectory(dir)
-    let command = ["env", "TODHCHAI_TRACE=\(dir)", "TODHCHAI_TRACE_CATEGORIES=app,frame,audio,mark",
+    let command = ["env", "TODHCHAI_TRACE=\(dir)", "TODHCHAI_TRACE_CATEGORIES=\(categories)",
                    "TODHCHAI_SWIFT_COSTS=1"] + env + ["\(scratch)/release/\(name)"]
     say("  running \(name)…")
     guard run(command, log: "\(out)/logs/\(name).log").ok else { fail("\(name) failed; see \(out)/logs/\(name).log") }
@@ -114,5 +118,17 @@ func programBudgets(out: String) -> [(String, Double)] {
   } else {
     say("  acpi-bench: no corpus (td acpi import, td acpi fetch-qemu); ACPI budgets not measured")
   }
+  // N0 (M3's services, hosted): from zones, and from the IPC flows the
+  // calls record, which must each join the call's write, the server's
+  // read, the reply's write and the caller's read.
+  let n0 = traced("n0-bench", [], categories: "app,ipc,mark").file
+  let n0Zones = n0.zones()
+  let calls = n0.flows()["Node.stat"] ?? []
+  result("program.n0.call_p99", percentile(calls.map(\.seconds), 0.99))
+  result("program.n0.call_unjoined", Double(calls.filter { $0.steps != 4 }.count + (calls.isEmpty ? 1 : 0)))
+  result("program.n0.walk_read_p99", percentile(n0Zones["node.walk_read"] ?? [], 0.99))
+  result("program.n0.block_read4k_p99", percentile(n0Zones["block.read4k"] ?? [], 0.99))
+  result("program.n0.live_p99", percentile(n0Zones["fs.live"] ?? [], 0.99))
+  result("program.n0.launch_p99", percentile(n0Zones["launch.ready"] ?? [], 0.99))
   return results
 }

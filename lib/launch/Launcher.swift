@@ -323,10 +323,26 @@ public final class Launcher: @unchecked Sendable {
     }
   }
 
+  /// Kills a running service's process, as a crash would end it: its
+  /// manifest's restart policy decides what happens next. For the hosted
+  /// boot and tests.
+  public func kill(_ service: String) throws(LaunchError) {
+    let killed = locked { () -> Bool in
+      guard let s = services.first(where: { $0.manifest.service == service }), let raw = s.process?.raw else {
+        return false
+      }
+      let p = Handle(raw: raw)  // borrowed: `process` still owns it
+      let ok = (try? Sys.kill(p)) != nil
+      _ = p.release()
+      return ok
+    }
+    if !killed { throw LaunchError("no running service '\(service)'") }
+  }
+
   /// Ends every service and the launcher's threads.
   public func stop() {
     locked { stopping = true }
-    try? kill(job)
+    try? Sys.kill(job)
     guard running else { return }
     try? Port.queue(supervisor, Packet(key: 0))
     pthread_join(supervisorThread, nil)

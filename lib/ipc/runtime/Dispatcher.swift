@@ -124,12 +124,12 @@ public final class IPCDispatcher: @unchecked Sendable {
   /// Drops every server, closing their channels: for a service that is
   /// done, once `run` has returned.
   public func removeAll() {
-    // Dropped outside the lock: a server's deinit may unwatch.
-    let all = entries.withLock { e in
-      defer { e.byID = [:] }
-      return e.byID
-    }
-    _ = all
+    // Moved out, then dropped outside the lock: a server's deinit may
+    // unwatch. (A copy isn't enough: the optimizer may release the
+    // original's storage last, under the lock.)
+    var all: [UInt64: Entry] = [:]
+    entries.withLock { swap(&all, &$0.byID) }
+    withExtendedLifetime(all) {}
   }
 
   /// Serves until `stop`.

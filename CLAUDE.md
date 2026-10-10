@@ -17,8 +17,8 @@ build-time budgets (docs/performance.md):
     swift build --product td && .build/debug/td ci     # --no-bench to skip the bench
     .build/debug/td bench --record                       # on a clean tree: record a passing run
 
-The reference programs' budgets (M1's exit: minimal, synth, game loop)
-are `td bench --programs`. It opens windows and plays (muted) audio, so it
+The reference programs' budgets (M1's exit: minimal, synth, game loop;
+and N0's, from `n0-bench`) are `td bench --programs`. It opens windows and plays (muted) audio, so it
 runs only on request, from the desktop; their traces stay in
 `bench/out/programs/`.
 
@@ -81,6 +81,11 @@ what the manifest grants, and restarts by policy. A program reads its
 with the programs registered in `lib/hosted/Programs.swift`:
 
     swift build --product hostboot && .build/debug/hostboot [--check] [DIR]
+
+`boot/manifests` is N0's exit (M3's, hosted): block, fs, and `catalog`, a
+client that writes songs with attributes through `/data` and watches a live
+query (`tests/milestones/N0ExitTests.swift`). The block image is
+`.build/hosted/block.img`.
 
 ## The block service
 

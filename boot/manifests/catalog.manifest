@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# N0's exit, as a client: it mounts the fs service's volume at /data
+# through /svc/fs, catalogues songs with typed attributes, and watches a
+# live query see one arrive. Its status says what it saw.
+service catalog
+program catalog
+use fs
+export
+restart on-failure

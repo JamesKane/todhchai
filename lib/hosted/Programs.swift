@@ -16,6 +16,7 @@ public let hostedPrograms: [String: ProgramEntry] = [
   "hello": hello,
   "block": block,
   "fs": fsProgram,
+  "catalog": catalog,
 ]
 
 /// A small service: `status` says who it is and what its namespace holds.
@@ -124,5 +125,99 @@ let fsProgram = ProgramEntry { handle in
     withExtendedLifetime(service) {}
   } catch {
     Process.exit(code: 1)
+  }
+}
+
+/// N0's exit, as a client: mounts the fs service's volume at /data,
+/// catalogues songs there with typed attributes, and watches a live query
+/// see one arrive. Its `status` says what it saw; reading it checks the
+/// catalogue again, and if the fs service has restarted (the channel
+/// closed), mounts the volume afresh from /svc/fs and says so.
+let catalog = ProgramEntry { handle in
+  do {
+    let start = try Startup(handle)
+    let ns = start.namespace
+    let state = CatalogState()
+    try state.mount(ns)
+    var data = FsIPC.DirectoryClient(channel: try ns.connect("/data"))
+    if (try? data.declareIndex("Audio:Year", kind: 2, caseless: false)) == nil, try !data.indices().contains(where: { $0.name == "Audio:Year" }) {
+      Process.exit(code: 3)
+    }
+    var music: FsIPC.DirectoryClient
+    do { music = try data.directory("music") } catch { music = try data.makeDirectory("music") }
+    // A song the live query will see arrive: gone first, if a boot before
+    // this one left it.
+    try? music.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+      var song = try c.open("Anam.flac")
+      try song.remove()
+    }
+    var live = FsIPC.LiveQueryClient(channel: try data.live("Audio:Year >= 1990", scan: false))
+    while case .changed(let c) = try live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000), c.kind != .current {}
+    for (name, year) in [("Dulaman.flac", Int64(1976)), ("Anam.flac", 1990)] {
+      var song: FsIPC.FileClient
+      do { song = try music.file(name) } catch { song = try music.makeFile(name) }
+      try song.write(Array("\(name)\n".utf8))
+      try song.setAttribute(.string("Audio:Artist", "Clannad"))
+      try song.setAttribute(.int64("Audio:Year", year))
+    }
+    var seen = "nothing"
+    while case .changed(let c) = try live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000) {
+      if c.kind == .added {
+        seen = "added \(c.path)"
+        break
+      }
+    }
+    try data.sync()
+    let svc = ((try? ns.list("/svc").map(\.name)) ?? []).joined(separator: " ")
+    let dispatcher = try IPCDispatcher()
+    let tree = NodeTree(dispatcher: dispatcher)
+    let mounts = ns.mountPoints.joined(separator: " "), saw = seen
+    tree.text("status", read: {
+      "namespace \(mounts)\nsvc \(svc)\nlive: \(saw)\n\(state.check(ns))reconnects \(state.reconnects)\n"
+    })
+    var exported = start
+    try tree.serve(try exported.export())
+    try exported.ready()
+    try dispatcher.run()
+  } catch {
+    Process.exit(code: 1)
+  }
+}
+
+/// The catalogue's mount of the volume, remade when its channel closes.
+final class CatalogState: @unchecked Sendable {
+  var reconnects = 0
+
+  /// Mounts /svc/fs/volume at /data, waiting up to 2 s for a restarting
+  /// service.
+  func mount(_ ns: Namespace) throws(NamespaceError) {
+    var last = NamespaceError.notFound
+    for _ in 0..<200 {
+      do throws(NamespaceError) {
+        try ns.mount(try ns.connect("/svc/fs/volume"), at: "/data", .replace)
+        return
+      } catch {
+        last = error
+        sleep(until: Clock.monotonic() + 10_000_000)
+      }
+    }
+    throw last
+  }
+
+  /// What the catalogue holds: a song's year, read through /data, after
+  /// remounting if the old channel is dead.
+  func check(_ ns: Namespace) -> String {
+    for attempt in 0..<2 {
+      do {
+        var data = FsIPC.DirectoryClient(channel: try ns.connect("/data"))
+        var song = try data.file("music/Anam.flac")
+        let year = try song.getAttribute("Audio:Year").int64Value ?? 0
+        return "Anam.flac \(year)\n"
+      } catch {
+        guard attempt == 0, (try? mount(ns)) != nil else { return "catalogue unreadable: \(error)\n" }
+        reconnects += 1
+      }
+    }
+    return "catalogue unreadable\n"
   }
 }

@@ -77,6 +77,17 @@ func summary(_ t: TraceFile, title: String) -> String {
     let d = Distribution(durations)
     out += "| `\(name)` | \(d.count) | \(formatValue(d.total)) | \(formatValue(d.p50)) | \(formatValue(d.p99)) | \(formatValue(d.max)) |\n"
   }
+  let flows = t.flows()
+  if !flows.isEmpty {
+    // A flow's span is its first step to its last: for an IPC call, the
+    // call's write to its reply's read.
+    out += "\n| Flow | Count | Steps | p50 | p99 | Max |\n|---|---:|---:|---:|---:|---:|\n"
+    for (name, spans) in flows.sorted(by: { $0.key < $1.key }) {
+      let d = Distribution(spans.map(\.seconds))
+      let steps = Set(spans.map(\.steps)).sorted().map(String.init).joined(separator: ", ")
+      out += "| `\(name)` | \(d.count) | \(steps) | \(formatValue(d.p50)) | \(formatValue(d.p99)) | \(formatValue(d.max)) |\n"
+    }
+  }
   if t.dropped > 0 { out += "\n\(t.dropped) records dropped: the rings were full.\n" }
   return out
 }

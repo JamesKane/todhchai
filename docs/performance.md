@@ -72,6 +72,8 @@ question, recorded in the roadmap's decisions, not a silent change.
 | Spawn a tier 0 program until its `main` runs | < 200 µs *(proposed)* | M3 | QEMU |
 | Open and read a cached 4 KiB file through the namespace | < 5 µs *(proposed)* | M3 | QEMU |
 | Live query update after a matching write | < 1 ms *(proposed)* | M3 | QEMU |
+| N0, hosted: a channel call's round trip (its IPC flow, all four steps joined), a Node walk and read, a 4 KiB block read through the ring, launch to ready | Recorded per machine; a rise fails (no target until croi's numbers in QEMU) | N0 | Hosted |
+| N0, hosted: a live query's update through the fs service after a matching write | < 1 ms | N0 | Hosted |
 | The same read by a lock-free reader beside the writer (Taisce S1) | < 5 µs | S1 | Hosted, then QEMU (M3) |
 | Reads with four lock-free readers at once, against one alone | at most 1.5× slower each | S1 | Hosted |
 | `fsync` through the intent log, p99 (a 4 KiB write) | < 2 ms on the host's NVMe disk | S1 | Hosted |
