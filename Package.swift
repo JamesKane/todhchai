@@ -38,13 +38,18 @@ let package = Package(
     .testTarget(name: "IPCWireTests", dependencies: ["IPCWire"], path: "tests/ipc/wire",
                 swiftSettings: tier0),
 
-    // The hosted kernel: croi's handles, channels, events and waits, in one
-    // Linux process, with a C ABI (td_kernel.h).
-    .target(name: "TDKernel", path: "lib/ipc/host/c"),
-    .target(name: "IPCHost", dependencies: ["TDKernel"], path: "lib/ipc/host", exclude: ["c"]),
-    .target(name: "IPCHostCTests", dependencies: ["TDKernel"], path: "tests/ipc/host/c"),
-    .testTarget(name: "IPCHostTests", dependencies: ["IPCHost", "IPCHostCTests"],
-                path: "tests/ipc/host", exclude: ["c"]),
+    // Sys: croi's object model, what services use to reach the kernel
+    // (docs/milestones/N0.md). SysABI holds croi's values; SysHost is the
+    // hosted kernel (one Linux process, a handle table per hosted process)
+    // with a C ABI (td_kernel.h); Sys is the typed API over it.
+    .target(name: "SysABI", path: "lib/sys/abi", swiftSettings: tier0),
+    .target(name: "TDKernel", path: "lib/sys/host/c"),
+    .target(name: "SysHost", dependencies: ["SysABI", "TDKernel"], path: "lib/sys/host", exclude: ["c"]),
+    .target(name: "Sys", dependencies: ["SysABI", "SysHost"], path: "lib/sys",
+            sources: ["api", "backend/host"], swiftSettings: tier0),
+    .target(name: "SysHostCTests", dependencies: ["TDKernel"], path: "tests/sys/c"),
+    .testTarget(name: "SysTests", dependencies: ["Sys", "SysHost", "SysHostCTests"],
+                path: "tests/sys", exclude: ["c"]),
 
     // @IPCProtocol: the macro, and the runtime its generated code calls.
     .target(name: "IPCModel", dependencies: [
@@ -170,7 +175,7 @@ let package = Package(
                 swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     // td_wire.h: the wire format in C, for idlc's headers.
     .target(name: "TDWire", dependencies: ["TDKernel"], path: "lib/ipc/c"),
-    .target(name: "IPC", dependencies: ["IPCWire", "IPCHost", "IPCMacros"], path: "lib/ipc/runtime",
+    .target(name: "IPC", dependencies: ["IPCWire", "Sys", "IPCMacros"], path: "lib/ipc/runtime",
             swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
     .testTarget(name: "IPCMacrosTests", dependencies: [
       "IPCMacros",

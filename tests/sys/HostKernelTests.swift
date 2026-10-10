@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-import IPCHost
-import IPCHostCTests
+import Sys
+import SysHost
+import SysHostCTests
 import Testing
 
 /// Runs `body` and checks that it throws exactly `expected`.

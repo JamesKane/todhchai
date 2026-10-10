@@ -51,6 +51,17 @@ and baseline, and commit them:
 `idlc` exits 1 if the change would break a client of the recorded
 baseline. The test protocol's outputs live in `tests/ipc/{c/generated,docs,baselines}`.
 
+## Sys
+
+`Sys` (`lib/sys`, tier 0) is how services reach the kernel: croi's object
+model with Zircon's values (`lib/sys/abi`), handles as `~Copyable`
+`Handle`s. SwiftPM builds it over the hosted kernel (`SysHost`,
+`lib/sys/host`, with td_kernel.h's C ABI); CMake builds it over a stub
+that fails every call until croi's syscalls (M3). Hosted processes are
+threads in one Linux process, each with its own handle table; a killed
+one's threads exit at their next kernel call. Errors come in croi's
+order: bad handle, wrong type, access denied. Plan: `docs/milestones/N0.md`.
+
 ## Tracing
 
 `Trace` (lib/trace) records zones, flows, counters and marks in the format

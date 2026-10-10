@@ -52,6 +52,19 @@ target_link_libraries(Taisce PUBLIC TDUnicode TDCrypto)
 target_include_directories(Taisce INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Taisce)
 
+# Sys: croi's values, and the typed API over a stub backend that fails
+# every call until croi's syscalls take its place (M3).
+add_library(SysABI STATIC lib/sys/abi/Values.swift)
+set_target_properties(SysABI PROPERTIES Swift_MODULE_NAME SysABI)
+target_include_directories(SysABI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+todhchai_tier0(SysABI)
+
+add_library(Sys STATIC lib/sys/api/Handles.swift lib/sys/api/Objects.swift lib/sys/backend/stub/Kernel.swift)
+set_target_properties(Sys PROPERTIES Swift_MODULE_NAME Sys)
+target_include_directories(Sys INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(Sys PUBLIC SysABI)
+todhchai_tier0(Sys)
+
 # Embedded test programs, run on the host by ctest.
 add_executable(wire-smoke tests/embedded/WireSmoke.swift)
 set_target_properties(wire-smoke PROPERTIES Swift_MODULE_NAME WireSmoke)
@@ -88,3 +101,9 @@ set_target_properties(crypto-smoke PROPERTIES Swift_MODULE_NAME CryptoSmoke)
 target_link_libraries(crypto-smoke PRIVATE TDCrypto)
 todhchai_tier0(crypto-smoke)
 add_test(NAME embedded-crypto COMMAND crypto-smoke)
+
+add_executable(sys-smoke tests/embedded/SysSmoke.swift)
+set_target_properties(sys-smoke PROPERTIES Swift_MODULE_NAME SysSmoke)
+target_link_libraries(sys-smoke PRIVATE Sys)
+todhchai_tier0(sys-smoke)
+add_test(NAME embedded-sys COMMAND sys-smoke)

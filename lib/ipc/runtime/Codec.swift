@@ -18,7 +18,7 @@ public struct IPCMessage {
   /// Closes every handle the message carries: for a message that is
   /// dropped, so its handles don't leak.
   public func closeHandles() {
-    for h in handles { try? HostKernel.shared.close(h) }
+    for h in handles { Sys.close(raw: h) }
   }
 }
 
@@ -44,7 +44,7 @@ public enum IPCCodec {
       }
       sizes = e.finish()
     } catch {
-      for h in closing { try? HostKernel.shared.close(h) }
+      for h in closing { Sys.close(raw: h) }
       throw .wire(error)
     }
     return IPCMessage(bytes: Array(bytes[..<sizes.byteCount]), handles: Array(handles[..<sizes.handleCount]))

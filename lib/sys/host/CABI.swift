@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import SysABI
+
 // The C ABI over the hosted kernel: the declarations are in
-// c/include/td_kernel.h, written by hand to match.
+// c/include/td_kernel.h, written by hand to match. Its values are croi's
+// (Zircon's), as SysABI's are.
 
 @c public func td_handle_close(_ handle: UInt32) -> Int32 {
   status { () throws(Status) in try HostKernel.shared.close(handle) }

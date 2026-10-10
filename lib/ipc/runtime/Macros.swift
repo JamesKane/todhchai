@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-@_exported import IPCHost
+@_exported import Sys
 @_exported import IPCWire
 
 /// Declares an IPC protocol. From the protocol it generates:

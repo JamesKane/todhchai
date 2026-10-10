@@ -11,7 +11,7 @@ import Glibc
 /// A component and a source file whose change rebuilds it.
 let components: [(name: String, file: String)] = [
   ("IPCWire", "lib/ipc/wire/Encoder.swift"),
-  ("IPCHost", "lib/ipc/host/HostKernel.swift"),
+  ("SysHost", "lib/sys/host/Kernel.swift"),
   ("IPCModel", "lib/ipc/model/Model.swift"),
   ("IPCMacros", "lib/ipc/macros/Generator.swift"),
   ("IPC", "lib/ipc/runtime/Codec.swift"),
