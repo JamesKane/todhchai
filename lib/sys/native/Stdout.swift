@@ -14,7 +14,7 @@ enum Stdout {
   nonisolated(unsafe) static var log: UInt32 = 0
   nonisolated(unsafe) static var line = InlineArray<216, UInt8>(repeating: 0)
   nonisolated(unsafe) static var count = 0
-  static let lock = SpinLock()
+  static let lock = RuntimeLock()
 
   static func put(_ byte: UInt8) {
     if byte == UInt8(ascii: "\n") {
@@ -51,15 +51,25 @@ enum Stdout {
   return c
 }
 
-/// A lock that spins: the runtime's until `Sys` has one over futexes
-/// (M3b). Nothing holds it for long. Not a class: the heap's lock can't
-/// come from the heap.
-struct SpinLock: ~Copyable, Sendable {
-  let held = Atomic<Bool>(false)
+/// The runtime's lock: Sys.Lock's design (lib/sys/api/Lock.swift) over
+/// croi's futexes, for what sits below Sys (the heap, stdout). Not a
+/// class: the heap's lock can't come from the heap.
+struct RuntimeLock: ~Copyable, Sendable {
+  let word = Atomic<UInt32>(0)
 
   borrowing func locked<R>(_ body: () -> R) -> R {
-    while held.compareExchange(expected: false, desired: true, ordering: .acquiring).exchanged == false {}
-    defer { held.store(false, ordering: .releasing) }
+    if !word.compareExchange(expected: 0, desired: 1, ordering: .acquiring).exchanged {
+      while word.exchange(2, ordering: .acquiring) != 0 {
+        _ = unsafe td_syscall6(SyscallNumber.futexWait, address, 2, 0, UInt64.max >> 1, 0, 0)
+      }
+    }
+    defer {
+      if word.exchange(0, ordering: .releasing) == 2 {
+        _ = unsafe td_syscall6(SyscallNumber.futexWake, address, 1, 0, 0, 0, 0)
+      }
+    }
     return body()
   }
+
+  var address: UInt64 { unsafe withUnsafePointer(to: word) { UInt64(UInt(bitPattern: $0)) } }
 }

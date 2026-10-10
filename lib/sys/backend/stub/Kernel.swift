@@ -40,7 +40,12 @@ enum Kernel {
   static func vmoMap(_ h: UInt32, _ offset: Int, _ length: Int, _ writable: Bool) throws(Status) -> UnsafeMutableRawPointer {
     throw .notSupported
   }
-  static func vmoUnmap(_ address: UnsafeMutableRawPointer) {}
+  static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) {}
+  static func processSelf() throws(Status) -> UInt32 { throw .notSupported }
+  static func futexWait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32, deadline: Int64) throws(Status) {
+    throw .notSupported
+  }
+  static func futexWake(_ address: UnsafeMutablePointer<UInt32>, count: Int) {}
   static func timerCreate() throws(Status) -> UInt32 { throw .notSupported }
   static func timerSet(_ h: UInt32, _ deadline: Int64) throws(Status) { throw .notSupported }
   static func timerCancel(_ h: UInt32) throws(Status) { throw .notSupported }

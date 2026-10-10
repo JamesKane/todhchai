@@ -12,13 +12,42 @@ import TDNative
 
 /// croi's system call numbers that libsys uses (croi's syscall.h).
 enum SyscallNumber {
+  static let clockMonotonic: UInt64 = 3
   static let handleClose: UInt64 = 10
   static let vmoCreate: UInt64 = 40
   static let processExit: UInt64 = 63
   static let vmarMap: UInt64 = 71
   static let vmarUnmap: UInt64 = 72
   static let channelRead: UInt64 = 82
+  static let futexWait: UInt64 = 90
+  static let futexWake: UInt64 = 91
   static let debuglogWrite: UInt64 = 111
+}
+
+/// What the runtime keeps for Sys (lib/sys/backend/native): this process's
+/// handle and its root VMAR, and the vDSO's clock.
+public enum Runtime {
+  nonisolated(unsafe) public internal(set) static var processSelf: UInt32 = 0
+  nonisolated(unsafe) public internal(set) static var vmarRoot: UInt32 = 0
+  nonisolated(unsafe) static var vdsoClock: (@convention(c) () -> UInt64)? = nil
+
+  /// Nanoseconds on the monotonic clock: the vDSO's, with no kernel call,
+  /// or the system call if the vDSO isn't there.
+  public static func monotonic() -> Int64 {
+    if let clock = unsafe vdsoClock { return Int64(bitPattern: clock()) }
+    return unsafe td_syscall6(SyscallNumber.clockMonotonic, 0, 0, 0, 0, 0, 0)
+  }
+
+  /// The vDSO's header (croi's shared.h): magic, version, then each
+  /// function's offset from the header.
+  static func findClock(_ base: UInt64) {
+    guard base != 0, let header = unsafe UnsafeRawPointer(bitPattern: UInt(base)) else { return }
+    let magic = unsafe header.load(as: UInt32.self)
+    let version = unsafe header.load(fromByteOffset: 4, as: UInt32.self)
+    guard magic == 0x5344_5643, version >= 1 else { return }
+    let offset = unsafe header.load(fromByteOffset: 8, as: UInt32.self)
+    unsafe vdsoClock = unsafe unsafeBitCast(header + Int(offset), to: (@convention(c) () -> UInt64).self)
+  }
 }
 
 /// processargs' constants (croi's processargs.h, Zircon's values).
@@ -128,6 +157,8 @@ public func exit(_ code: Int64) -> Never {
   }
   Heap.vmar = vmar
   Stdout.log = log
+  Runtime.vmarRoot = vmar
+  Runtime.findClock(vdso)
 
   var argv: [UnsafeMutablePointer<CChar>?] = unsafe []
   if valid {
@@ -160,9 +191,10 @@ public func exit(_ code: Int64) -> Never {
       StartupHandles.entries.append((infos[i], handles[i]))
     }
   }
-  // stdout and the root VMAR stay the runtime's.
+  // stdout, the root VMAR and the process's own handle stay the runtime's.
   _ = StartupHandles.take(ProcessArgs.info(ProcessArgs.fd, 1))
   _ = StartupHandles.take(ProcessArgs.info(ProcessArgs.vmarRoot))
+  Runtime.processSelf = StartupHandles.take(ProcessArgs.info(ProcessArgs.processSelf)) ?? 0
 
   let argc = unsafe Int32(argv.count)
   unsafe argv.append(nil)

@@ -21,7 +21,7 @@ enum Heap {
   nonisolated(unsafe) static var free = InlineArray<8, UInt>(repeating: 0)
   nonisolated(unsafe) static var chunk: UInt = 0
   nonisolated(unsafe) static var chunkLeft = 0
-  static let lock = SpinLock()
+  static let lock = RuntimeLock()
 
   /// A fresh read-write mapping of `length` bytes (a page multiple), or 0.
   static func map(_ length: Int) -> UInt {

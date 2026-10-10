@@ -34,6 +34,7 @@ func ci(bench benchOptions: BenchOptions?) -> Bool {
     ("native-arm64", [["cmake", "--workflow", "--preset", "native-arm64"]]),
     ("native-rv64", [["cmake", "--workflow", "--preset", "native-rv64"]]),
     ("boot-amd64", [[".build/debug/td", "boot", "--test"]]),
+    ("sys-test-amd64", [[".build/debug/td", "boot", "--test", "--next", "bin/sys-test"]]),
     ("shaders", [[".build/debug/td", "shaders", "--check"]]),
   ]
   steps.append(("c-abi", cABISteps(bin: "\(logs)/bin")))

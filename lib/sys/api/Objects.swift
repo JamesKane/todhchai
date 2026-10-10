@@ -109,7 +109,7 @@ public enum VMO {
     self.length = length
   }
 
-  deinit { unsafe Kernel.vmoUnmap(address) }
+  deinit { unsafe Kernel.vmoUnmap(address, length) }
 
   public func load<T: FixedWidthInteger>(_: T.Type, at offset: Int) -> T {
     precondition(offset >= 0 && offset + MemoryLayout<T>.size <= length)
@@ -169,6 +169,9 @@ public enum Process {
   /// The calling process ends with `code`.
   public static func exit(code: Int64) -> Never { Kernel.exit(code) }
 
+  /// A handle to the calling process.
+  public static func current() throws(Status) -> Handle { Handle(raw: try Kernel.processSelf()) }
+
   public static func info(_ process: borrowing Handle) throws(Status) -> ProcessInfo { try Kernel.processInfo(process.raw) }
 }
 
@@ -179,8 +182,24 @@ public enum Thread {
     Handle(raw: try Kernel.threadCreate(process.raw))
   }
 
+  /// Starts `thread` running `body`; the thread exits when it returns.
+  /// Natively the thread gets a stack of its own (lib/sys/backend/native).
   public static func start(_ thread: borrowing Handle, _ body: @escaping @Sendable () -> Void) throws(Status) {
     try Kernel.threadStart(thread.raw, body)
+  }
+
+  /// A new thread in the calling process, running `body`. Its handle:
+  /// `join` it, or drop it to let the thread run on alone.
+  public static func spawn(_ body: @escaping @Sendable () -> Void) throws(Status) -> Handle {
+    let process = try Process.current()
+    let thread = try create(process: process)
+    try start(thread, body)
+    return thread
+  }
+
+  /// Waits until `thread` has ended.
+  public static func join(_ thread: borrowing Handle) throws(Status) {
+    _ = try thread.wait(for: Signals.terminated)
   }
 }
 

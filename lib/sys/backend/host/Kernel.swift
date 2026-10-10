@@ -84,7 +84,13 @@ enum Kernel {
   static func vmoMap(_ h: UInt32, _ offset: Int, _ length: Int, _ writable: Bool) throws(Status) -> UnsafeMutableRawPointer {
     try unsafe k.vmoMap(h, offset: offset, length: length, writable: writable)
   }
-  static func vmoUnmap(_ address: UnsafeMutableRawPointer) { try? unsafe k.vmoUnmap(address) }
+  static func vmoUnmap(_ address: UnsafeMutableRawPointer, _ length: Int) { try? unsafe k.vmoUnmap(address) }
+
+  static func processSelf() throws(Status) -> UInt32 { try k.processSelf() }
+  static func futexWait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32, deadline: Int64) throws(Status) {
+    try unsafe k.futexWait(address, current: current, deadline: deadline)
+  }
+  static func futexWake(_ address: UnsafeMutablePointer<UInt32>, count: Int) { unsafe k.futexWake(address, count: count) }
 
   static func timerCreate() throws(Status) -> UInt32 { try k.timerCreate() }
   static func timerSet(_ h: UInt32, _ deadline: Int64) throws(Status) { try k.timerSet(h, deadline: deadline) }

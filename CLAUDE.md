@@ -139,11 +139,16 @@ the block image if it holds no volume. Conveniences: `lib/fs/Client.swift`.
 `Sys` (`lib/sys`, tier 0) is how services reach the kernel: croi's object
 model with Zircon's values (`lib/sys/abi`), handles as `~Copyable`
 `Handle`s. SwiftPM builds it over the hosted kernel (`SysHost`,
-`lib/sys/host`, with td_kernel.h's C ABI); CMake builds it over a stub
-that fails every call until croi's syscalls (M3). Hosted processes are
-threads in one Linux process, each with its own handle table; a killed
-one's threads exit at their next kernel call. Errors come in croi's
-order: bad handle, wrong type, access denied. Plan: `docs/milestones/N0.md`.
+`lib/sys/host`, with td_kernel.h's C ABI); the native CMake build over
+croi's syscalls (`lib/sys/backend/native`, M3b); the host's Embedded
+build over a stub that fails every call. Hosted processes are threads in
+one Linux process, each with its own handle table; a killed one's threads
+exit at their next kernel call. Threads: `Thread.spawn { }` and
+`Thread.join`; locks: `Lock` over futexes (`Futex.wait`/`wake`). Tests of
+the native backend are programs in `tests/native`, run on croi with
+`td boot --test --next bin/<name>` (`bin/sys-test` is in `td ci`). Errors
+come in croi's order: bad handle, wrong type, access denied. Plans:
+`docs/milestones/N0.md`, `M3.md`.
 
 ## Tracing
 

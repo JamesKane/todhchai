@@ -66,17 +66,34 @@ target_link_libraries(Taisce PUBLIC TDUnicode TDCrypto)
 target_include_directories(Taisce INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Taisce)
 
-# Sys: croi's values, and the typed API over a stub backend that fails
-# every call until croi's syscalls take its place (M3).
+# Sys: croi's values, and the typed API: over croi's syscalls natively,
+# over a stub that fails every call in the host's Embedded build.
 add_library(SysABI STATIC lib/sys/abi/Values.swift)
 set_target_properties(SysABI PROPERTIES Swift_MODULE_NAME SysABI)
 target_include_directories(SysABI INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(SysABI)
 
-add_library(Sys STATIC lib/sys/api/Handles.swift lib/sys/api/Objects.swift lib/sys/backend/stub/Kernel.swift)
+if(TODHCHAI_NATIVE)
+  # libsys: a native process's start, stdout and heap (lib/sys/native).
+  add_library(LibSys STATIC
+    lib/sys/native/entry/${TODHCHAI_ARCH}.S
+    lib/sys/native/Start.swift lib/sys/native/Stdout.swift lib/sys/native/Heap.swift)
+  set_target_properties(LibSys PROPERTIES Swift_MODULE_NAME LibSys)
+  target_include_directories(LibSys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/sys/native/include
+                                    INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+  target_link_libraries(LibSys PUBLIC LibC)
+  todhchai_tier0(LibSys)
+  set(_sys_backend lib/sys/backend/native/Kernel.swift)
+else()
+  set(_sys_backend lib/sys/backend/stub/Kernel.swift)
+endif()
+add_library(Sys STATIC lib/sys/api/Handles.swift lib/sys/api/Objects.swift lib/sys/api/Lock.swift ${_sys_backend})
 set_target_properties(Sys PROPERTIES Swift_MODULE_NAME Sys)
 target_include_directories(Sys INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(Sys PUBLIC SysABI)
+if(TODHCHAI_NATIVE)
+  target_link_libraries(Sys PUBLIC LibSys)
+endif()
 todhchai_tier0(Sys)
 
 # The block service's rings.
@@ -92,26 +109,20 @@ target_include_directories(Bootfs INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
 todhchai_tier0(Bootfs)
 
 if(TODHCHAI_NATIVE)
-  # libsys: a native process's start, stdout and heap (lib/sys/native).
-  add_library(LibSys STATIC
-    lib/sys/native/entry/${TODHCHAI_ARCH}.S
-    lib/sys/native/Start.swift lib/sys/native/Stdout.swift lib/sys/native/Heap.swift)
-  set_target_properties(LibSys PROPERTIES Swift_MODULE_NAME LibSys)
-  target_include_directories(LibSys PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/sys/native/include
-                                    INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
-  target_link_libraries(LibSys PUBLIC LibC)
-  todhchai_tier0(LibSys)
-
   # A program for bootfs: bin/<name>, linked with libsys.
   function(todhchai_program name)
     add_executable(${name} ${ARGN})
-    set_target_properties(${name} PROPERTIES Swift_MODULE_NAME ${name}
+    string(REPLACE "-" "_" _module ${name})
+    set_target_properties(${name} PROPERTIES Swift_MODULE_NAME ${_module}
                           RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
     target_link_libraries(${name} PRIVATE LibSys)
     todhchai_tier0(${name})
   endfunction()
 
   todhchai_program(launcher boot/programs/launcher/Main.swift)
+  # Tests that run on croi: td boot --test --next bin/<name>.
+  todhchai_program(sys-test tests/native/SysTest.swift)
+  target_link_libraries(sys-test PRIVATE Sys)
   return()
 endif()
 

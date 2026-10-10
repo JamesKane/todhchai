@@ -11,6 +11,7 @@
 // change: simple, and enough for a development kernel.
 
 import Glibc
+import Synchronization
 import SysABI
 
 // MARK: Objects
@@ -215,6 +216,7 @@ public final class HostKernel: @unchecked Sendable {
   var rootJob: JobObject!
   var timers: [TimerObject] = []
   var timerThreadStarted = false
+  var futexWaiters: [FutexWaiter] = []
   var lastTxid: UInt32 = 0
   /// Ends a started thread's accounting when it exits, however it does
   /// (pthread_exit in a kernel call doesn't unwind Swift frames).
@@ -918,7 +920,9 @@ public final class HostKernel: @unchecked Sendable {
     t.killed = true
     update(t, set: Signals.terminated, clear: Signals.threadRunning)
     t.process.running -= 1
-    if t.process.running == 0 { terminate(t.process, code: t.process.returnCode) }
+    // The host's process is the Linux process: threads the kernel started
+    // in it (Thread.spawn from a test or tool) don't end it.
+    if t.process.running == 0 && t.process !== hostProcess { terminate(t.process, code: t.process.returnCode) }
     release(t)  // the running thread's own reference
   }
 
@@ -957,6 +961,60 @@ public final class HostKernel: @unchecked Sendable {
         pthread_cond_broadcast(changed)
       default: throw .wrongType
       }
+    }
+  }
+
+  /// A handle to the calling process (natively, processargs' PROC_SELF).
+  public func processSelf() throws(Status) -> UInt32 {
+    try locked { () throws(Status) in
+      let p = current
+      p.refs += 1
+      return try install(p, .processDefault)
+    }
+  }
+
+  // MARK: Futexes
+
+  /// A thread waiting on a futex word, until a wake marks it.
+  final class FutexWaiter {
+    let address: UInt
+    let thread: ThreadObject?
+    var woken = false
+    init(address: UInt, thread: ThreadObject?) {
+      self.address = address
+      self.thread = thread
+    }
+  }
+
+  /// futex_wait: sleeps while the word at `address` holds `current`, until
+  /// a wake or `deadline`. `badState` if the word had already changed. The
+  /// word is read under the kernel's lock, which a wake takes too, so no
+  /// wake falls between the check and the sleep.
+  public func futexWait(_ address: UnsafeMutablePointer<UInt32>, current value: UInt32, deadline: Int64) throws(Status) {
+    try locked { () throws(Status) in
+      let word = unsafe UnsafeRawPointer(address).assumingMemoryBound(to: Atomic<UInt32>.self)
+      guard unsafe word.pointee.load(ordering: .sequentiallyConsistent) == value else { throw .badState }
+      let waiter = FutexWaiter(address: UInt(bitPattern: address), thread: currentThread)
+      futexWaiters.append(waiter)
+      defer { futexWaiters.removeAll { $0 === waiter } }
+      while !waiter.woken {
+        if !awaitChange(until: deadline) { throw .timedOut }
+      }
+    }
+  }
+
+  /// futex_wake: wakes up to `count` threads waiting on `address`. A
+  /// waiter whose thread was killed takes no wake.
+  public func futexWake(_ address: UnsafeMutablePointer<UInt32>, count: Int) {
+    try? locked { () throws(Status) in
+      let a = UInt(bitPattern: address)
+      var woken = 0
+      for w in futexWaiters where woken < count && !w.woken && w.address == a {
+        if let t = w.thread, t.killed || t.process.killed { continue }
+        w.woken = true
+        woken += 1
+      }
+      if woken > 0 { pthread_cond_broadcast(changed) }
     }
   }
 

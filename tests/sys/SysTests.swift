@@ -499,3 +499,73 @@ enum DispatchlessParallel {
     for t in threads { pthread_join(t, nil) }
   }
 }
+
+// MARK: Locks, threads in this process, futexes (M3b)
+
+@Test func processCurrentIsTheCallersProcess() throws {
+  let me = try Process.current()
+  let again = try Process.current()
+  let a = try me.info(), b = try again.info()
+  #expect(a.koid == b.koid && a.type == ObjectType.process)
+}
+
+@Test func spawnedThreadsRunAndJoin() throws {
+  final class Box: @unchecked Sendable { var ran = 0 }
+  let box = Box()
+  let lock = Lock()
+  var threads: [UInt32] = []
+  for _ in 0..<4 {
+    let t = try Thread.spawn {
+      for _ in 0..<1000 { lock.withLock { box.ran += 1 } }
+    }
+    threads.append(t.release())
+  }
+  for raw in threads {
+    let t = Handle(raw: raw)
+    try Thread.join(t)
+  }
+  #expect(box.ran == 4000)
+}
+
+@Test func lockExcludesUnderContention() throws {
+  final class Box: @unchecked Sendable { var inside = 0; var worst = 0; var total = 0 }
+  let box = Box()
+  let lock = Lock()
+  var threads: [UInt32] = []
+  for _ in 0..<8 {
+    threads.append(try Thread.spawn {
+      for _ in 0..<2000 {
+        lock.lock()
+        box.inside += 1
+        box.worst = max(box.worst, box.inside)
+        box.total += 1
+        sched_yield()
+        box.inside -= 1
+        lock.unlock()
+      }
+    }.release())
+  }
+  for raw in threads { try Thread.join(Handle(raw: raw)) }
+  #expect(box.total == 16000)
+  #expect(box.worst == 1)
+}
+
+@Test func futexWaitChecksTheWordTimesOutAndWakes() throws {
+  let word = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+  defer { word.deallocate() }
+  word.pointee = 0
+  // A wait for a value the word doesn't hold refuses at once.
+  #expect(statusOf { () throws(Status) in try Futex.wait(word, current: 2) } == .badState)
+  // One for the value it holds sleeps until its deadline...
+  let start = Clock.monotonic()
+  #expect(statusOf { () throws(Status) in try Futex.wait(word, current: 0, deadline: start + 20_000_000) } == .timedOut)
+  #expect(Clock.monotonic() - start >= 20_000_000)
+  // ...or until a wake.
+  let address = UInt(bitPattern: word)
+  let waker = try Thread.spawn {
+    usleep(20_000)
+    Futex.wake(UnsafeMutablePointer<UInt32>(bitPattern: address)!, count: 1)
+  }
+  #expect(statusOf { () throws(Status) in try Futex.wait(word, current: 0, deadline: Clock.monotonic() + 5 * second) } == .ok)
+  try Thread.join(waker)
+}
